@@ -1,4 +1,4 @@
-"""Deriv WebSocket client — fetches OHLC candles with retry logic."""
+"""Deriv WebSocket client — fetches OHLC candles with retry + pagination."""
 
 import asyncio
 import json
@@ -53,3 +53,61 @@ async def _fetch_with_retry(symbol, granularity, count):
 def fetch_candles(symbol, granularity, count):
     """Synchronous wrapper with retries. Returns list of candle dicts."""
     return asyncio.run(_fetch_with_retry(symbol, granularity, count))
+
+
+# ---------- Paginated fetch (for backtesting) ----------
+
+async def _fetch_batch(symbol, granularity, count, end):
+    async with websockets.connect(DERIV_WS_URL, open_timeout=20) as ws:
+        request = {
+            "ticks_history": symbol,
+            "adjust_start_time": 1,
+            "count": count,
+            "end": end,
+            "granularity": granularity,
+            "style": "candles",
+        }
+        await ws.send(json.dumps(request))
+        while True:
+            raw = await asyncio.wait_for(ws.recv(), timeout=25)
+            data = json.loads(raw)
+            if "error" in data:
+                msg = data["error"].get("message", "unknown error")
+                raise RuntimeError(f"Deriv error for {symbol}: {msg}")
+            if data.get("msg_type") == "candles" and "candles" in data:
+                return data["candles"]
+
+
+async def _paginate(symbol, granularity, total):
+    all_candles = []
+    seen_epochs = set()
+    end = "latest"
+    max_iters = 20
+    iters = 0
+    while len(all_candles) < total and iters < max_iters:
+        iters += 1
+        batch_size = min(1000, total - len(all_candles))
+        try:
+            batch = await _fetch_batch(symbol, granularity, batch_size, end)
+        except Exception as e:
+            print(f"[{symbol}] pagination batch {iters} failed: {e}")
+            break
+        if not batch:
+            break
+        new = [c for c in batch if c["epoch"] not in seen_epochs]
+        if not new:
+            break
+        for c in new:
+            seen_epochs.add(c["epoch"])
+        all_candles = new + all_candles
+        end = new[0]["epoch"] - granularity
+        if len(batch) < batch_size:
+            break
+    if len(all_candles) > total:
+        all_candles = all_candles[-total:]
+    return all_candles
+
+
+def fetch_candles_paginated(symbol, granularity, total):
+    """Fetch up to `total` candles by paginating backward. For backtests."""
+    return asyncio.run(_paginate(symbol, granularity, total))
