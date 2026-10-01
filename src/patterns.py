@@ -76,7 +76,7 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
         if _sweep_penetration(candles, sweep) < min_pen:
             continue
 
-        # ---- Bullish reversal: swept a low, expecting CHoCH up + BOS up ----
+        # ---- Bullish reversal ----
         if sweep.direction == "down":
             choch = next(
                 (c for c in chochs
@@ -102,13 +102,10 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
             if ob is None:
                 continue
 
-            # --- OB freshness filters ---
             if last_idx - ob.index > MAX_OB_AGE_BARS:
                 continue
             if _ob_already_tapped(candles, ob, last_idx):
                 continue
-
-            # Retrace: latest candle tapped the OB zone for the first time
             if not (last_candle["low"] <= ob.high and last_candle["high"] >= ob.low):
                 continue
 
@@ -126,7 +123,7 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
                 entry=entry, stop=stop, target=target, rr=rr, retrace_index=last_idx,
             ))
 
-        # ---- Bearish reversal: swept a high, expecting CHoCH down + BOS down ----
+        # ---- Bearish reversal ----
         elif sweep.direction == "up":
             choch = next(
                 (c for c in chochs
@@ -156,7 +153,6 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
                 continue
             if _ob_already_tapped(candles, ob, last_idx):
                 continue
-
             if not (last_candle["low"] <= ob.high and last_candle["high"] >= ob.low):
                 continue
 
