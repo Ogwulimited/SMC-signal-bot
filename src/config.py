@@ -33,3 +33,7 @@ TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
 
 # ----- State -----
 STATE_FILE = "state.json"
+
+# Cooldown between signals for the same symbol/direction (seconds).
+# Prevents duplicate/spam signals when a pattern retraces over multiple candles.
+SIGNAL_COOLDOWN_SECONDS = 4 * 3600  # 4 hours
