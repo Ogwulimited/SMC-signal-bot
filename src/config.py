@@ -19,23 +19,25 @@ CANDLE_COUNT = 200
 DERIV_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 
 # ----- SMC parameters -----
-SWING_LOOKBACK = 2                  # bars before/after to confirm a swing
+SWING_LOOKBACK = 2
 ATR_PERIOD = 14
-EQ_TOLERANCE_ATR = 0.15             # equal highs/lows tolerance (fraction of ATR)
-BUFFER_ATR = 0.10                   # stop-loss buffer beyond structural level
-DISPLACEMENT_ATR_MULT = 1.5         # displacement candle range vs ATR
-MIN_RR = 1.5                        # minimum structural R:R to fire a signal
-PATTERN_LOOKBACK_BARS = 30          # max bars between sweep -> CHoCH -> BOS
+EQ_TOLERANCE_ATR = 0.15
+BUFFER_ATR = 0.10
+DISPLACEMENT_ATR_MULT = 1.5
+MIN_RR = 1.5
+PATTERN_LOOKBACK_BARS = 30
 
 # Quality filters
-MIN_SWEEP_PENETRATION_ATR = 0.20    # sweep must pierce pool by at least this * ATR
-MAX_BARS_SWEEP_TO_ENTRY = 80        # sweep must be within last 80 bars of entry
-MAX_OB_AGE_BARS = 80                # OB must be created within last 80 bars
+MIN_SWEEP_PENETRATION_ATR = 0.20
+MAX_BARS_SWEEP_TO_ENTRY = 80
+MAX_OB_AGE_BARS = 80
 
 # ----- Backtest outcome simulation -----
-# Max bars to hold a signal open before calling it a timeout.
-# 96 bars on M15 = 24 hours.
-MAX_HORIZON_BARS = 96
+MAX_HORIZON_BARS = 96           # 24 hours on M15
+
+# Spread cost as a fraction of ATR. Applied to both entry and exit.
+# 0.04 ATR ≈ 0.5 pip on M15 FX with 12-pip ATR. Conservative and realistic.
+SPREAD_ATR_FRAC = 0.04
 
 # ----- Telegram -----
 TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
@@ -43,9 +45,7 @@ TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
 
 # ----- State -----
 STATE_FILE = "state.json"
-
-# Cooldown between signals for the same symbol/direction (seconds).
-SIGNAL_COOLDOWN_SECONDS = 4 * 3600  # 4 hours
+SIGNAL_COOLDOWN_SECONDS = 4 * 3600
 
 # ----- Reports -----
 REPORTS_DIR = "reports"
