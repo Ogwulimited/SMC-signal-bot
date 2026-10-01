@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-01T00:49:27Z",
+  "generated": "2026-10-01T01:15:03Z",
   "config": {
     "timeframe": "M15",
     "granularity_sec": 900,
@@ -17,122 +17,292 @@
   "results": [
     {
       "symbol": "frxEURUSD",
-      "candles": 760,
+      "candles": 5000,
       "signals": [
         {
-          "index": 312,
+          "index": 2218,
+          "direction": "bullish",
+          "entry": 1.16809,
+          "stop": 1.16778,
+          "target": 1.16883,
+          "rr": 2.41,
+          "sweep_index": 2192,
+          "ob_index": 2217
+        },
+        {
+          "index": 2803,
+          "direction": "bullish",
+          "entry": 1.1641,
+          "stop": 1.16391,
+          "target": 1.16482,
+          "rr": 4.02,
+          "sweep_index": 2775,
+          "ob_index": 2802
+        },
+        {
+          "index": 3129,
+          "direction": "bullish",
+          "entry": 1.15895,
+          "stop": 1.15887,
+          "target": 1.15939,
+          "rr": 5.34,
+          "sweep_index": 3110,
+          "ob_index": 3128
+        },
+        {
+          "index": 4552,
           "direction": "bullish",
           "entry": 1.13787,
           "stop": 1.13754,
-          "target": 1.13867,
-          "rr": 2.37,
-          "sweep_index": 292,
-          "ob_index": 311
+          "target": 1.13864,
+          "rr": 2.28,
+          "sweep_index": 4537,
+          "ob_index": 4551
         },
         {
-          "index": 395,
+          "index": 4635,
           "direction": "bearish",
           "entry": 1.13763,
           "stop": 1.13778,
           "target": 1.13741,
           "rr": 1.52,
-          "sweep_index": 357,
-          "ob_index": 394
+          "sweep_index": 4597,
+          "ob_index": 4634
         },
         {
-          "index": 520,
+          "index": 4760,
           "direction": "bearish",
           "entry": 1.13683,
           "stop": 1.13711,
           "target": 1.13595,
           "rr": 3.12,
-          "sweep_index": 500,
-          "ob_index": 519
+          "sweep_index": 4740,
+          "ob_index": 4759
         }
       ],
-      "signal_count": 3,
-      "bullish": 1,
+      "signal_count": 6,
+      "bullish": 4,
       "bearish": 2,
-      "avg_rr": 2.34,
-      "span_days": 8.99,
-      "signals_per_month": 10.2,
-      "signals_per_week": 2.3
+      "avg_rr": 3.11,
+      "span_days": 72.28,
+      "signals_per_month": 2.5,
+      "signals_per_week": 0.6
     },
     {
       "symbol": "frxGBPUSD",
-      "candles": 760,
+      "candles": 5000,
       "signals": [
         {
-          "index": 408,
+          "index": 112,
+          "direction": "bearish",
+          "entry": 1.34336,
+          "stop": 1.34366,
+          "target": 1.3429,
+          "rr": 1.6,
+          "sweep_index": 95,
+          "ob_index": 111
+        },
+        {
+          "index": 303,
+          "direction": "bullish",
+          "entry": 1.33755,
+          "stop": 1.33745,
+          "target": 1.33771,
+          "rr": 1.59,
+          "sweep_index": 281,
+          "ob_index": 302
+        },
+        {
+          "index": 1143,
+          "direction": "bearish",
+          "entry": 1.34526,
+          "stop": 1.34549,
+          "target": 1.34488,
+          "rr": 1.73,
+          "sweep_index": 1115,
+          "ob_index": 1142
+        },
+        {
+          "index": 1397,
+          "direction": "bullish",
+          "entry": 1.34474,
+          "stop": 1.34436,
+          "target": 1.34581,
+          "rr": 2.85,
+          "sweep_index": 1383,
+          "ob_index": 1396
+        },
+        {
+          "index": 1461,
+          "direction": "bullish",
+          "entry": 1.34939,
+          "stop": 1.34914,
+          "target": 1.34979,
+          "rr": 1.65,
+          "sweep_index": 1431,
+          "ob_index": 1460
+        },
+        {
+          "index": 1526,
+          "direction": "bullish",
+          "entry": 1.35076,
+          "stop": 1.35065,
+          "target": 1.35095,
+          "rr": 1.68,
+          "sweep_index": 1516,
+          "ob_index": 1525
+        },
+        {
+          "index": 2707,
+          "direction": "bullish",
+          "entry": 1.35765,
+          "stop": 1.35729,
+          "target": 1.35839,
+          "rr": 2.0,
+          "sweep_index": 2671,
+          "ob_index": 2706
+        },
+        {
+          "index": 3328,
+          "direction": "bullish",
+          "entry": 1.35163,
+          "stop": 1.35133,
+          "target": 1.35221,
+          "rr": 1.94,
+          "sweep_index": 3316,
+          "ob_index": 3327
+        },
+        {
+          "index": 4647,
           "direction": "bullish",
           "entry": 1.32169,
           "stop": 1.32147,
           "target": 1.32236,
           "rr": 2.99,
-          "sweep_index": 385,
-          "ob_index": 407
+          "sweep_index": 4624,
+          "ob_index": 4646
         },
         {
-          "index": 665,
+          "index": 4904,
           "direction": "bullish",
           "entry": 1.3227,
           "stop": 1.32246,
           "target": 1.32324,
           "rr": 2.21,
-          "sweep_index": 627,
-          "ob_index": 664
+          "sweep_index": 4866,
+          "ob_index": 4903
         }
       ],
-      "signal_count": 2,
-      "bullish": 2,
-      "bearish": 0,
-      "avg_rr": 2.6,
-      "span_days": 8.99,
-      "signals_per_month": 6.8,
-      "signals_per_week": 1.6
+      "signal_count": 10,
+      "bullish": 8,
+      "bearish": 2,
+      "avg_rr": 2.02,
+      "span_days": 72.28,
+      "signals_per_month": 4.2,
+      "signals_per_week": 1.0
     },
     {
       "symbol": "frxAUDUSD",
-      "candles": 760,
+      "candles": 5000,
       "signals": [
         {
-          "index": 150,
+          "index": 222,
+          "direction": "bullish",
+          "entry": 0.70031,
+          "stop": 0.70012,
+          "target": 0.7006,
+          "rr": 1.57,
+          "sweep_index": 215,
+          "ob_index": 221
+        },
+        {
+          "index": 903,
+          "direction": "bullish",
+          "entry": 0.70284,
+          "stop": 0.70264,
+          "target": 0.7033,
+          "rr": 2.18,
+          "sweep_index": 868,
+          "ob_index": 902
+        },
+        {
+          "index": 2956,
+          "direction": "bearish",
+          "entry": 0.71696,
+          "stop": 0.71715,
+          "target": 0.71662,
+          "rr": 1.84,
+          "sweep_index": 2935,
+          "ob_index": 2955
+        },
+        {
+          "index": 3594,
+          "direction": "bearish",
+          "entry": 0.72169,
+          "stop": 0.72183,
+          "target": 0.72145,
+          "rr": 1.86,
+          "sweep_index": 3562,
+          "ob_index": 3593
+        },
+        {
+          "index": 3855,
+          "direction": "bearish",
+          "entry": 0.71398,
+          "stop": 0.71405,
+          "target": 0.71376,
+          "rr": 2.63,
+          "sweep_index": 3831,
+          "ob_index": 3854
+        },
+        {
+          "index": 4153,
+          "direction": "bullish",
+          "entry": 0.71096,
+          "stop": 0.71088,
+          "target": 0.71116,
+          "rr": 2.59,
+          "sweep_index": 4135,
+          "ob_index": 4152
+        },
+        {
+          "index": 4389,
           "direction": "bullish",
           "entry": 0.71089,
           "stop": 0.7107,
           "target": 0.71145,
           "rr": 2.93,
-          "sweep_index": 105,
-          "ob_index": 149
+          "sweep_index": 4344,
+          "ob_index": 4388
         },
         {
-          "index": 199,
+          "index": 4438,
           "direction": "bearish",
           "entry": 0.7111,
           "stop": 0.71137,
           "target": 0.70971,
           "rr": 5.08,
-          "sweep_index": 175,
-          "ob_index": 198
+          "sweep_index": 4414,
+          "ob_index": 4437
         },
         {
-          "index": 276,
+          "index": 4515,
           "direction": "bullish",
           "entry": 0.70399,
           "stop": 0.70387,
           "target": 0.70428,
           "rr": 2.55,
-          "sweep_index": 243,
-          "ob_index": 275
+          "sweep_index": 4494,
+          "ob_index": 4514
         }
       ],
-      "signal_count": 3,
-      "bullish": 2,
-      "bearish": 1,
-      "avg_rr": 3.52,
-      "span_days": 8.99,
-      "signals_per_month": 10.2,
-      "signals_per_week": 2.3
+      "signal_count": 9,
+      "bullish": 5,
+      "bearish": 4,
+      "avg_rr": 2.58,
+      "span_days": 72.28,
+      "signals_per_month": 3.8,
+      "signals_per_week": 0.9
     }
   ]
 }

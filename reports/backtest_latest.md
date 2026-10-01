@@ -1,6 +1,6 @@
 # SMC Signal Bot — Backtest Report
 
-**Generated:** 2026-10-01T00:49:27Z
+**Generated:** 2026-10-01T01:15:03Z
 
 ## Configuration
 
@@ -23,8 +23,8 @@
 
 | Symbol | Candles | Signals | Bull | Bear | Avg R:R | Span (days) | Signals/Month | Signals/Week |
 |--------|---------|---------|------|------|---------|-------------|---------------|--------------|
-| frxEURUSD | 760 | 3 | 1 | 2 | 1:2.34 | 8.99 | 10.2 | 2.3 |
-| frxGBPUSD | 760 | 2 | 2 | 0 | 1:2.6 | 8.99 | 6.8 | 1.6 |
-| frxAUDUSD | 760 | 3 | 2 | 1 | 1:3.52 | 8.99 | 10.2 | 2.3 |
+| frxEURUSD | 5000 | 6 | 4 | 2 | 1:3.11 | 72.28 | 2.5 | 0.6 |
+| frxGBPUSD | 5000 | 10 | 8 | 2 | 1:2.02 | 72.28 | 4.2 | 1.0 |
+| frxAUDUSD | 5000 | 9 | 5 | 4 | 1:2.58 | 72.28 | 3.8 | 0.9 |
 
-**Total unique signals across all symbols:** 8
+**Total unique signals across all symbols:** 25
