@@ -1,4 +1,9 @@
-"""Backtest the SMC engine with spread + fill realism. Writes report to reports/."""
+"""Backtest the SMC engine with spread + fill realism. Writes report to reports/.
+
+Performance note: uses a ROLLING WINDOW for pattern detection to avoid O(n^2)
+blowup. Each bar only re-runs the SMC engine on the last WINDOW bars of context,
+not the full history. Signals are still simulated forward against the full series.
+"""
 
 import csv
 import json
@@ -19,39 +24,37 @@ from .smc import (
 from .patterns import detect_patterns
 
 
-BACKTEST_CANDLES = 15000      # ~150 days of M15
+BACKTEST_CANDLES = 6000       # ~62 days of M15 (fast + enough signals)
 WARMUP_BARS = 200
+
+# Rolling window: only look at this many bars of history when detecting.
+# Must be > MAX_OB_AGE_BARS + PATTERN_LOOKBACK_BARS + buffer.
+DETECT_WINDOW = 500
 
 
 def simulate_outcome(candles, entry_index, direction, entry, stop, target,
                      max_horizon, spread):
-    """Walk forward from entry_index.
-
-    Rules (conservative):
-      - Entry is the OB mid, adjusted by half-spread against us.
-      - If the ENTRY BAR itself pierced the stop (below stop for long), we
-        treat it as a same-bar loss (we can't know the intrabar order).
+    """Walk forward from entry_index. Conservative assumptions:
+      - Entry adjusted by half-spread against us.
+      - If the ENTRY BAR pierced the stop, count as loss (worst-case same-bar).
       - If a future candle touches both SL and TP, count as loss.
-      - Stop and target are adjusted by half-spread against us on exit.
     """
     half = spread / 2.0
 
     if direction == "bullish":
         entry_eff = entry + half
-        stop_eff = stop          # sell-side stops fill at stop price
-        target_eff = target - half  # sell at bid; target is bid-side
+        stop_eff = stop
+        target_eff = target - half
     else:
         entry_eff = entry - half
         stop_eff = stop
         target_eff = target + half
 
-    # Sanity check
     if direction == "bullish" and (entry_eff <= stop_eff or target_eff <= entry_eff):
         return "timeout", None, None, entry_eff, stop_eff, target_eff
     if direction == "bearish" and (entry_eff >= stop_eff or target_eff >= entry_eff):
         return "timeout", None, None, entry_eff, stop_eff, target_eff
 
-    # Same-bar SL check on the entry bar
     entry_bar = candles[entry_index]
     if direction == "bullish" and entry_bar["low"] <= stop_eff:
         return "loss", entry_index, stop_eff, entry_eff, stop_eff, target_eff
@@ -75,29 +78,35 @@ def simulate_outcome(candles, entry_index, direction, entry, stop, target,
 
 
 def backtest_symbol(symbol):
-    print(f"\n=== {symbol} ===")
+    print(f"\n=== {symbol} ===", flush=True)
     try:
         candles = fetch_candles_paginated(symbol, GRANULARITY, BACKTEST_CANDLES)
     except Exception as e:
-        print(f"  fetch failed: {e}")
-        return {"symbol": symbol, "error": str(e), "signals": [], "signal_count": 0}
+        print(f"  fetch failed: {e}", flush=True)
+        return {"symbol": symbol, "error": str(e), "signals": [], "trades": [], "signal_count": 0}
 
     if not candles or len(candles) < WARMUP_BARS + 50:
-        print(f"  not enough candles ({len(candles)})")
-        return {"symbol": symbol, "error": "insufficient_candles", "signals": [], "signal_count": 0}
+        print(f"  not enough candles ({len(candles)})", flush=True)
+        return {"symbol": symbol, "error": "insufficient_candles", "signals": [], "trades": [], "signal_count": 0}
 
-    print(f"  candles: {len(candles)}")
-
-    # Track ATR at each bar index for spread calc
-    atr_at_index = {}
+    n = len(candles)
+    print(f"  candles: {n}", flush=True)
 
     found = []
-    for i in range(WARMUP_BARS, len(candles)):
-        window = candles[: i + 1]
+    # Progress log every 500 bars
+    log_every = 500
+
+    for i in range(WARMUP_BARS, n):
+        if (i - WARMUP_BARS) % log_every == 0:
+            print(f"  scanning bar {i}/{n}", flush=True)
+
+        # Rolling window
+        start = max(0, i + 1 - DETECT_WINDOW)
+        window = candles[start : i + 1]
+
         atr = compute_atr(window, ATR_PERIOD)
         if atr is None:
             continue
-        atr_at_index[i] = atr
 
         swings = find_swings(window, SWING_LOOKBACK)
         bos_events, choch_events, _ = detect_bos_choch(window, swings)
@@ -115,9 +124,11 @@ def backtest_symbol(symbol):
                 "target": p.target,
                 "rr": p.rr,
                 "atr": atr,
-                "sweep_index": p.sweep.index,
-                "ob_index": p.ob.index,
+                "sweep_index": start + p.sweep.index,
+                "ob_index": start + p.ob.index,
             })
+
+    print(f"  raw patterns found: {len(found)}", flush=True)
 
     # Dedupe
     seen = set()
@@ -128,6 +139,8 @@ def backtest_symbol(symbol):
             continue
         seen.add(key)
         unique.append(r)
+
+    print(f"  unique signals: {len(unique)}", flush=True)
 
     wins = losses = timeouts = 0
     total_r_won = 0.0
@@ -144,7 +157,6 @@ def backtest_symbol(symbol):
             MAX_HORIZON_BARS, spread,
         )
 
-        # Effective RR after spread
         if r["direction"] == "bullish":
             risk_eff = entry_eff - stop_eff
             reward_eff = target_eff - entry_eff
@@ -156,9 +168,6 @@ def backtest_symbol(symbol):
         r["outcome"] = outcome
         r["hit_index"] = hit_idx
         r["rr_eff"] = round(rr_eff, 2)
-        r["entry_eff"] = round(entry_eff, 5)
-        r["stop_eff"] = round(stop_eff, 5)
-        r["target_eff"] = round(target_eff, 5)
 
         trades.append({
             "symbol": symbol,
@@ -226,15 +235,14 @@ def backtest_symbol(symbol):
         "signals_per_week": round(len(unique) / (span_days / 7), 1) if span_days > 0 else 0,
     }
 
-    print(f"  signals: {len(unique)}  (bull {result['bullish']} / bear {result['bearish']})")
-    print(f"  wins: {wins}  losses: {losses}  timeouts: {timeouts}")
-    print(f"  WIN RATE: {win_rate:.1f}%  (excluding timeouts)")
-    print(f"  avg R:R after spread: 1:{avg_rr:.2f}")
-    print(f"  expectancy: {expectancy:+.3f} R per signal")
-    print(f"  net R: {net_r:+.2f}  profit factor: {result['profit_factor']}")
-    print(f"  avg bars to win: {avg_bars_win:.1f}  to loss: {avg_bars_loss:.1f}")
-    print(f"  span: {span_days:.1f} days ({months:.1f} months)")
-    print(f"  signals/month: {result['signals_per_month']}")
+    print(f"  signals: {len(unique)}  (bull {result['bullish']} / bear {result['bearish']})", flush=True)
+    print(f"  wins: {wins}  losses: {losses}  timeouts: {timeouts}", flush=True)
+    print(f"  WIN RATE: {win_rate:.1f}%", flush=True)
+    print(f"  avg R:R after spread: 1:{avg_rr:.2f}", flush=True)
+    print(f"  expectancy: {expectancy:+.3f} R per signal", flush=True)
+    print(f"  net R: {net_r:+.2f}  profit factor: {result['profit_factor']}", flush=True)
+    print(f"  span: {span_days:.1f} days ({months:.1f} months)", flush=True)
+    print(f"  signals/month: {result['signals_per_month']}", flush=True)
 
     return result
 
@@ -247,7 +255,6 @@ def _write_reports(results, config_snapshot):
     with open(json_path, "w") as f:
         json.dump({"generated": generated, "config": config_snapshot, "results": results}, f, indent=2)
 
-    # Per-trade CSV
     trades_csv = os.path.join(REPORTS_DIR, "backtest_trades.csv")
     with open(trades_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
@@ -316,31 +323,32 @@ def _write_reports(results, config_snapshot):
     lines.append(f"- **Net R:** {total_net_r:+.2f}")
     lines.append("")
     lines.append("**Notes:**")
-    lines.append(f"- Spread modeled as {SPREAD_ATR_FRAC} × ATR, applied half on entry and half on exit.")
-    lines.append("- Fill assumed only when entry bar's range reached the OB midpoint.")
-    lines.append("- If the entry bar also pierced the stop, counted as a loss (worst-case same-bar).")
-    lines.append("- If a future candle touches both SL and TP, counted as a loss (worst-case).")
+    lines.append(f"- Spread modeled as {SPREAD_ATR_FRAC} × ATR, half on entry, half on exit.")
+    lines.append("- Rolling detection window to keep runtime manageable.")
+    lines.append("- Same-bar SL: counted as loss if entry bar pierced stop.")
+    lines.append("- Future bar hitting both SL and TP: counted as loss.")
     lines.append(f"- Max horizon: {MAX_HORIZON_BARS} bars.")
     lines.append("- Win rate excludes timeouts.")
-    lines.append(f"- Per-trade log: `reports/backtest_trades.csv`")
+    lines.append("- Per-trade log: `reports/backtest_trades.csv`")
 
     with open(md_path, "w") as f:
         f.write("\n".join(lines))
 
-    print(f"\nReports written:\n  {json_path}\n  {trades_csv}\n  {md_path}")
+    print(f"\nReports written:\n  {json_path}\n  {trades_csv}\n  {md_path}", flush=True)
 
 
 def main():
-    print(f"Backtest — timeframe {TIMEFRAME_LABEL}, {len(SYMBOLS)} symbols")
-    print(f"Requested candles per symbol: {BACKTEST_CANDLES}")
-    print(f"Spread model: {SPREAD_ATR_FRAC} × ATR")
-    print(f"Max horizon: {MAX_HORIZON_BARS} bars\n")
+    print(f"Backtest — timeframe {TIMEFRAME_LABEL}, {len(SYMBOLS)} symbols", flush=True)
+    print(f"Requested candles per symbol: {BACKTEST_CANDLES}", flush=True)
+    print(f"Detection window: last {DETECT_WINDOW} bars", flush=True)
+    print(f"Spread model: {SPREAD_ATR_FRAC} × ATR\n", flush=True)
 
     config_snapshot = {
         "timeframe": TIMEFRAME_LABEL,
         "granularity_sec": GRANULARITY,
         "candles_requested": BACKTEST_CANDLES,
         "warmup_bars": WARMUP_BARS,
+        "detect_window": DETECT_WINDOW,
         "max_horizon_bars": MAX_HORIZON_BARS,
         "spread_atr_frac": SPREAD_ATR_FRAC,
         "swing_lookback": SWING_LOOKBACK,
@@ -359,17 +367,17 @@ def main():
 
     _write_reports(results, config_snapshot)
 
-    print("\n" + "=" * 40)
-    print("SUMMARY")
-    print("=" * 40)
+    print("\n" + "=" * 40, flush=True)
+    print("SUMMARY", flush=True)
+    print("=" * 40, flush=True)
     total = 0
     for r in results:
         if "signal_count" in r:
             total += r["signal_count"]
             if r["signal_count"] > 0:
                 print(f"  {r['symbol']}: {r['signal_count']} signals, "
-                      f"{r['win_rate']}% WR, {r['expectancy_r']:+.3f} R/signal")
-    print(f"  TOTAL: {total}")
+                      f"{r['win_rate']}% WR, {r['expectancy_r']:+.3f} R/signal", flush=True)
+    print(f"  TOTAL: {total}", flush=True)
 
 
 if __name__ == "__main__":
