@@ -1,0 +1,138 @@
+{
+  "generated": "2026-10-01T00:49:27Z",
+  "config": {
+    "timeframe": "M15",
+    "granularity_sec": 900,
+    "candles_requested": 5000,
+    "warmup_bars": 100,
+    "swing_lookback": 2,
+    "atr_period": 14,
+    "eq_tolerance_atr": 0.15,
+    "displacement_atr_mult": 1.5,
+    "min_rr": 1.5,
+    "min_sweep_penetration_atr": 0.2,
+    "max_bars_sweep_to_entry": 80,
+    "max_ob_age_bars": 80
+  },
+  "results": [
+    {
+      "symbol": "frxEURUSD",
+      "candles": 760,
+      "signals": [
+        {
+          "index": 312,
+          "direction": "bullish",
+          "entry": 1.13787,
+          "stop": 1.13754,
+          "target": 1.13867,
+          "rr": 2.37,
+          "sweep_index": 292,
+          "ob_index": 311
+        },
+        {
+          "index": 395,
+          "direction": "bearish",
+          "entry": 1.13763,
+          "stop": 1.13778,
+          "target": 1.13741,
+          "rr": 1.52,
+          "sweep_index": 357,
+          "ob_index": 394
+        },
+        {
+          "index": 520,
+          "direction": "bearish",
+          "entry": 1.13683,
+          "stop": 1.13711,
+          "target": 1.13595,
+          "rr": 3.12,
+          "sweep_index": 500,
+          "ob_index": 519
+        }
+      ],
+      "signal_count": 3,
+      "bullish": 1,
+      "bearish": 2,
+      "avg_rr": 2.34,
+      "span_days": 8.99,
+      "signals_per_month": 10.2,
+      "signals_per_week": 2.3
+    },
+    {
+      "symbol": "frxGBPUSD",
+      "candles": 760,
+      "signals": [
+        {
+          "index": 408,
+          "direction": "bullish",
+          "entry": 1.32169,
+          "stop": 1.32147,
+          "target": 1.32236,
+          "rr": 2.99,
+          "sweep_index": 385,
+          "ob_index": 407
+        },
+        {
+          "index": 665,
+          "direction": "bullish",
+          "entry": 1.3227,
+          "stop": 1.32246,
+          "target": 1.32324,
+          "rr": 2.21,
+          "sweep_index": 627,
+          "ob_index": 664
+        }
+      ],
+      "signal_count": 2,
+      "bullish": 2,
+      "bearish": 0,
+      "avg_rr": 2.6,
+      "span_days": 8.99,
+      "signals_per_month": 6.8,
+      "signals_per_week": 1.6
+    },
+    {
+      "symbol": "frxAUDUSD",
+      "candles": 760,
+      "signals": [
+        {
+          "index": 150,
+          "direction": "bullish",
+          "entry": 0.71089,
+          "stop": 0.7107,
+          "target": 0.71145,
+          "rr": 2.93,
+          "sweep_index": 105,
+          "ob_index": 149
+        },
+        {
+          "index": 199,
+          "direction": "bearish",
+          "entry": 0.7111,
+          "stop": 0.71137,
+          "target": 0.70971,
+          "rr": 5.08,
+          "sweep_index": 175,
+          "ob_index": 198
+        },
+        {
+          "index": 276,
+          "direction": "bullish",
+          "entry": 0.70399,
+          "stop": 0.70387,
+          "target": 0.70428,
+          "rr": 2.55,
+          "sweep_index": 243,
+          "ob_index": 275
+        }
+      ],
+      "signal_count": 3,
+      "bullish": 2,
+      "bearish": 1,
+      "avg_rr": 3.52,
+      "span_days": 8.99,
+      "signals_per_month": 10.2,
+      "signals_per_week": 2.3
+    }
+  ]
+}
