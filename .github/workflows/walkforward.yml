@@ -1,0 +1,21 @@
+name: Walk-Forward
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: walkforward
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Run walk-forward
+        run: python -m src.backtest_walkforward
