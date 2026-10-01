@@ -1,10 +1,11 @@
 {
-  "generated": "2026-10-01T01:15:03Z",
+  "generated": "2026-10-01T02:01:07Z",
   "config": {
     "timeframe": "M15",
     "granularity_sec": 900,
     "candles_requested": 5000,
     "warmup_bars": 100,
+    "max_horizon_bars": 96,
     "swing_lookback": 2,
     "atr_period": 14,
     "eq_tolerance_atr": 0.15,
@@ -20,70 +21,91 @@
       "candles": 5000,
       "signals": [
         {
-          "index": 2218,
+          "index": 2215,
           "direction": "bullish",
           "entry": 1.16809,
           "stop": 1.16778,
           "target": 1.16883,
           "rr": 2.41,
-          "sweep_index": 2192,
-          "ob_index": 2217
+          "sweep_index": 2189,
+          "ob_index": 2214,
+          "outcome": "win",
+          "hit_index": 2216
         },
         {
-          "index": 2803,
+          "index": 2800,
           "direction": "bullish",
           "entry": 1.1641,
           "stop": 1.16391,
           "target": 1.16482,
           "rr": 4.02,
-          "sweep_index": 2775,
-          "ob_index": 2802
+          "sweep_index": 2772,
+          "ob_index": 2799,
+          "outcome": "win",
+          "hit_index": 2801
         },
         {
-          "index": 3129,
+          "index": 3126,
           "direction": "bullish",
           "entry": 1.15895,
           "stop": 1.15887,
           "target": 1.15939,
           "rr": 5.34,
-          "sweep_index": 3110,
-          "ob_index": 3128
+          "sweep_index": 3107,
+          "ob_index": 3125,
+          "outcome": "loss",
+          "hit_index": 3128
         },
         {
-          "index": 4552,
+          "index": 4549,
           "direction": "bullish",
           "entry": 1.13787,
           "stop": 1.13754,
           "target": 1.13864,
           "rr": 2.28,
-          "sweep_index": 4537,
-          "ob_index": 4551
+          "sweep_index": 4534,
+          "ob_index": 4548,
+          "outcome": "win",
+          "hit_index": 4550
         },
         {
-          "index": 4635,
+          "index": 4632,
           "direction": "bearish",
           "entry": 1.13763,
           "stop": 1.13778,
           "target": 1.13741,
           "rr": 1.52,
-          "sweep_index": 4597,
-          "ob_index": 4634
+          "sweep_index": 4594,
+          "ob_index": 4631,
+          "outcome": "win",
+          "hit_index": 4633
         },
         {
-          "index": 4760,
+          "index": 4757,
           "direction": "bearish",
           "entry": 1.13683,
           "stop": 1.13711,
           "target": 1.13595,
           "rr": 3.12,
-          "sweep_index": 4740,
-          "ob_index": 4759
+          "sweep_index": 4737,
+          "ob_index": 4756,
+          "outcome": "win",
+          "hit_index": 4759
         }
       ],
       "signal_count": 6,
       "bullish": 4,
       "bearish": 2,
       "avg_rr": 3.11,
+      "wins": 5,
+      "losses": 1,
+      "timeouts": 0,
+      "win_rate": 83.3,
+      "expectancy_r": 2.058,
+      "net_r": 12.35,
+      "profit_factor": 13.35,
+      "avg_bars_to_win": 1.2,
+      "avg_bars_to_loss": 2.0,
       "span_days": 72.28,
       "signals_per_month": 2.5,
       "signals_per_week": 0.6
@@ -93,110 +115,139 @@
       "candles": 5000,
       "signals": [
         {
-          "index": 112,
+          "index": 109,
           "direction": "bearish",
           "entry": 1.34336,
           "stop": 1.34366,
           "target": 1.3429,
           "rr": 1.6,
-          "sweep_index": 95,
-          "ob_index": 111
+          "sweep_index": 92,
+          "ob_index": 108,
+          "outcome": "win",
+          "hit_index": 110
         },
         {
-          "index": 303,
+          "index": 300,
           "direction": "bullish",
           "entry": 1.33755,
           "stop": 1.33745,
           "target": 1.33771,
           "rr": 1.59,
-          "sweep_index": 281,
-          "ob_index": 302
+          "sweep_index": 278,
+          "ob_index": 299,
+          "outcome": "win",
+          "hit_index": 301
         },
         {
-          "index": 1143,
+          "index": 1140,
           "direction": "bearish",
           "entry": 1.34526,
           "stop": 1.34549,
           "target": 1.34488,
           "rr": 1.73,
-          "sweep_index": 1115,
-          "ob_index": 1142
+          "sweep_index": 1112,
+          "ob_index": 1139,
+          "outcome": "loss",
+          "hit_index": 1141
         },
         {
-          "index": 1397,
+          "index": 1394,
           "direction": "bullish",
           "entry": 1.34474,
           "stop": 1.34436,
           "target": 1.34581,
           "rr": 2.85,
-          "sweep_index": 1383,
-          "ob_index": 1396
+          "sweep_index": 1380,
+          "ob_index": 1393,
+          "outcome": "win",
+          "hit_index": 1395
         },
         {
-          "index": 1461,
+          "index": 1458,
           "direction": "bullish",
           "entry": 1.34939,
           "stop": 1.34914,
           "target": 1.34979,
           "rr": 1.65,
-          "sweep_index": 1431,
-          "ob_index": 1460
+          "sweep_index": 1428,
+          "ob_index": 1457,
+          "outcome": "win",
+          "hit_index": 1459
         },
         {
-          "index": 1526,
+          "index": 1523,
           "direction": "bullish",
           "entry": 1.35076,
           "stop": 1.35065,
           "target": 1.35095,
           "rr": 1.68,
-          "sweep_index": 1516,
-          "ob_index": 1525
+          "sweep_index": 1513,
+          "ob_index": 1522,
+          "outcome": "win",
+          "hit_index": 1524
         },
         {
-          "index": 2707,
+          "index": 2704,
           "direction": "bullish",
           "entry": 1.35765,
           "stop": 1.35729,
           "target": 1.35839,
           "rr": 2.0,
-          "sweep_index": 2671,
-          "ob_index": 2706
+          "sweep_index": 2668,
+          "ob_index": 2703,
+          "outcome": "win",
+          "hit_index": 2705
         },
         {
-          "index": 3328,
+          "index": 3325,
           "direction": "bullish",
           "entry": 1.35163,
           "stop": 1.35133,
           "target": 1.35221,
           "rr": 1.94,
-          "sweep_index": 3316,
-          "ob_index": 3327
+          "sweep_index": 3313,
+          "ob_index": 3324,
+          "outcome": "win",
+          "hit_index": 3326
         },
         {
-          "index": 4647,
+          "index": 4644,
           "direction": "bullish",
           "entry": 1.32169,
           "stop": 1.32147,
           "target": 1.32236,
           "rr": 2.99,
-          "sweep_index": 4624,
-          "ob_index": 4646
+          "sweep_index": 4621,
+          "ob_index": 4643,
+          "outcome": "win",
+          "hit_index": 4645
         },
         {
-          "index": 4904,
+          "index": 4901,
           "direction": "bullish",
           "entry": 1.3227,
           "stop": 1.32246,
           "target": 1.32324,
           "rr": 2.21,
-          "sweep_index": 4866,
-          "ob_index": 4903
+          "sweep_index": 4863,
+          "ob_index": 4900,
+          "outcome": "win",
+          "hit_index": 4907
         }
       ],
       "signal_count": 10,
       "bullish": 8,
       "bearish": 2,
       "avg_rr": 2.02,
+      "wins": 9,
+      "losses": 1,
+      "timeouts": 0,
+      "win_rate": 90.0,
+      "expectancy_r": 1.751,
+      "net_r": 17.51,
+      "profit_factor": 18.51,
+      "avg_bars_to_win": 1.6,
+      "avg_bars_to_loss": 1.0,
       "span_days": 72.28,
       "signals_per_month": 4.2,
       "signals_per_week": 1.0
@@ -206,100 +257,127 @@
       "candles": 5000,
       "signals": [
         {
-          "index": 222,
+          "index": 219,
           "direction": "bullish",
           "entry": 0.70031,
           "stop": 0.70012,
           "target": 0.7006,
           "rr": 1.57,
-          "sweep_index": 215,
-          "ob_index": 221
+          "sweep_index": 212,
+          "ob_index": 218,
+          "outcome": "win",
+          "hit_index": 220
         },
         {
-          "index": 903,
+          "index": 900,
           "direction": "bullish",
           "entry": 0.70284,
           "stop": 0.70264,
           "target": 0.7033,
           "rr": 2.18,
-          "sweep_index": 868,
-          "ob_index": 902
+          "sweep_index": 865,
+          "ob_index": 899,
+          "outcome": "win",
+          "hit_index": 901
         },
         {
-          "index": 2956,
+          "index": 2953,
           "direction": "bearish",
           "entry": 0.71696,
           "stop": 0.71715,
           "target": 0.71662,
           "rr": 1.84,
-          "sweep_index": 2935,
-          "ob_index": 2955
+          "sweep_index": 2932,
+          "ob_index": 2952,
+          "outcome": "win",
+          "hit_index": 2954
         },
         {
-          "index": 3594,
+          "index": 3591,
           "direction": "bearish",
           "entry": 0.72169,
           "stop": 0.72183,
           "target": 0.72145,
           "rr": 1.86,
-          "sweep_index": 3562,
-          "ob_index": 3593
+          "sweep_index": 3559,
+          "ob_index": 3590,
+          "outcome": "win",
+          "hit_index": 3592
         },
         {
-          "index": 3855,
+          "index": 3852,
           "direction": "bearish",
           "entry": 0.71398,
           "stop": 0.71405,
           "target": 0.71376,
           "rr": 2.63,
-          "sweep_index": 3831,
-          "ob_index": 3854
+          "sweep_index": 3828,
+          "ob_index": 3851,
+          "outcome": "win",
+          "hit_index": 3853
         },
         {
-          "index": 4153,
+          "index": 4150,
           "direction": "bullish",
           "entry": 0.71096,
           "stop": 0.71088,
           "target": 0.71116,
           "rr": 2.59,
-          "sweep_index": 4135,
-          "ob_index": 4152
+          "sweep_index": 4132,
+          "ob_index": 4149,
+          "outcome": "win",
+          "hit_index": 4151
         },
         {
-          "index": 4389,
+          "index": 4386,
           "direction": "bullish",
           "entry": 0.71089,
           "stop": 0.7107,
           "target": 0.71145,
           "rr": 2.93,
-          "sweep_index": 4344,
-          "ob_index": 4388
+          "sweep_index": 4341,
+          "ob_index": 4385,
+          "outcome": "win",
+          "hit_index": 4387
         },
         {
-          "index": 4438,
+          "index": 4435,
           "direction": "bearish",
           "entry": 0.7111,
           "stop": 0.71137,
           "target": 0.70971,
           "rr": 5.08,
-          "sweep_index": 4414,
-          "ob_index": 4437
+          "sweep_index": 4411,
+          "ob_index": 4434,
+          "outcome": "win",
+          "hit_index": 4453
         },
         {
-          "index": 4515,
+          "index": 4512,
           "direction": "bullish",
           "entry": 0.70399,
           "stop": 0.70387,
           "target": 0.70428,
           "rr": 2.55,
-          "sweep_index": 4494,
-          "ob_index": 4514
+          "sweep_index": 4491,
+          "ob_index": 4511,
+          "outcome": "loss",
+          "hit_index": 4513
         }
       ],
       "signal_count": 9,
       "bullish": 5,
       "bearish": 4,
       "avg_rr": 2.58,
+      "wins": 8,
+      "losses": 1,
+      "timeouts": 0,
+      "win_rate": 88.9,
+      "expectancy_r": 2.187,
+      "net_r": 19.68,
+      "profit_factor": 20.68,
+      "avg_bars_to_win": 3.1,
+      "avg_bars_to_loss": 1.0,
       "span_days": 72.28,
       "signals_per_month": 3.8,
       "signals_per_week": 0.9
