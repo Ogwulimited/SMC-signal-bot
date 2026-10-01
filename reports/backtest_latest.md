@@ -1,6 +1,6 @@
 # SMC Signal Bot — Backtest Report
 
-**Generated:** 2026-10-01T16:56:34Z
+**Generated:** 2026-10-01T17:32:46Z
 
 ## Configuration
 
@@ -26,25 +26,25 @@
 
 | Symbol | Candles | Signals | Bull | Bear | Avg R:R (after spread) | Span (days) | Signals/Month | Signals/Week |
 |--------|---------|---------|------|------|------------------------|-------------|---------------|--------------|
-| frxEURUSD | 6000 | 5 | 3 | 2 | 1:2.75 | 85.91 | 1.8 | 0.4 |
-| frxGBPUSD | 6000 | 10 | 9 | 1 | 1:2.07 | 85.91 | 3.5 | 0.8 |
-| frxAUDUSD | 6000 | 11 | 6 | 5 | 1:2.31 | 85.91 | 3.9 | 0.9 |
+| frxEURUSD | 6000 | 4 | 3 | 1 | 1:2.59 | 85.91 | 1.4 | 0.3 |
+| frxGBPUSD | 6000 | 6 | 6 | 0 | 1:2.06 | 85.91 | 2.1 | 0.5 |
+| frxAUDUSD | 6000 | 6 | 3 | 3 | 1:2.22 | 85.91 | 2.1 | 0.5 |
 
 ## Performance
 
 | Symbol | Wins | Losses | Timeouts | Win Rate | Expectancy (R) | Net R | Profit Factor | Avg Bars to Win | Avg Bars to Loss |
 |--------|------|--------|----------|----------|----------------|-------|---------------|-----------------|------------------|
-| frxEURUSD | 4 | 1 | 0 | 80.0% | +1.563 | +7.82 | 8.82 | 1.2 | 0.0 |
-| frxGBPUSD | 9 | 1 | 0 | 90.0% | +1.673 | +16.73 | 17.73 | 1.6 | 0.0 |
-| frxAUDUSD | 8 | 3 | 0 | 72.7% | +1.469 | +16.15 | 6.38 | 3.1 | 0.0 |
+| frxEURUSD | 3 | 1 | 0 | 75.0% | +1.363 | +5.45 | 6.45 | 1.3 | 0.0 |
+| frxGBPUSD | 5 | 1 | 0 | 83.3% | +1.499 | +8.99 | 9.99 | 2.0 | 0.0 |
+| frxAUDUSD | 6 | 0 | 0 | 100.0% | +2.215 | +13.29 | 999.0 | 3.8 | 0 |
 
 ## Aggregate (all symbols)
 
-- **Total signals:** 26
-- **Wins / Losses / Timeouts:** 21 / 5 / 0
-- **Overall win rate:** 80.8%
-- **Overall expectancy:** +1.565 R per signal
-- **Net R:** +40.70
+- **Total signals:** 16
+- **Wins / Losses / Timeouts:** 14 / 2 / 0
+- **Overall win rate:** 87.5%
+- **Overall expectancy:** +1.733 R per signal
+- **Net R:** +27.73
 
 **Notes:**
 - Spread modeled as 0.04 × ATR, half on entry, half on exit.
