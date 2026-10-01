@@ -1,10 +1,13 @@
 """Detects the Reversal_SingleSweep SMC pattern and derives entry/SL/TP."""
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
-from .smc import Sweep, CHoCH, BOS, OrderBlock, LiquidityPool
-from .config import PATTERN_LOOKBACK_BARS, BUFFER_ATR, MIN_RR
+from .smc import Sweep, CHoCH, BOS, OrderBlock
+from .config import (
+    PATTERN_LOOKBACK_BARS, BUFFER_ATR, MIN_RR,
+    MIN_SWEEP_PENETRATION_ATR, MAX_BARS_SWEEP_TO_ENTRY, MAX_OB_AGE_BARS,
+)
 
 
 @dataclass
@@ -39,8 +42,24 @@ def _nearest_target_below(pools, price):
     return max(candidates, key=lambda p: p.price).price if candidates else None
 
 
+def _sweep_penetration(candles, sweep):
+    c = candles[sweep.index]
+    if sweep.direction == "up":
+        return c["high"] - sweep.pool_price
+    return sweep.pool_price - c["low"]
+
+
+def _ob_already_tapped(candles, ob, before_idx):
+    """Was the OB zone tapped by any candle strictly between ob.index and before_idx?"""
+    for k in range(ob.index + 1, before_idx):
+        c = candles[k]
+        if c["low"] <= ob.high and c["high"] >= ob.low:
+            return True
+    return False
+
+
 def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
-    """Return patterns whose OB zone is retraced by the latest candle."""
+    """Return patterns whose OB zone is first-tapped by the latest candle."""
     if atr is None or not candles:
         return []
 
@@ -48,8 +67,15 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
     last_idx = len(candles) - 1
     last_candle = candles[last_idx]
     buffer = BUFFER_ATR * atr
+    min_pen = MIN_SWEEP_PENETRATION_ATR * atr
 
     for sweep in sweeps:
+        # --- Sweep quality filters ---
+        if last_idx - sweep.index > MAX_BARS_SWEEP_TO_ENTRY:
+            continue
+        if _sweep_penetration(candles, sweep) < min_pen:
+            continue
+
         # ---- Bullish reversal: swept a low, expecting CHoCH up + BOS up ----
         if sweep.direction == "down":
             choch = next(
@@ -76,7 +102,13 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
             if ob is None:
                 continue
 
-            # Retrace: latest candle tapped the OB zone
+            # --- OB freshness filters ---
+            if last_idx - ob.index > MAX_OB_AGE_BARS:
+                continue
+            if _ob_already_tapped(candles, ob, last_idx):
+                continue
+
+            # Retrace: latest candle tapped the OB zone for the first time
             if not (last_candle["low"] <= ob.high and last_candle["high"] >= ob.low):
                 continue
 
@@ -118,6 +150,11 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
                 None,
             )
             if ob is None:
+                continue
+
+            if last_idx - ob.index > MAX_OB_AGE_BARS:
+                continue
+            if _ob_already_tapped(candles, ob, last_idx):
                 continue
 
             if not (last_candle["low"] <= ob.high and last_candle["high"] >= ob.low):
