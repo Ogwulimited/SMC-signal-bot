@@ -15,17 +15,22 @@ TIMEFRAME_LABEL = "M15"
 # ----- Data -----
 CANDLE_COUNT = 200
 
-# Deriv public WebSocket endpoint (app_id=1089 is the public/demo id)
+# Deriv production WebSocket endpoint
 DERIV_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 
 # ----- SMC parameters -----
-SWING_LOOKBACK = 2              # bars before/after to confirm a swing
+SWING_LOOKBACK = 2                  # bars before/after to confirm a swing
 ATR_PERIOD = 14
-EQ_TOLERANCE_ATR = 0.15         # equal highs/lows tolerance (fraction of ATR)
-BUFFER_ATR = 0.10               # stop-loss buffer beyond structural level
-DISPLACEMENT_ATR_MULT = 1.5     # displacement candle range vs ATR
-MIN_RR = 1.0                    # minimum structural R:R to fire a signal
-PATTERN_LOOKBACK_BARS = 30      # max bars between sweep -> CHoCH -> BOS
+EQ_TOLERANCE_ATR = 0.15             # equal highs/lows tolerance (fraction of ATR)
+BUFFER_ATR = 0.10                   # stop-loss buffer beyond structural level
+DISPLACEMENT_ATR_MULT = 1.5         # displacement candle range vs ATR
+MIN_RR = 1.5                        # minimum structural R:R to fire a signal
+PATTERN_LOOKBACK_BARS = 30          # max bars between sweep -> CHoCH -> BOS
+
+# Quality filters (added after first backtest showed excessive signal count)
+MIN_SWEEP_PENETRATION_ATR = 0.20    # sweep must pierce pool by at least this * ATR
+MAX_BARS_SWEEP_TO_ENTRY = 80        # sweep must be within last 80 bars of entry
+MAX_OB_AGE_BARS = 80                # OB must be created within last 80 bars
 
 # ----- Telegram -----
 TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
@@ -37,3 +42,6 @@ STATE_FILE = "state.json"
 # Cooldown between signals for the same symbol/direction (seconds).
 # Prevents duplicate/spam signals when a pattern retraces over multiple candles.
 SIGNAL_COOLDOWN_SECONDS = 4 * 3600  # 4 hours
+
+# ----- Reports -----
+REPORTS_DIR = "reports"
