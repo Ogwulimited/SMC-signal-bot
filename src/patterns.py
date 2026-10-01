@@ -7,6 +7,7 @@ from .smc import Sweep, CHoCH, BOS, OrderBlock
 from .config import (
     PATTERN_LOOKBACK_BARS, BUFFER_ATR, MIN_RR,
     MIN_SWEEP_PENETRATION_ATR, MAX_BARS_SWEEP_TO_ENTRY, MAX_OB_AGE_BARS,
+    MIN_OB_WIDTH_ATR, MIN_TARGET_ATR,
 )
 
 
@@ -58,10 +59,11 @@ def _ob_already_tapped(candles, ob, before_idx):
 
 
 def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
-    """Return patterns where the CURRENT bar produced a REAL fill at entry.
+    """Detect patterns where the CURRENT bar produced a REAL fill at entry.
 
-    A fill is real only if the bar's range actually reached the entry price
-    (OB midpoint), not just the outer edge of the OB zone.
+    Additional realism filters:
+      - OB zone must be at least MIN_OB_WIDTH_ATR * ATR wide.
+      - Target must be at least MIN_TARGET_ATR * ATR away from entry.
     """
     if atr is None or not candles:
         return []
@@ -71,6 +73,8 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
     last_candle = candles[last_idx]
     buffer = BUFFER_ATR * atr
     min_pen = MIN_SWEEP_PENETRATION_ATR * atr
+    min_ob_w = MIN_OB_WIDTH_ATR * atr
+    min_target_dist = MIN_TARGET_ATR * atr
 
     for sweep in sweeps:
         if last_idx - sweep.index > MAX_BARS_SWEEP_TO_ENTRY:
@@ -104,20 +108,28 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
             if ob is None:
                 continue
 
+            # OB freshness + width
             if last_idx - ob.index > MAX_OB_AGE_BARS:
+                continue
+            if (ob.high - ob.low) < min_ob_w:
                 continue
             if _ob_already_tapped(candles, ob, last_idx):
                 continue
 
-            # FILL REALISM: current bar's low must have reached entry (OB mid)
+            # Real fill check
             entry = (ob.high + ob.low) / 2
             if last_candle["low"] > entry:
-                continue  # bar only grazed the top of the OB — no fill
+                continue
 
             stop = ob.low - buffer
             target = _nearest_target_above(pools, entry)
             if target is None or target <= entry or entry <= stop:
                 continue
+
+            # Minimum target distance
+            if (target - entry) < min_target_dist:
+                continue
+
             rr = (target - entry) / (entry - stop)
             if rr < MIN_RR:
                 continue
@@ -155,18 +167,23 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
 
             if last_idx - ob.index > MAX_OB_AGE_BARS:
                 continue
+            if (ob.high - ob.low) < min_ob_w:
+                continue
             if _ob_already_tapped(candles, ob, last_idx):
                 continue
 
-            # FILL REALISM: current bar's high must have reached entry (OB mid)
             entry = (ob.high + ob.low) / 2
             if last_candle["high"] < entry:
-                continue  # bar only grazed the bottom of the OB — no fill
+                continue
 
             stop = ob.high + buffer
             target = _nearest_target_below(pools, entry)
             if target is None or target >= entry or stop <= entry:
                 continue
+
+            if (entry - target) < min_target_dist:
+                continue
+
             rr = (entry - target) / (stop - entry)
             if rr < MIN_RR:
                 continue
