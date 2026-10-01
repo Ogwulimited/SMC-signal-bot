@@ -16,7 +16,7 @@ TIMEFRAME_LABEL = "M15"
 CANDLE_COUNT = 200
 
 # Deriv public WebSocket endpoint (app_id=1089 is the public/demo id)
-DERIV_WS_URL = "wss://ws.derivws.com/websockets/v3?app_id=1089"
+DERIV_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 
 # ----- SMC parameters -----
 SWING_LOOKBACK = 2              # bars before/after to confirm a swing
