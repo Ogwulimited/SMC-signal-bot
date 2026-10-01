@@ -22,12 +22,21 @@ BACKTEST_CANDLES = 5000
 WARMUP_BARS = 100
 
 
-def simulate_outcome(candles, entry_index, direction, stop, target, max_horizon):
-    """Walk forward from entry_index+1. Return (outcome, hit_index, hit_price).
+def simulate_outcome(candles, entry_index, direction, entry, stop, target, max_horizon):
+    """Walk forward from entry_index+1.
 
-    outcome in {"win", "loss", "timeout"}.
-    Conservative: if a candle touches both SL and TP, count as loss.
+    Conservative assumptions:
+      - Same-bar SL check: if the ENTRY BAR itself also pierced the stop, count as loss
+        (we can't know intra-bar order, so assume worst case).
+      - If a future candle touches both SL and TP, count as loss.
     """
+    # Same-bar SL check (before checking future bars)
+    entry_bar = candles[entry_index]
+    if direction == "bullish" and entry_bar["low"] <= stop:
+        return "loss", entry_index, stop
+    if direction == "bearish" and entry_bar["high"] >= stop:
+        return "loss", entry_index, stop
+
     end = min(entry_index + 1 + max_horizon, len(candles))
     for k in range(entry_index + 1, end):
         c = candles[k]
@@ -36,7 +45,7 @@ def simulate_outcome(candles, entry_index, direction, stop, target, max_horizon)
                 return "loss", k, stop
             if c["high"] >= target:
                 return "win", k, target
-        else:  # bearish
+        else:
             if c["high"] >= stop:
                 return "loss", k, stop
             if c["low"] <= target:
@@ -58,7 +67,6 @@ def backtest_symbol(symbol):
 
     print(f"  candles: {len(candles)}")
 
-    # ---- 1. Detect all patterns across history ----
     found = []
     for i in range(WARMUP_BARS, len(candles)):
         window = candles[: i + 1]
@@ -84,7 +92,7 @@ def backtest_symbol(symbol):
                 "ob_index": p.ob.index,
             })
 
-    # ---- 2. Dedupe (same direction + entry + target = same signal) ----
+    # Dedupe: same direction + same entry + same target = same signal
     seen = set()
     unique = []
     for r in found:
@@ -94,7 +102,6 @@ def backtest_symbol(symbol):
         seen.add(key)
         unique.append(r)
 
-    # ---- 3. Simulate each unique signal forward ----
     wins = losses = timeouts = 0
     total_r_won = 0.0
     loss_r = 0.0
@@ -103,7 +110,8 @@ def backtest_symbol(symbol):
 
     for r in unique:
         outcome, hit_idx, hit_price = simulate_outcome(
-            candles, r["index"], r["direction"], r["stop"], r["target"], MAX_HORIZON_BARS
+            candles, r["index"], r["direction"],
+            r["entry"], r["stop"], r["target"], MAX_HORIZON_BARS,
         )
         r["outcome"] = outcome
         r["hit_index"] = hit_idx
@@ -123,15 +131,11 @@ def backtest_symbol(symbol):
     resolved = wins + losses
     win_rate = (wins / resolved * 100) if resolved > 0 else 0.0
 
-    # Expectancy in R units, per signal (timeouts count as 0R)
     total_signals = len(unique)
     net_r = total_r_won - loss_r
     expectancy = (net_r / total_signals) if total_signals > 0 else 0.0
+    profit_factor = (total_r_won / loss_r) if loss_r > 0 else (999.0 if total_r_won > 0 else 0.0)
 
-    # Profit factor = gross win R / gross loss R
-    profit_factor = (total_r_won / loss_r) if loss_r > 0 else (float("inf") if total_r_won > 0 else 0.0)
-
-    # ---- 4. Timing ----
     first_epoch = candles[WARMUP_BARS]["epoch"]
     last_epoch = candles[-1]["epoch"]
     span_days = (last_epoch - first_epoch) / 86400
@@ -155,7 +159,7 @@ def backtest_symbol(symbol):
         "win_rate": round(win_rate, 1),
         "expectancy_r": round(expectancy, 3),
         "net_r": round(net_r, 2),
-        "profit_factor": round(profit_factor, 2) if profit_factor != float("inf") else 999.0,
+        "profit_factor": round(profit_factor, 2),
         "avg_bars_to_win": round(avg_bars_win, 1),
         "avg_bars_to_loss": round(avg_bars_loss, 1),
         "span_days": round(span_days, 2),
@@ -180,16 +184,10 @@ def _write_reports(results, config_snapshot):
     os.makedirs(REPORTS_DIR, exist_ok=True)
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # JSON report
     json_path = os.path.join(REPORTS_DIR, "backtest_latest.json")
     with open(json_path, "w") as f:
-        json.dump({
-            "generated": generated,
-            "config": config_snapshot,
-            "results": results,
-        }, f, indent=2)
+        json.dump({"generated": generated, "config": config_snapshot, "results": results}, f, indent=2)
 
-    # Markdown report
     md_path = os.path.join(REPORTS_DIR, "backtest_latest.md")
     lines = []
     lines.append("# SMC Signal Bot — Backtest Report\n")
@@ -230,7 +228,6 @@ def _write_reports(results, config_snapshot):
         )
     lines.append("")
 
-    # Aggregate
     total_signals = sum(r.get("signal_count", 0) for r in results)
     total_wins = sum(r.get("wins", 0) for r in results)
     total_losses = sum(r.get("losses", 0) for r in results)
@@ -248,9 +245,11 @@ def _write_reports(results, config_snapshot):
     lines.append(f"- **Net R:** {total_net_r:+.2f}")
     lines.append("")
     lines.append("**Notes:**")
-    lines.append("- Win rate excludes timeouts (signals that hit neither TP nor SL within the horizon).")
-    lines.append("- Conservative assumption: if a single candle touches both SL and TP, it is counted as a loss.")
+    lines.append("- Fill assumed only when entry bar's range reached the OB midpoint.")
+    lines.append("- If the entry bar also pierced the stop, counted as a loss (worst-case same-bar).")
+    lines.append("- If a future candle touches both SL and TP, counted as a loss (worst-case).")
     lines.append(f"- Max horizon: {MAX_HORIZON_BARS} bars.")
+    lines.append("- Win rate excludes timeouts.")
 
     with open(md_path, "w") as f:
         f.write("\n".join(lines))
