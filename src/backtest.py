@@ -1,19 +1,19 @@
 """Backtest the SMC engine with spread + fill realism. Writes report to reports/.
 
-Performance note: uses a ROLLING WINDOW for pattern detection to avoid O(n^2)
-blowup. Each bar only re-runs the SMC engine on the last WINDOW bars of context,
-not the full history. Signals are still simulated forward against the full series.
+Uses a rolling detection window to keep runtime manageable across many symbols.
 """
 
 import csv
 import json
 import os
+import sys
 from datetime import datetime, timezone
 
 from .config import (
     SYMBOLS, GRANULARITY, TIMEFRAME_LABEL,
     SWING_LOOKBACK, ATR_PERIOD, EQ_TOLERANCE_ATR, DISPLACEMENT_ATR_MULT,
     MIN_RR, MIN_SWEEP_PENETRATION_ATR, MAX_BARS_SWEEP_TO_ENTRY, MAX_OB_AGE_BARS,
+    MIN_OB_WIDTH_ATR, MIN_TARGET_ATR,
     MAX_HORIZON_BARS, SPREAD_ATR_FRAC, REPORTS_DIR,
 )
 from .deriv_client import fetch_candles_paginated
@@ -24,21 +24,17 @@ from .smc import (
 from .patterns import detect_patterns
 
 
-BACKTEST_CANDLES = 6000       # ~62 days of M15 (fast + enough signals)
+BACKTEST_CANDLES = 12000      # ~125 days of M15
 WARMUP_BARS = 200
-
-# Rolling window: only look at this many bars of history when detecting.
-# Must be > MAX_OB_AGE_BARS + PATTERN_LOOKBACK_BARS + buffer.
 DETECT_WINDOW = 500
+
+
+def log(msg):
+    print(msg, flush=True)
 
 
 def simulate_outcome(candles, entry_index, direction, entry, stop, target,
                      max_horizon, spread):
-    """Walk forward from entry_index. Conservative assumptions:
-      - Entry adjusted by half-spread against us.
-      - If the ENTRY BAR pierced the stop, count as loss (worst-case same-bar).
-      - If a future candle touches both SL and TP, count as loss.
-    """
     half = spread / 2.0
 
     if direction == "bullish":
@@ -77,30 +73,28 @@ def simulate_outcome(candles, entry_index, direction, entry, stop, target,
     return "timeout", None, None, entry_eff, stop_eff, target_eff
 
 
-def backtest_symbol(symbol):
-    print(f"\n=== {symbol} ===", flush=True)
+def backtest_symbol(symbol, idx, total):
+    log(f"\n[{idx}/{total}] === {symbol} ===")
     try:
         candles = fetch_candles_paginated(symbol, GRANULARITY, BACKTEST_CANDLES)
     except Exception as e:
-        print(f"  fetch failed: {e}", flush=True)
+        log(f"  fetch failed: {e}")
         return {"symbol": symbol, "error": str(e), "signals": [], "trades": [], "signal_count": 0}
 
     if not candles or len(candles) < WARMUP_BARS + 50:
-        print(f"  not enough candles ({len(candles)})", flush=True)
+        log(f"  not enough candles ({len(candles)})")
         return {"symbol": symbol, "error": "insufficient_candles", "signals": [], "trades": [], "signal_count": 0}
 
     n = len(candles)
-    print(f"  candles: {n}", flush=True)
+    log(f"  candles: {n}")
 
     found = []
-    # Progress log every 500 bars
-    log_every = 500
+    log_every = 2000
 
     for i in range(WARMUP_BARS, n):
         if (i - WARMUP_BARS) % log_every == 0:
-            print(f"  scanning bar {i}/{n}", flush=True)
+            log(f"  scanning bar {i}/{n}")
 
-        # Rolling window
         start = max(0, i + 1 - DETECT_WINDOW)
         window = candles[start : i + 1]
 
@@ -124,13 +118,10 @@ def backtest_symbol(symbol):
                 "target": p.target,
                 "rr": p.rr,
                 "atr": atr,
-                "sweep_index": start + p.sweep.index,
-                "ob_index": start + p.ob.index,
             })
 
-    print(f"  raw patterns found: {len(found)}", flush=True)
+    log(f"  raw patterns found: {len(found)}")
 
-    # Dedupe
     seen = set()
     unique = []
     for r in found:
@@ -140,7 +131,7 @@ def backtest_symbol(symbol):
         seen.add(key)
         unique.append(r)
 
-    print(f"  unique signals: {len(unique)}", flush=True)
+    log(f"  unique signals: {len(unique)}")
 
     wins = losses = timeouts = 0
     total_r_won = 0.0
@@ -235,14 +226,9 @@ def backtest_symbol(symbol):
         "signals_per_week": round(len(unique) / (span_days / 7), 1) if span_days > 0 else 0,
     }
 
-    print(f"  signals: {len(unique)}  (bull {result['bullish']} / bear {result['bearish']})", flush=True)
-    print(f"  wins: {wins}  losses: {losses}  timeouts: {timeouts}", flush=True)
-    print(f"  WIN RATE: {win_rate:.1f}%", flush=True)
-    print(f"  avg R:R after spread: 1:{avg_rr:.2f}", flush=True)
-    print(f"  expectancy: {expectancy:+.3f} R per signal", flush=True)
-    print(f"  net R: {net_r:+.2f}  profit factor: {result['profit_factor']}", flush=True)
-    print(f"  span: {span_days:.1f} days ({months:.1f} months)", flush=True)
-    print(f"  signals/month: {result['signals_per_month']}", flush=True)
+    log(f"  signals: {len(unique)} (bull {result['bullish']} / bear {result['bearish']})")
+    log(f"  wins: {wins}  losses: {losses}  timeouts: {timeouts}  WR: {win_rate:.1f}%")
+    log(f"  expectancy: {expectancy:+.3f} R  net R: {net_r:+.2f}  PF: {result['profit_factor']}")
 
     return result
 
@@ -279,30 +265,30 @@ def _write_reports(results, config_snapshot):
     lines.append("")
 
     lines.append("## Frequency & Setup Quality\n")
-    lines.append("| Symbol | Candles | Signals | Bull | Bear | Avg R:R (after spread) | Span (days) | Signals/Month | Signals/Week |")
-    lines.append("|--------|---------|---------|------|------|------------------------|-------------|---------------|--------------|")
+    lines.append("| Symbol | Candles | Signals | Bull | Bear | Avg R:R (after spread) | Span (days) | Signals/Month |")
+    lines.append("|--------|---------|---------|------|------|------------------------|-------------|---------------|")
     for r in results:
         if r.get("signal_count", 0) == 0 and "error" in r:
-            lines.append(f"| {r['symbol']} | – | ERROR | – | – | – | – | – | – |")
+            lines.append(f"| {r['symbol']} | – | ERROR | – | – | – | – | – |")
             continue
         lines.append(
             f"| {r['symbol']} | {r['candles']} | {r['signal_count']} | "
             f"{r['bullish']} | {r['bearish']} | 1:{r['avg_rr']} | {r['span_days']} | "
-            f"{r['signals_per_month']} | {r['signals_per_week']} |"
+            f"{r['signals_per_month']} |"
         )
     lines.append("")
 
     lines.append("## Performance\n")
-    lines.append("| Symbol | Wins | Losses | Timeouts | Win Rate | Expectancy (R) | Net R | Profit Factor | Avg Bars to Win | Avg Bars to Loss |")
-    lines.append("|--------|------|--------|----------|----------|----------------|-------|---------------|-----------------|------------------|")
+    lines.append("| Symbol | Wins | Losses | Timeouts | Win Rate | Expectancy (R) | Net R | Profit Factor |")
+    lines.append("|--------|------|--------|----------|----------|----------------|-------|---------------|")
     for r in results:
         if r.get("signal_count", 0) == 0 and "error" in r:
-            lines.append(f"| {r['symbol']} | – | – | – | – | – | – | – | – | – |")
+            lines.append(f"| {r['symbol']} | – | – | – | – | – | – | – |")
             continue
         lines.append(
             f"| {r['symbol']} | {r['wins']} | {r['losses']} | {r['timeouts']} | "
             f"{r['win_rate']}% | {r['expectancy_r']:+.3f} | {r['net_r']:+.2f} | "
-            f"{r['profit_factor']} | {r['avg_bars_to_win']} | {r['avg_bars_to_loss']} |"
+            f"{r['profit_factor']} |"
         )
     lines.append("")
 
@@ -322,26 +308,18 @@ def _write_reports(results, config_snapshot):
     lines.append(f"- **Overall expectancy:** {overall_exp:+.3f} R per signal")
     lines.append(f"- **Net R:** {total_net_r:+.2f}")
     lines.append("")
-    lines.append("**Notes:**")
-    lines.append(f"- Spread modeled as {SPREAD_ATR_FRAC} × ATR, half on entry, half on exit.")
-    lines.append("- Rolling detection window to keep runtime manageable.")
-    lines.append("- Same-bar SL: counted as loss if entry bar pierced stop.")
-    lines.append("- Future bar hitting both SL and TP: counted as loss.")
-    lines.append(f"- Max horizon: {MAX_HORIZON_BARS} bars.")
-    lines.append("- Win rate excludes timeouts.")
-    lines.append("- Per-trade log: `reports/backtest_trades.csv`")
 
     with open(md_path, "w") as f:
         f.write("\n".join(lines))
 
-    print(f"\nReports written:\n  {json_path}\n  {trades_csv}\n  {md_path}", flush=True)
+    log(f"\nReports written:\n  {json_path}\n  {trades_csv}\n  {md_path}")
 
 
 def main():
-    print(f"Backtest — timeframe {TIMEFRAME_LABEL}, {len(SYMBOLS)} symbols", flush=True)
-    print(f"Requested candles per symbol: {BACKTEST_CANDLES}", flush=True)
-    print(f"Detection window: last {DETECT_WINDOW} bars", flush=True)
-    print(f"Spread model: {SPREAD_ATR_FRAC} × ATR\n", flush=True)
+    log(f"Backtest — timeframe {TIMEFRAME_LABEL}, {len(SYMBOLS)} symbols")
+    log(f"Candles per symbol: {BACKTEST_CANDLES}")
+    log(f"Detection window: last {DETECT_WINDOW} bars")
+    log(f"Spread model: {SPREAD_ATR_FRAC} × ATR")
 
     config_snapshot = {
         "timeframe": TIMEFRAME_LABEL,
@@ -359,25 +337,28 @@ def main():
         "min_sweep_penetration_atr": MIN_SWEEP_PENETRATION_ATR,
         "max_bars_sweep_to_entry": MAX_BARS_SWEEP_TO_ENTRY,
         "max_ob_age_bars": MAX_OB_AGE_BARS,
+        "min_ob_width_atr": MIN_OB_WIDTH_ATR,
+        "min_target_atr": MIN_TARGET_ATR,
     }
 
     results = []
-    for sym in SYMBOLS:
-        results.append(backtest_symbol(sym))
+    total = len(SYMBOLS)
+    for idx, sym in enumerate(SYMBOLS, 1):
+        results.append(backtest_symbol(sym, idx, total))
 
     _write_reports(results, config_snapshot)
 
-    print("\n" + "=" * 40, flush=True)
-    print("SUMMARY", flush=True)
-    print("=" * 40, flush=True)
-    total = 0
+    log("\n" + "=" * 40)
+    log("SUMMARY")
+    log("=" * 40)
+    grand_total = 0
     for r in results:
         if "signal_count" in r:
-            total += r["signal_count"]
+            grand_total += r["signal_count"]
             if r["signal_count"] > 0:
-                print(f"  {r['symbol']}: {r['signal_count']} signals, "
-                      f"{r['win_rate']}% WR, {r['expectancy_r']:+.3f} R/signal", flush=True)
-    print(f"  TOTAL: {total}", flush=True)
+                log(f"  {r['symbol']}: {r['signal_count']} signals, "
+                    f"{r['win_rate']}% WR, {r['expectancy_r']:+.3f} R/signal")
+    log(f"  TOTAL SIGNALS: {grand_total}")
 
 
 if __name__ == "__main__":
