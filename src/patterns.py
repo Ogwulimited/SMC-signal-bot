@@ -12,7 +12,7 @@ from .config import (
 
 @dataclass
 class Pattern:
-    direction: str          # "bullish" | "bearish"
+    direction: str
     sweep: Sweep
     choch: CHoCH
     bos: BOS
@@ -50,7 +50,6 @@ def _sweep_penetration(candles, sweep):
 
 
 def _ob_already_tapped(candles, ob, before_idx):
-    """Was the OB zone tapped by any candle strictly between ob.index and before_idx?"""
     for k in range(ob.index + 1, before_idx):
         c = candles[k]
         if c["low"] <= ob.high and c["high"] >= ob.low:
@@ -59,7 +58,11 @@ def _ob_already_tapped(candles, ob, before_idx):
 
 
 def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
-    """Return patterns whose OB zone is first-tapped by the latest candle."""
+    """Return patterns where the CURRENT bar produced a REAL fill at entry.
+
+    A fill is real only if the bar's range actually reached the entry price
+    (OB midpoint), not just the outer edge of the OB zone.
+    """
     if atr is None or not candles:
         return []
 
@@ -70,7 +73,6 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
     min_pen = MIN_SWEEP_PENETRATION_ATR * atr
 
     for sweep in sweeps:
-        # --- Sweep quality filters ---
         if last_idx - sweep.index > MAX_BARS_SWEEP_TO_ENTRY:
             continue
         if _sweep_penetration(candles, sweep) < min_pen:
@@ -106,10 +108,12 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
                 continue
             if _ob_already_tapped(candles, ob, last_idx):
                 continue
-            if not (last_candle["low"] <= ob.high and last_candle["high"] >= ob.low):
-                continue
 
+            # FILL REALISM: current bar's low must have reached entry (OB mid)
             entry = (ob.high + ob.low) / 2
+            if last_candle["low"] > entry:
+                continue  # bar only grazed the top of the OB — no fill
+
             stop = ob.low - buffer
             target = _nearest_target_above(pools, entry)
             if target is None or target <= entry or entry <= stop:
@@ -153,10 +157,12 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
                 continue
             if _ob_already_tapped(candles, ob, last_idx):
                 continue
-            if not (last_candle["low"] <= ob.high and last_candle["high"] >= ob.low):
-                continue
 
+            # FILL REALISM: current bar's high must have reached entry (OB mid)
             entry = (ob.high + ob.low) / 2
+            if last_candle["high"] < entry:
+                continue  # bar only grazed the bottom of the OB — no fill
+
             stop = ob.high + buffer
             target = _nearest_target_below(pools, entry)
             if target is None or target >= entry or stop <= entry:
@@ -174,5 +180,4 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
 
 
 def pattern_signature(symbol: str, timeframe: str, p: Pattern) -> str:
-    """Unique key for dedupe via state.json."""
     return f"{symbol}|{timeframe}|{p.direction}|{p.sweep.index}|{p.ob.index}"
