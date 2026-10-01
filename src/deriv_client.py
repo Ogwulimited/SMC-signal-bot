@@ -82,29 +82,38 @@ async def _paginate(symbol, granularity, total):
     all_candles = []
     seen_epochs = set()
     end = "latest"
-    max_iters = 20
+    max_iters = 30
     iters = 0
+    batch_size = 900  # safely under Deriv's per-request soft cap
+
     while len(all_candles) < total and iters < max_iters:
         iters += 1
-        batch_size = min(1000, total - len(all_candles))
         try:
             batch = await _fetch_batch(symbol, granularity, batch_size, end)
         except Exception as e:
             print(f"[{symbol}] pagination batch {iters} failed: {e}")
             break
+
+        print(f"[{symbol}] batch {iters}: {len(batch)} candles (have {len(all_candles)}/{total})")
+
         if not batch:
             break
+
         new = [c for c in batch if c["epoch"] not in seen_epochs]
         if not new:
+            print(f"[{symbol}] no new candles — stopping pagination")
             break
+
         for c in new:
             seen_epochs.add(c["epoch"])
+
         all_candles = new + all_candles
         end = new[0]["epoch"] - granularity
-        if len(batch) < batch_size:
-            break
+
     if len(all_candles) > total:
         all_candles = all_candles[-total:]
+
+    print(f"[{symbol}] pagination complete: {len(all_candles)} candles")
     return all_candles
 
 
