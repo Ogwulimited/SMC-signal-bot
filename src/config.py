@@ -28,7 +28,12 @@ MAX_OB_AGE_BARS = 80
 MIN_OB_WIDTH_ATR = 0.30
 MIN_TARGET_ATR = 1.00
 
-# ----- Entry wait window for prepositioned limit orders -----
+# ----- FVG filter (new) -----
+# Displacement leg must contain an FVG of at least this size (fraction of ATR).
+# Set to 0.0 to disable the FVG requirement entirely.
+MIN_FVG_ATR = 0.20
+
+# ----- Entry wait window -----
 MAX_WAIT_FOR_FILL_BARS = 50
 
 # ----- Backtest outcome simulation -----
