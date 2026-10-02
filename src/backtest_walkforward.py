@@ -1,13 +1,13 @@
-"""Walk-forward validation with 3 entry-timing variants + fixed random baseline.
-
-Writes a report to reports/walkforward_latest.md, .json, and .csv.
+"""Walk-forward validation with 5 entry variants + fixed random baseline.
 
 Variants:
-  - same_bar:         fill on the detection bar
-  - next_bar_open:    fill at the next bar's open (market order next candle)
-  - next_bar_limit:   fill on next bar only if it reaches the OB mid (limit order)
+  - same_bar:                      fill on detection bar (fantasy)
+  - next_bar_open:                 fill at next bar open
+  - next_bar_limit:                limit at OB mid, filled by next bar
+  - prepositioned_limit:           signal at BOS, limit at OB mid, wait for retrace
+  - prepositioned_limit_confirmed: same + require a direction-confirming candle after fill
 
-Random baseline: random bar, next-bar-open entry, same stop/target geometry.
+Writes reports/walkforward_latest.md / .json / _trades.csv.
 """
 
 import csv
@@ -21,14 +21,15 @@ from .config import (
     SWING_LOOKBACK, ATR_PERIOD, EQ_TOLERANCE_ATR, DISPLACEMENT_ATR_MULT,
     MIN_RR, MIN_SWEEP_PENETRATION_ATR, MAX_BARS_SWEEP_TO_ENTRY, MAX_OB_AGE_BARS,
     MIN_OB_WIDTH_ATR, MIN_TARGET_ATR,
-    MAX_HORIZON_BARS, SPREAD_ATR_FRAC, REPORTS_DIR,
+    MAX_HORIZON_BARS, SPREAD_ATR_FRAC,
+    MAX_WAIT_FOR_FILL_BARS, REPORTS_DIR,
 )
 from .deriv_client import fetch_candles_paginated
 from .smc import (
     find_swings, detect_bos_choch, find_liquidity_pools,
     detect_sweeps, detect_order_blocks, compute_atr,
 )
-from .patterns import detect_patterns
+from .patterns import detect_patterns, detect_patterns_at_bos
 
 
 BACKTEST_CANDLES = 12000
@@ -42,7 +43,7 @@ def log(m):
     print(m, flush=True)
 
 
-# ---------------- Entry variants ----------------
+# ---------------- Helpers ----------------
 
 def _rr(direction, entry_eff, stop_eff, target_eff):
     if direction == "bullish":
@@ -51,9 +52,7 @@ def _rr(direction, entry_eff, stop_eff, target_eff):
     else:
         risk = stop_eff - entry_eff
         reward = entry_eff - target_eff
-    if risk <= 0:
-        return 0.0
-    return reward / risk
+    return reward / risk if risk > 0 else 0.0
 
 
 def _walk_forward_exit(candles, start_idx, direction, stop_eff, target_eff):
@@ -61,34 +60,36 @@ def _walk_forward_exit(candles, start_idx, direction, stop_eff, target_eff):
     for k in range(start_idx, end):
         c = candles[k]
         if direction == "bullish":
-            if c["low"] <= stop_eff:
-                return "loss", k
-            if c["high"] >= target_eff:
-                return "win", k
+            if c["low"] <= stop_eff: return "loss", k
+            if c["high"] >= target_eff: return "win", k
         else:
-            if c["high"] >= stop_eff:
-                return "loss", k
-            if c["low"] <= target_eff:
-                return "win", k
+            if c["high"] >= stop_eff: return "loss", k
+            if c["low"] <= target_eff: return "win", k
     return "timeout", None
 
 
+def _apply_spread(direction, entry_raw, stop, target, spread):
+    half = spread / 2.0
+    if direction == "bullish":
+        return entry_raw + half, stop, target - half
+    return entry_raw - half, stop, target + half
+
+
+def _valid_geometry(direction, entry_eff, stop_eff, target_eff):
+    if direction == "bullish":
+        return entry_eff > stop_eff and target_eff > entry_eff
+    return entry_eff < stop_eff and target_eff < entry_eff
+
+
+# ---------------- Variant 1: same bar ----------------
+
 def simulate_same_bar(candles, sig, spread):
     idx = sig["index"]
-    if idx >= len(candles):
-        return None
-    half = spread / 2.0
+    if idx >= len(candles): return None
     direction = sig["direction"]
-    entry = sig["entry"]; stop = sig["stop"]; target = sig["target"]
-
-    if direction == "bullish":
-        entry_eff = entry + half; stop_eff = stop; target_eff = target - half
-    else:
-        entry_eff = entry - half; stop_eff = stop; target_eff = target + half
-
-    if direction == "bullish" and (entry_eff <= stop_eff or target_eff <= entry_eff):
-        return None
-    if direction == "bearish" and (entry_eff >= stop_eff or target_eff >= entry_eff):
+    entry_eff, stop_eff, target_eff = _apply_spread(
+        direction, sig["entry"], sig["stop"], sig["target"], spread)
+    if not _valid_geometry(direction, entry_eff, stop_eff, target_eff):
         return None
 
     c = candles[idx]
@@ -102,24 +103,16 @@ def simulate_same_bar(candles, sig, spread):
     return {"outcome": outcome, "bars": bars, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
 
 
+# ---------------- Variant 2: next bar open ----------------
+
 def simulate_next_bar_open(candles, sig, spread):
     idx = sig["index"]
-    if idx + 1 >= len(candles):
-        return None
-    half = spread / 2.0
-    direction = sig["direction"]
-    stop = sig["stop"]; target = sig["target"]
+    if idx + 1 >= len(candles): return None
     nxt = candles[idx + 1]
-    open_price = nxt["open"]
-
-    if direction == "bullish":
-        entry_eff = open_price + half; stop_eff = stop; target_eff = target - half
-    else:
-        entry_eff = open_price - half; stop_eff = stop; target_eff = target + half
-
-    if direction == "bullish" and (entry_eff <= stop_eff or target_eff <= entry_eff):
-        return None
-    if direction == "bearish" and (entry_eff >= stop_eff or target_eff >= entry_eff):
+    direction = sig["direction"]
+    entry_eff, stop_eff, target_eff = _apply_spread(
+        direction, nxt["open"], sig["stop"], sig["target"], spread)
+    if not _valid_geometry(direction, entry_eff, stop_eff, target_eff):
         return None
 
     if direction == "bullish" and nxt["low"] <= stop_eff:
@@ -132,27 +125,21 @@ def simulate_next_bar_open(candles, sig, spread):
     return {"outcome": outcome, "bars": bars, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
 
 
+# ---------------- Variant 3: next bar limit ----------------
+
 def simulate_next_bar_limit(candles, sig, spread):
     idx = sig["index"]
-    if idx + 1 >= len(candles):
-        return None
-    half = spread / 2.0
+    if idx + 1 >= len(candles): return None
     direction = sig["direction"]
-    entry = sig["entry"]; stop = sig["stop"]; target = sig["target"]
+    entry = sig["entry"]
     nxt = candles[idx + 1]
 
-    if direction == "bullish":
-        if nxt["low"] > entry:
-            return None
-        entry_eff = entry + half; stop_eff = stop; target_eff = target - half
-    else:
-        if nxt["high"] < entry:
-            return None
-        entry_eff = entry - half; stop_eff = stop; target_eff = target + half
+    if direction == "bullish" and nxt["low"] > entry: return None
+    if direction == "bearish" and nxt["high"] < entry: return None
 
-    if direction == "bullish" and (entry_eff <= stop_eff or target_eff <= entry_eff):
-        return None
-    if direction == "bearish" and (entry_eff >= stop_eff or target_eff >= entry_eff):
+    entry_eff, stop_eff, target_eff = _apply_spread(
+        direction, entry, sig["stop"], sig["target"], spread)
+    if not _valid_geometry(direction, entry_eff, stop_eff, target_eff):
         return None
 
     if direction == "bullish" and nxt["low"] <= stop_eff:
@@ -162,104 +149,130 @@ def simulate_next_bar_limit(candles, sig, spread):
 
     outcome, hit = _walk_forward_exit(candles, idx + 2, direction, stop_eff, target_eff)
     bars = (hit - (idx + 1)) if hit is not None else None
+    return {"outcome": outcome, "bars": bars, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
+
+
+# ---------------- Variant 4: prepositioned limit (BOS signal) ----------------
+
+def _wait_for_fill(candles, start_idx, direction, entry, max_wait):
+    """Return fill index or None."""
+    end = min(start_idx + max_wait, len(candles))
+    for k in range(start_idx, end):
+        c = candles[k]
+        if direction == "bullish" and c["low"] <= entry:
+            return k
+        if direction == "bearish" and c["high"] >= entry:
+            return k
+    return None
+
+
+def simulate_prepositioned_limit(candles, sig, spread):
+    bos_idx = sig["bos_index"]
+    direction = sig["direction"]
+    entry = sig["entry"]
+    # Start waiting one bar after BOS
+    fill_idx = _wait_for_fill(candles, bos_idx + 1, direction, entry, MAX_WAIT_FOR_FILL_BARS)
+    if fill_idx is None:
+        return None
+
+    entry_eff, stop_eff, target_eff = _apply_spread(
+        direction, entry, sig["stop"], sig["target"], spread)
+    if not _valid_geometry(direction, entry_eff, stop_eff, target_eff):
+        return None
+
+    fill_c = candles[fill_idx]
+    if direction == "bullish" and fill_c["low"] <= stop_eff:
+        return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
+    if direction == "bearish" and fill_c["high"] >= stop_eff:
+        return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
+
+    outcome, hit = _walk_forward_exit(candles, fill_idx + 1, direction, stop_eff, target_eff)
+    bars = (hit - fill_idx) if hit is not None else None
+    return {"outcome": outcome, "bars": bars, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
+
+
+# ---------------- Variant 5: prepositioned limit + confirmation ----------------
+
+def simulate_prepositioned_limit_confirmed(candles, sig, spread):
+    bos_idx = sig["bos_index"]
+    direction = sig["direction"]
+    entry = sig["entry"]
+    fill_idx = _wait_for_fill(candles, bos_idx + 1, direction, entry, MAX_WAIT_FOR_FILL_BARS)
+    if fill_idx is None or fill_idx + 1 >= len(candles):
+        return None
+
+    conf = candles[fill_idx + 1]
+    if direction == "bullish" and conf["close"] <= conf["open"]:
+        return None
+    if direction == "bearish" and conf["close"] >= conf["open"]:
+        return None
+
+    entry_eff, stop_eff, target_eff = _apply_spread(
+        direction, conf["close"], sig["stop"], sig["target"], spread)
+    if not _valid_geometry(direction, entry_eff, stop_eff, target_eff):
+        return None
+
+    # Same-bar check on confirmation bar
+    if direction == "bullish" and conf["low"] <= stop_eff:
+        return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
+    if direction == "bearish" and conf["high"] >= stop_eff:
+        return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
+
+    outcome, hit = _walk_forward_exit(candles, fill_idx + 2, direction, stop_eff, target_eff)
+    bars = (hit - (fill_idx + 1)) if hit is not None else None
     return {"outcome": outcome, "bars": bars, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
 
 
 VARIANTS = {
-    "same_bar": simulate_same_bar,
-    "next_bar_open": simulate_next_bar_open,
-    "next_bar_limit": simulate_next_bar_limit,
+    "same_bar":                      ("retrace", simulate_same_bar),
+    "next_bar_open":                 ("retrace", simulate_next_bar_open),
+    "next_bar_limit":                ("retrace", simulate_next_bar_limit),
+    "prepositioned_limit":           ("bos",     simulate_prepositioned_limit),
+    "prepositioned_limit_confirmed": ("bos",     simulate_prepositioned_limit_confirmed),
 }
-
-
-def stats_from_signals(candles, signals, variant_fn):
-    wins = losses = timeouts = skipped = 0
-    r_won = 0.0
-    bars_wins = []
-    bars_losses = []
-    trades = []
-
-    for sig in signals:
-        spread = SPREAD_ATR_FRAC * sig["atr"]
-        res = variant_fn(candles, sig, spread)
-        if res is None:
-            skipped += 1
-            continue
-        if res["outcome"] == "win":
-            wins += 1
-            r_won += res["rr_eff"]
-            if res["bars"] is not None:
-                bars_wins.append(res["bars"])
-        elif res["outcome"] == "loss":
-            losses += 1
-            if res["bars"] is not None:
-                bars_losses.append(res["bars"])
-        else:
-            timeouts += 1
-
-        trades.append({
-            "symbol": sig.get("symbol", ""),
-            "bar_index": sig["index"],
-            "direction": sig["direction"],
-            "entry": round(sig["entry"], 5),
-            "stop": round(sig["stop"], 5),
-            "target": round(sig["target"], 5),
-            "outcome": res["outcome"],
-            "bars_held": res["bars"],
-            "rr_eff": round(res["rr_eff"], 2),
-        })
-
-    resolved = wins + losses
-    wr = (wins / resolved * 100) if resolved > 0 else 0
-    net_r = r_won - losses
-    n_eval = wins + losses + timeouts
-    exp = net_r / n_eval if n_eval else 0
-    avg_bw = sum(bars_wins) / len(bars_wins) if bars_wins else 0
-    avg_bl = sum(bars_losses) / len(bars_losses) if bars_losses else 0
-    return {
-        "n": n_eval, "skipped": skipped,
-        "wins": wins, "losses": losses, "timeouts": timeouts,
-        "wr": wr, "expectancy": exp, "net_r": net_r,
-        "avg_bars_win": avg_bw, "avg_bars_loss": avg_bl,
-        "trades": trades,
-    }
 
 
 # ---------------- Signal collection ----------------
 
 def collect_signals(candles, start, end):
-    found = []
+    retrace_sigs = []
+    bos_sigs = []
     for i in range(start, end):
         w_start = max(0, i + 1 - DETECT_WINDOW)
         window = candles[w_start : i + 1]
         atr = compute_atr(window, ATR_PERIOD)
-        if atr is None:
-            continue
+        if atr is None: continue
         swings = find_swings(window, SWING_LOOKBACK)
         bos_events, choch_events, _ = detect_bos_choch(window, swings)
         pools = find_liquidity_pools(window, swings, atr, EQ_TOLERANCE_ATR)
         sweeps = detect_sweeps(window, pools, atr)
         obs = detect_order_blocks(window, bos_events, atr, DISPLACEMENT_ATR_MULT)
-        patterns = detect_patterns(window, sweeps, choch_events, bos_events, obs, pools, atr)
-        for p in patterns:
-            found.append({
-                "index": i,
-                "direction": p.direction,
-                "entry": p.entry,
-                "stop": p.stop,
-                "target": p.target,
-                "atr": atr,
+
+        for p in detect_patterns(window, sweeps, choch_events, bos_events, obs, pools, atr):
+            retrace_sigs.append({
+                "index": i, "direction": p.direction,
+                "entry": p.entry, "stop": p.stop, "target": p.target, "atr": atr,
             })
 
-    seen = set()
-    unique = []
-    for r in found:
-        key = (r["direction"], round(r["entry"], 5), round(r["target"], 5))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(r)
-    return unique
+        for p in detect_patterns_at_bos(window, sweeps, choch_events, bos_events, obs, pools, atr):
+            bos_sigs.append({
+                "index": i,
+                "bos_index": w_start + p.bos.index,
+                "direction": p.direction,
+                "entry": p.entry, "stop": p.stop, "target": p.target, "atr": atr,
+            })
+
+    def dedupe(sigs):
+        seen = set()
+        out = []
+        for r in sigs:
+            key = (r["direction"], round(r["entry"], 5), round(r["target"], 5))
+            if key in seen: continue
+            seen.add(key)
+            out.append(r)
+        return out
+
+    return dedupe(retrace_sigs), dedupe(bos_sigs)
 
 
 # ---------------- Random baseline ----------------
@@ -271,149 +284,119 @@ def random_baseline(candles, n_trials):
     for _ in range(n_trials):
         i = random.randint(WARMUP_BARS + DETECT_WINDOW, n - MAX_HORIZON_BARS - 3)
         direction = random.choice(["bullish", "bearish"])
-
         window = candles[i - ATR_PERIOD * 2 : i]
         atr = compute_atr(window, ATR_PERIOD)
-        if atr is None:
-            continue
-
+        if atr is None: continue
         nxt = candles[i + 1]
         entry = nxt["open"]
         stop_dist = 0.5 * atr
         target_dist = 2.0 * atr
         spread = SPREAD_ATR_FRAC * atr
-        half = spread / 2.0
-
-        if direction == "bullish":
-            entry_eff = entry + half
-            stop_eff = entry - stop_dist
-            target_eff = entry + target_dist - half
-        else:
-            entry_eff = entry - half
-            stop_eff = entry + stop_dist
-            target_eff = entry - target_dist + half
-
+        entry_eff, stop_eff, target_eff = _apply_spread(
+            direction, entry,
+            entry - stop_dist if direction == "bullish" else entry + stop_dist,
+            entry + target_dist if direction == "bullish" else entry - target_dist,
+            spread)
         if direction == "bullish" and nxt["low"] <= stop_eff:
-            losses += 1
-            continue
+            losses += 1; continue
         if direction == "bearish" and nxt["high"] >= stop_eff:
-            losses += 1
-            continue
-
-        outcome, hit = _walk_forward_exit(candles, i + 2, direction, stop_eff, target_eff)
+            losses += 1; continue
+        outcome, _ = _walk_forward_exit(candles, i + 2, direction, stop_eff, target_eff)
         if outcome == "win":
-            wins += 1
-            r_won += target_dist / stop_dist
+            wins += 1; r_won += target_dist / stop_dist
         elif outcome == "loss":
             losses += 1
         else:
             timeouts += 1
-
     resolved = wins + losses
     wr = (wins / resolved * 100) if resolved > 0 else 0
     net_r = r_won - losses
-    exp = net_r / n_trials if n_trials else 0
     return {"n": n_trials, "wins": wins, "losses": losses, "timeouts": timeouts,
-            "wr": wr, "expectancy": exp, "net_r": net_r}
+            "wr": wr, "expectancy": net_r / n_trials if n_trials else 0, "net_r": net_r}
 
 
 # ---------------- Report writing ----------------
 
-def _write_reports(all_windows_data, variant_aggregate, random_agg, config_snapshot, all_trades):
+def _write_reports(all_windows_data, aggregate, random_agg, config_snap, trades_all):
     os.makedirs(REPORTS_DIR, exist_ok=True)
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # JSON
-    json_path = os.path.join(REPORTS_DIR, "walkforward_latest.json")
-    with open(json_path, "w") as f:
-        json.dump({
-            "generated": generated,
-            "config": config_snapshot,
-            "per_window": all_windows_data,
-            "aggregate": variant_aggregate,
-            "random_baseline": random_agg,
-        }, f, indent=2)
+    with open(os.path.join(REPORTS_DIR, "walkforward_latest.json"), "w") as f:
+        json.dump({"generated": generated, "config": config_snap,
+                   "per_window": all_windows_data, "aggregate": aggregate,
+                   "random_baseline": random_agg}, f, indent=2)
 
-    # CSV of all trades per variant
-    csv_path = os.path.join(REPORTS_DIR, "walkforward_trades.csv")
-    with open(csv_path, "w", newline="") as f:
+    with open(os.path.join(REPORTS_DIR, "walkforward_trades.csv"), "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "variant", "window", "symbol", "bar_index", "direction",
             "entry", "stop", "target", "outcome", "bars_held", "rr_eff",
         ])
         writer.writeheader()
-        for variant, trades in all_trades.items():
+        for variant, trades in trades_all.items():
             for t in trades:
-                row = {"variant": variant}
-                row.update(t)
-                writer.writerow(row)
+                row = {"variant": variant}; row.update(t); writer.writerow(row)
 
-    # Markdown
-    md_path = os.path.join(REPORTS_DIR, "walkforward_latest.md")
-    lines = []
-    lines.append("# SMC Signal Bot — Walk-Forward Validation\n")
-    lines.append(f"**Generated:** {generated}\n")
+    md = []
+    md.append("# SMC Signal Bot — Walk-Forward Validation\n")
+    md.append(f"**Generated:** {generated}\n")
+    md.append("## Configuration\n")
+    md.append("| Parameter | Value |")
+    md.append("|-----------|-------|")
+    for k, v in config_snap.items():
+        md.append(f"| {k} | {v} |")
+    md.append("")
 
-    lines.append("## Configuration\n")
-    lines.append("| Parameter | Value |")
-    lines.append("|-----------|-------|")
-    for k, v in config_snapshot.items():
-        lines.append(f"| {k} | {v} |")
-    lines.append("")
-
-    lines.append("## Entry Variant Comparison — Per Window\n")
-    lines.append("| Window | Variant | Signals | Wins | Losses | Timeouts | WR | Expectancy | Net R |")
-    lines.append("|--------|---------|---------|------|--------|----------|-----|------------|-------|")
+    md.append("## Entry Variant Comparison — Per Window\n")
+    md.append("| Window | Variant | Signals | Skipped | Wins | Losses | Timeouts | WR | Expectancy | Net R |")
+    md.append("|--------|---------|---------|---------|------|--------|----------|-----|------------|-------|")
     for row in all_windows_data:
-        lines.append(
-            f"| W{row['window']} | {row['variant']} | {row['n']} | "
+        md.append(
+            f"| W{row['window']} | {row['variant']} | {row['n']} | {row['skipped']} | "
             f"{row['wins']} | {row['losses']} | {row['timeouts']} | "
             f"{row['wr']:.1f}% | {row['expectancy']:+.3f} | {row['net_r']:+.1f} |"
         )
-    lines.append("")
+    md.append("")
 
-    lines.append("## Aggregate Across All Windows\n")
-    lines.append("| Variant | Signals | Wins | Losses | Timeouts | WR | Expectancy | Net R |")
-    lines.append("|---------|---------|------|--------|----------|-----|------------|-------|")
-    for vname, agg in variant_aggregate.items():
-        lines.append(
-            f"| {vname} | {agg['n']} | {agg['wins']} | {agg['losses']} | "
+    md.append("## Aggregate Across All Windows\n")
+    md.append("| Variant | Signals | Skipped | Wins | Losses | Timeouts | WR | Expectancy | Net R |")
+    md.append("|---------|---------|---------|------|--------|----------|-----|------------|-------|")
+    for vname, agg in aggregate.items():
+        md.append(
+            f"| {vname} | {agg['n']} | {agg['skipped']} | {agg['wins']} | {agg['losses']} | "
             f"{agg['timeouts']} | {agg['wr']:.1f}% | {agg['expectancy']:+.3f} | {agg['net_r']:+.1f} |"
         )
-    lines.append("")
+    md.append("")
 
-    lines.append("## Random Baseline\n")
-    lines.append(f"- **Signals:** {random_agg['n']}")
-    lines.append(f"- **Wins / Losses / Timeouts:** {random_agg['wins']} / {random_agg['losses']} / {random_agg['timeouts']}")
-    lines.append(f"- **Win rate:** {random_agg['wr']:.1f}%")
-    lines.append(f"- **Expectancy:** {random_agg['expectancy']:+.3f} R")
-    lines.append(f"- **Net R:** {random_agg['net_r']:+.1f}")
-    lines.append("")
+    md.append("## Random Baseline\n")
+    md.append(f"- **Signals:** {random_agg['n']}")
+    md.append(f"- **Wins / Losses / Timeouts:** {random_agg['wins']} / {random_agg['losses']} / {random_agg['timeouts']}")
+    md.append(f"- **Win rate:** {random_agg['wr']:.1f}%")
+    md.append(f"- **Expectancy:** {random_agg['expectancy']:+.3f} R")
+    md.append(f"- **Net R:** {random_agg['net_r']:+.1f}")
+    md.append("")
 
-    lines.append("## Interpretation\n")
-    lines.append("- `same_bar` = fill on detection candle (best case, unrealistic)")
-    lines.append("- `next_bar_open` = fill at the open of the next candle (realistic market order)")
-    lines.append("- `next_bar_limit` = fill only if the next candle reaches OB mid (realistic limit order)")
-    lines.append("")
-    lines.append("**Decision criteria:**")
-    lines.append("- If `next_bar_open` and `next_bar_limit` beat the random baseline by a clear margin AND stay positive across all 4 windows → real, tradable edge.")
-    lines.append("- If they collapse to random levels → the apparent edge was entry-timing bias.")
-    lines.append("- If `next_bar_limit` holds while `next_bar_open` collapses → the zones are genuinely respected; use limit-order strategy.")
-    lines.append("")
+    md.append("## Interpretation\n")
+    md.append("- `same_bar`, `next_bar_open`, `next_bar_limit` = signal fires at retrace, enter immediately or next bar.")
+    md.append("- `prepositioned_limit` = signal fires at BOS, limit at OB mid, wait up to N bars for retrace fill.")
+    md.append("- `prepositioned_limit_confirmed` = same + require a direction-confirming candle after fill.")
+    md.append("")
+    md.append("**Decision criteria:**")
+    md.append("- If prepositioned variants beat random baseline with positive expectancy → zones are genuinely respected → real edge.")
+    md.append("- If all variants lose to random baseline → base pattern has no edge as defined → pivot to adding FVG / session / HTF bias as core filters.")
 
-    with open(md_path, "w") as f:
-        f.write("\n".join(lines))
+    with open(os.path.join(REPORTS_DIR, "walkforward_latest.md"), "w") as f:
+        f.write("\n".join(md))
 
-    log(f"\nReports written:\n  {json_path}\n  {csv_path}\n  {md_path}")
+    log(f"\nReports written to {REPORTS_DIR}/")
 
 
 # ---------------- Main ----------------
 
 def main():
     random.seed(42)
-    log(f"Walk-forward — {N_WINDOWS} windows × {len(VARIANTS)} entry variants")
+    log(f"Walk-forward — {N_WINDOWS} windows × {len(VARIANTS)} variants")
 
-    per_window = {w: [] for w in range(1, N_WINDOWS + 1)}
+    per_window = {w: {"retrace": [], "bos": []} for w in range(1, N_WINDOWS + 1)}
     random_results = []
 
     for sym_idx, sym in enumerate(SYMBOLS, 1):
@@ -421,12 +404,10 @@ def main():
         try:
             candles = fetch_candles_paginated(sym, GRANULARITY, BACKTEST_CANDLES)
         except Exception as e:
-            log(f"  fetch failed: {e}")
-            continue
+            log(f"  fetch failed: {e}"); continue
         n = len(candles)
         if n < WARMUP_BARS + DETECT_WINDOW + 500:
-            log(f"  not enough candles ({n})")
-            continue
+            log(f"  not enough candles"); continue
 
         usable_start = WARMUP_BARS + DETECT_WINDOW
         usable_end = n - MAX_HORIZON_BARS - 3
@@ -436,32 +417,30 @@ def main():
         for w in range(N_WINDOWS):
             s = usable_start + w * win_size
             e = s + win_size if w < N_WINDOWS - 1 else usable_end
-            sigs = collect_signals(candles, s, e)
-            for sig in sigs:
-                sig["symbol"] = sym
-                sig["candles_ref"] = candles
-            per_window[w + 1].extend(sigs)
-            log(f"  W{w+1}: {len(sigs)} signals")
+            ret_sigs, bos_sigs = collect_signals(candles, s, e)
+            for sig in ret_sigs:
+                sig["symbol"] = sym; sig["candles_ref"] = candles
+            for sig in bos_sigs:
+                sig["symbol"] = sym; sig["candles_ref"] = candles
+            per_window[w + 1]["retrace"].extend(ret_sigs)
+            per_window[w + 1]["bos"].extend(bos_sigs)
+            log(f"  W{w+1}: retrace={len(ret_sigs)} bos={len(bos_sigs)}")
 
         rnd = random_baseline(candles, RANDOM_TRIALS)
         random_results.append(rnd)
 
-    # -------- Variant comparison per window --------
     log("\n" + "=" * 70)
     log("VARIANT COMPARISON (per window)")
     log("=" * 70)
 
     all_windows_data = []
-    all_trades = {vname: [] for vname in VARIANTS}
+    trades_all = {v: [] for v in VARIANTS}
 
     for w in range(1, N_WINDOWS + 1):
-        sigs = per_window[w]
-        log(f"\nWindow {w}: {len(sigs)} total signals across all symbols")
-        for vname, vfn in VARIANTS.items():
-            candles_set = {}
-            for sig in sigs:
-                candles_set[id(sig["candles_ref"])] = sig["candles_ref"]
-            # Simulate each signal
+        sig_buckets = per_window[w]
+        log(f"\nWindow {w}")
+        for vname, (sig_type, vfn) in VARIANTS.items():
+            sigs = sig_buckets[sig_type]
             wins = losses = timeouts = skipped = 0
             r_won = 0.0
             for sig in sigs:
@@ -472,23 +451,17 @@ def main():
                     skipped += 1
                     continue
                 if r["outcome"] == "win":
-                    wins += 1
-                    r_won += r["rr_eff"]
+                    wins += 1; r_won += r["rr_eff"]
                 elif r["outcome"] == "loss":
                     losses += 1
                 else:
                     timeouts += 1
-
-                all_trades[vname].append({
-                    "window": w,
-                    "symbol": sig.get("symbol", ""),
-                    "bar_index": sig["index"],
-                    "direction": sig["direction"],
-                    "entry": round(sig["entry"], 5),
-                    "stop": round(sig["stop"], 5),
+                trades_all[vname].append({
+                    "window": w, "symbol": sig.get("symbol", ""),
+                    "bar_index": sig["index"], "direction": sig["direction"],
+                    "entry": round(sig["entry"], 5), "stop": round(sig["stop"], 5),
                     "target": round(sig["target"], 5),
-                    "outcome": r["outcome"],
-                    "bars_held": r["bars"],
+                    "outcome": r["outcome"], "bars_held": r["bars"],
                     "rr_eff": round(r["rr_eff"], 2),
                 })
 
@@ -498,25 +471,23 @@ def main():
             n_eval = wins + losses + timeouts
             exp = net_r / n_eval if n_eval else 0
 
-            log(f"  {vname:18s} n={n_eval:4d} skip={skipped:3d} "
-                f"W{wins}/L{losses}/T{timeouts}  WR={wr:5.1f}%  "
-                f"exp={exp:+.3f}R  netR={net_r:+.1f}")
+            log(f"  {vname:32s} n={n_eval:4d} skip={skipped:3d} "
+                f"W{wins}/L{losses}/T{timeouts}  WR={wr:5.1f}%  exp={exp:+.3f}R")
 
             all_windows_data.append({
-                "window": w, "variant": vname,
-                "n": n_eval, "wins": wins, "losses": losses,
-                "timeouts": timeouts, "wr": wr,
-                "expectancy": exp, "net_r": net_r,
+                "window": w, "variant": vname, "n": n_eval, "skipped": skipped,
+                "wins": wins, "losses": losses, "timeouts": timeouts,
+                "wr": wr, "expectancy": exp, "net_r": net_r,
             })
 
-    # -------- Aggregate across windows --------
     log("\n" + "=" * 70)
     log("AGGREGATE ACROSS ALL WINDOWS")
     log("=" * 70)
-    variant_aggregate = {}
+    aggregate = {}
     for vname in VARIANTS:
         rows = [r for r in all_windows_data if r["variant"] == vname]
         n = sum(r["n"] for r in rows)
+        skipped = sum(r["skipped"] for r in rows)
         wins = sum(r["wins"] for r in rows)
         losses = sum(r["losses"] for r in rows)
         timeouts = sum(r["timeouts"] for r in rows)
@@ -524,14 +495,11 @@ def main():
         resolved = wins + losses
         wr = (wins / resolved * 100) if resolved > 0 else 0
         exp = net_r / n if n else 0
-        variant_aggregate[vname] = {
-            "n": n, "wins": wins, "losses": losses, "timeouts": timeouts,
-            "wr": wr, "expectancy": exp, "net_r": net_r,
-        }
-        log(f"  {vname:18s} n={n:4d}  W{wins}/L{losses}/T{timeouts}  "
-            f"WR={wr:5.1f}%  exp={exp:+.3f}R  netR={net_r:+.1f}")
+        aggregate[vname] = {"n": n, "skipped": skipped, "wins": wins, "losses": losses,
+                            "timeouts": timeouts, "wr": wr, "expectancy": exp, "net_r": net_r}
+        log(f"  {vname:32s} n={n:4d} skip={skipped:4d} "
+            f"W{wins}/L{losses}/T{timeouts}  WR={wr:5.1f}%  exp={exp:+.3f}R  netR={net_r:+.1f}")
 
-    # -------- Random baseline --------
     log("\n" + "=" * 70)
     log("RANDOM BASELINE")
     log("=" * 70)
@@ -545,32 +513,22 @@ def main():
     exp = net_r / n if n else 0
     random_agg = {"n": n, "wins": wins, "losses": losses, "timeouts": timeouts,
                   "wr": wr, "expectancy": exp, "net_r": net_r}
-    log(f"  n={n}  W{wins}/L{losses}/T{timeouts}  WR={wr:.1f}%  "
-        f"exp={exp:+.3f}R  netR={net_r:+.1f}")
+    log(f"  n={n}  W{wins}/L{losses}/T{timeouts}  WR={wr:.1f}%  exp={exp:+.3f}R")
 
-    # -------- Reports --------
-    config_snapshot = {
+    config_snap = {
         "timeframe": TIMEFRAME_LABEL,
         "symbols_count": len(SYMBOLS),
         "candles_requested": BACKTEST_CANDLES,
-        "warmup_bars": WARMUP_BARS,
-        "detect_window": DETECT_WINDOW,
         "n_windows": N_WINDOWS,
         "random_trials": RANDOM_TRIALS,
         "max_horizon_bars": MAX_HORIZON_BARS,
+        "max_wait_for_fill_bars": MAX_WAIT_FOR_FILL_BARS,
         "spread_atr_frac": SPREAD_ATR_FRAC,
         "min_rr": MIN_RR,
         "min_ob_width_atr": MIN_OB_WIDTH_ATR,
         "min_target_atr": MIN_TARGET_ATR,
-        "buffer_atr": 0.20,
     }
-    _write_reports(all_windows_data, variant_aggregate, random_agg, config_snapshot, all_trades)
-
-    log("\n" + "=" * 70)
-    log("INTERPRETATION")
-    log("=" * 70)
-    log("- If next_bar_open / next_bar_limit still beats random → real edge.")
-    log("- If they collapse to random-ish levels → edge was entry-timing bias.")
+    _write_reports(all_windows_data, aggregate, random_agg, config_snap, trades_all)
 
 
 if __name__ == "__main__":
