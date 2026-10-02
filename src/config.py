@@ -7,8 +7,9 @@ SYMBOLS = [
     "cryBTCUSD", "cryETHUSD", "cryLTCUSD", "cryXRPUSD", "crySOLUSD",
 ]
 
-GRANULARITY = 900
-TIMEFRAME_LABEL = "M15"
+# ----- Timeframe stack: H1 entry, D1 bias -----
+GRANULARITY = 3600
+TIMEFRAME_LABEL = "H1"
 
 CANDLE_COUNT = 200
 DERIV_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
@@ -28,21 +29,19 @@ MAX_OB_AGE_BARS = 80
 MIN_OB_WIDTH_ATR = 0.30
 MIN_TARGET_ATR = 1.00
 
-# FVG filter disabled (proven harmful in testing)
+# FVG filter — set to a value > 0 to enable, 0.0 to fully bypass
 MIN_FVG_ATR = 0.0
 
-MAX_WAIT_FOR_FILL_BARS = 50
+# ----- Entry wait window -----
+MAX_WAIT_FOR_FILL_BARS = 30
 
-# ----- HTF bias parameters (new) -----
-# HTF timeframe for bias computation, in Deriv granularity seconds.
-# 14400 = H4. Set to 0 to disable HTF bias computation entirely.
-HTF_GRANULARITY = 14400
-HTF_CANDLE_COUNT = 500         # ~83 days of H4
+# ----- HTF bias -----
+HTF_GRANULARITY = 86400        # D1
+HTF_CANDLE_COUNT = 500         # 500 daily bars ≈ 1.4 years
 HTF_SWING_LOOKBACK = 3
-HTF_BIAS_LOOKBACK_BARS = 200   # recent H4 bars considered for bias
 
 # ----- Backtest outcome simulation -----
-MAX_HORIZON_BARS = 96
+MAX_HORIZON_BARS = 48          # 48 H1 bars = 48 hours
 SPREAD_ATR_FRAC = 0.04
 
 TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
