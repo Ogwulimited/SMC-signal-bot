@@ -28,13 +28,18 @@ MAX_OB_AGE_BARS = 80
 MIN_OB_WIDTH_ATR = 0.30
 MIN_TARGET_ATR = 1.00
 
-# ----- FVG filter (new) -----
-# Displacement leg must contain an FVG of at least this size (fraction of ATR).
-# Set to 0.0 to disable the FVG requirement entirely.
-MIN_FVG_ATR = 0.20
+# FVG filter disabled (proven harmful in testing)
+MIN_FVG_ATR = 0.0
 
-# ----- Entry wait window -----
 MAX_WAIT_FOR_FILL_BARS = 50
+
+# ----- HTF bias parameters (new) -----
+# HTF timeframe for bias computation, in Deriv granularity seconds.
+# 14400 = H4. Set to 0 to disable HTF bias computation entirely.
+HTF_GRANULARITY = 14400
+HTF_CANDLE_COUNT = 500         # ~83 days of H4
+HTF_SWING_LOOKBACK = 3
+HTF_BIAS_LOOKBACK_BARS = 200   # recent H4 bars considered for bias
 
 # ----- Backtest outcome simulation -----
 MAX_HORIZON_BARS = 96
