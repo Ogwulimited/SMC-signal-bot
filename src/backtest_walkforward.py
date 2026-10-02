@@ -1,13 +1,8 @@
-"""Walk-forward validation with 5 entry variants + fixed random baseline.
+"""Walk-forward validation with entry-timing variants + fixed random baseline.
 
-Variants:
-  - same_bar:                      fill on detection bar (fantasy)
-  - next_bar_open:                 fill at next bar open
-  - next_bar_limit:                limit at OB mid, filled by next bar
-  - prepositioned_limit:           signal at BOS, limit at OB mid, wait for retrace
-  - prepositioned_limit_confirmed: same + require a direction-confirming candle after fill
-
-Writes reports/walkforward_latest.md / .json / _trades.csv.
+FIX: BOS signals now only emit when the BOS bar is the CURRENT bar.
+This prevents the same pattern being re-detected on later bars as the
+rolling window slides forward.
 """
 
 import csv
@@ -42,8 +37,6 @@ RANDOM_TRIALS = 500
 def log(m):
     print(m, flush=True)
 
-
-# ---------------- Helpers ----------------
 
 def _rr(direction, entry_eff, stop_eff, target_eff):
     if direction == "bullish":
@@ -81,7 +74,7 @@ def _valid_geometry(direction, entry_eff, stop_eff, target_eff):
     return entry_eff < stop_eff and target_eff < entry_eff
 
 
-# ---------------- Variant 1: same bar ----------------
+# ---------------- Variants ----------------
 
 def simulate_same_bar(candles, sig, spread):
     idx = sig["index"]
@@ -91,19 +84,15 @@ def simulate_same_bar(candles, sig, spread):
         direction, sig["entry"], sig["stop"], sig["target"], spread)
     if not _valid_geometry(direction, entry_eff, stop_eff, target_eff):
         return None
-
     c = candles[idx]
     if direction == "bullish" and c["low"] <= stop_eff:
         return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
     if direction == "bearish" and c["high"] >= stop_eff:
         return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
-
     outcome, hit = _walk_forward_exit(candles, idx + 1, direction, stop_eff, target_eff)
     bars = (hit - idx) if hit is not None else None
     return {"outcome": outcome, "bars": bars, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
 
-
-# ---------------- Variant 2: next bar open ----------------
 
 def simulate_next_bar_open(candles, sig, spread):
     idx = sig["index"]
@@ -114,18 +103,14 @@ def simulate_next_bar_open(candles, sig, spread):
         direction, nxt["open"], sig["stop"], sig["target"], spread)
     if not _valid_geometry(direction, entry_eff, stop_eff, target_eff):
         return None
-
     if direction == "bullish" and nxt["low"] <= stop_eff:
         return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
     if direction == "bearish" and nxt["high"] >= stop_eff:
         return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
-
     outcome, hit = _walk_forward_exit(candles, idx + 2, direction, stop_eff, target_eff)
     bars = (hit - (idx + 1)) if hit is not None else None
     return {"outcome": outcome, "bars": bars, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
 
-
-# ---------------- Variant 3: next bar limit ----------------
 
 def simulate_next_bar_limit(candles, sig, spread):
     idx = sig["index"]
@@ -133,29 +118,22 @@ def simulate_next_bar_limit(candles, sig, spread):
     direction = sig["direction"]
     entry = sig["entry"]
     nxt = candles[idx + 1]
-
     if direction == "bullish" and nxt["low"] > entry: return None
     if direction == "bearish" and nxt["high"] < entry: return None
-
     entry_eff, stop_eff, target_eff = _apply_spread(
         direction, entry, sig["stop"], sig["target"], spread)
     if not _valid_geometry(direction, entry_eff, stop_eff, target_eff):
         return None
-
     if direction == "bullish" and nxt["low"] <= stop_eff:
         return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
     if direction == "bearish" and nxt["high"] >= stop_eff:
         return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
-
     outcome, hit = _walk_forward_exit(candles, idx + 2, direction, stop_eff, target_eff)
     bars = (hit - (idx + 1)) if hit is not None else None
     return {"outcome": outcome, "bars": bars, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
 
 
-# ---------------- Variant 4: prepositioned limit (BOS signal) ----------------
-
 def _wait_for_fill(candles, start_idx, direction, entry, max_wait):
-    """Return fill index or None."""
     end = min(start_idx + max_wait, len(candles))
     for k in range(start_idx, end):
         c = candles[k]
@@ -170,28 +148,22 @@ def simulate_prepositioned_limit(candles, sig, spread):
     bos_idx = sig["bos_index"]
     direction = sig["direction"]
     entry = sig["entry"]
-    # Start waiting one bar after BOS
     fill_idx = _wait_for_fill(candles, bos_idx + 1, direction, entry, MAX_WAIT_FOR_FILL_BARS)
     if fill_idx is None:
         return None
-
     entry_eff, stop_eff, target_eff = _apply_spread(
         direction, entry, sig["stop"], sig["target"], spread)
     if not _valid_geometry(direction, entry_eff, stop_eff, target_eff):
         return None
-
     fill_c = candles[fill_idx]
     if direction == "bullish" and fill_c["low"] <= stop_eff:
         return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
     if direction == "bearish" and fill_c["high"] >= stop_eff:
         return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
-
     outcome, hit = _walk_forward_exit(candles, fill_idx + 1, direction, stop_eff, target_eff)
     bars = (hit - fill_idx) if hit is not None else None
     return {"outcome": outcome, "bars": bars, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
 
-
-# ---------------- Variant 5: prepositioned limit + confirmation ----------------
 
 def simulate_prepositioned_limit_confirmed(candles, sig, spread):
     bos_idx = sig["bos_index"]
@@ -200,24 +172,19 @@ def simulate_prepositioned_limit_confirmed(candles, sig, spread):
     fill_idx = _wait_for_fill(candles, bos_idx + 1, direction, entry, MAX_WAIT_FOR_FILL_BARS)
     if fill_idx is None or fill_idx + 1 >= len(candles):
         return None
-
     conf = candles[fill_idx + 1]
     if direction == "bullish" and conf["close"] <= conf["open"]:
         return None
     if direction == "bearish" and conf["close"] >= conf["open"]:
         return None
-
     entry_eff, stop_eff, target_eff = _apply_spread(
         direction, conf["close"], sig["stop"], sig["target"], spread)
     if not _valid_geometry(direction, entry_eff, stop_eff, target_eff):
         return None
-
-    # Same-bar check on confirmation bar
     if direction == "bullish" and conf["low"] <= stop_eff:
         return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
     if direction == "bearish" and conf["high"] >= stop_eff:
         return {"outcome": "loss", "bars": 0, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
-
     outcome, hit = _walk_forward_exit(candles, fill_idx + 2, direction, stop_eff, target_eff)
     bars = (hit - (fill_idx + 1)) if hit is not None else None
     return {"outcome": outcome, "bars": bars, "rr_eff": _rr(direction, entry_eff, stop_eff, target_eff)}
@@ -232,47 +199,46 @@ VARIANTS = {
 }
 
 
-# ---------------- Signal collection ----------------
+# ---------------- Signal collection (FIXED: BOS fires once) ----------------
 
 def collect_signals(candles, start, end):
     retrace_sigs = []
     bos_sigs = []
+
     for i in range(start, end):
         w_start = max(0, i + 1 - DETECT_WINDOW)
         window = candles[w_start : i + 1]
         atr = compute_atr(window, ATR_PERIOD)
-        if atr is None: continue
+        if atr is None:
+            continue
+
         swings = find_swings(window, SWING_LOOKBACK)
         bos_events, choch_events, _ = detect_bos_choch(window, swings)
         pools = find_liquidity_pools(window, swings, atr, EQ_TOLERANCE_ATR)
         sweeps = detect_sweeps(window, pools, atr)
         obs = detect_order_blocks(window, bos_events, atr, DISPLACEMENT_ATR_MULT)
 
+        # Retrace signals: fires when current bar touched OB
         for p in detect_patterns(window, sweeps, choch_events, bos_events, obs, pools, atr):
             retrace_sigs.append({
                 "index": i, "direction": p.direction,
                 "entry": p.entry, "stop": p.stop, "target": p.target, "atr": atr,
             })
 
+        # BOS signals: ONLY emit when the BOS bar is the CURRENT bar.
+        # This ensures each BOS fires exactly once.
         for p in detect_patterns_at_bos(window, sweeps, choch_events, bos_events, obs, pools, atr):
+            # The BOS index inside the window must equal the last bar index
+            if p.bos.index != len(window) - 1:
+                continue
             bos_sigs.append({
                 "index": i,
-                "bos_index": w_start + p.bos.index,
+                "bos_index": i,
                 "direction": p.direction,
                 "entry": p.entry, "stop": p.stop, "target": p.target, "atr": atr,
             })
 
-    def dedupe(sigs):
-        seen = set()
-        out = []
-        for r in sigs:
-            key = (r["direction"], round(r["entry"], 5), round(r["target"], 5))
-            if key in seen: continue
-            seen.add(key)
-            out.append(r)
-        return out
-
-    return dedupe(retrace_sigs), dedupe(bos_sigs)
+    return retrace_sigs, bos_sigs
 
 
 # ---------------- Random baseline ----------------
@@ -286,7 +252,8 @@ def random_baseline(candles, n_trials):
         direction = random.choice(["bullish", "bearish"])
         window = candles[i - ATR_PERIOD * 2 : i]
         atr = compute_atr(window, ATR_PERIOD)
-        if atr is None: continue
+        if atr is None:
+            continue
         nxt = candles[i + 1]
         entry = nxt["open"]
         stop_dist = 0.5 * atr
@@ -298,12 +265,15 @@ def random_baseline(candles, n_trials):
             entry + target_dist if direction == "bullish" else entry - target_dist,
             spread)
         if direction == "bullish" and nxt["low"] <= stop_eff:
-            losses += 1; continue
+            losses += 1
+            continue
         if direction == "bearish" and nxt["high"] >= stop_eff:
-            losses += 1; continue
+            losses += 1
+            continue
         outcome, _ = _walk_forward_exit(candles, i + 2, direction, stop_eff, target_eff)
         if outcome == "win":
-            wins += 1; r_won += target_dist / stop_dist
+            wins += 1
+            r_won += target_dist / stop_dist
         elif outcome == "loss":
             losses += 1
         else:
@@ -315,7 +285,7 @@ def random_baseline(candles, n_trials):
             "wr": wr, "expectancy": net_r / n_trials if n_trials else 0, "net_r": net_r}
 
 
-# ---------------- Report writing ----------------
+# ---------------- Report ----------------
 
 def _write_reports(all_windows_data, aggregate, random_agg, config_snap, trades_all):
     os.makedirs(REPORTS_DIR, exist_ok=True)
@@ -334,10 +304,12 @@ def _write_reports(all_windows_data, aggregate, random_agg, config_snap, trades_
         writer.writeheader()
         for variant, trades in trades_all.items():
             for t in trades:
-                row = {"variant": variant}; row.update(t); writer.writerow(row)
+                row = {"variant": variant}
+                row.update(t)
+                writer.writerow(row)
 
     md = []
-    md.append("# SMC Signal Bot — Walk-Forward Validation\n")
+    md.append("# SMC Signal Bot — Walk-Forward Validation (v2)\n")
     md.append(f"**Generated:** {generated}\n")
     md.append("## Configuration\n")
     md.append("| Parameter | Value |")
@@ -376,13 +348,14 @@ def _write_reports(all_windows_data, aggregate, random_agg, config_snap, trades_
     md.append("")
 
     md.append("## Interpretation\n")
-    md.append("- `same_bar`, `next_bar_open`, `next_bar_limit` = signal fires at retrace, enter immediately or next bar.")
-    md.append("- `prepositioned_limit` = signal fires at BOS, limit at OB mid, wait up to N bars for retrace fill.")
-    md.append("- `prepositioned_limit_confirmed` = same + require a direction-confirming candle after fill.")
+    md.append("- `same_bar`: fill on the retrace candle (fantasy benchmark, unrealistic).")
+    md.append("- `next_bar_open`: fill at next candle open (chase entry).")
+    md.append("- `next_bar_limit`: limit at OB mid, only next candle (chase entry).")
+    md.append("- `prepositioned_limit`: signal at BOS, limit at OB mid, wait N bars (realistic SMC entry).")
+    md.append("- `prepositioned_limit_confirmed`: same + require confirmation candle after fill.")
     md.append("")
-    md.append("**Decision criteria:**")
-    md.append("- If prepositioned variants beat random baseline with positive expectancy → zones are genuinely respected → real edge.")
-    md.append("- If all variants lose to random baseline → base pattern has no edge as defined → pivot to adding FVG / session / HTF bias as core filters.")
+    md.append("**Fixed in v2:** BOS signals only fire when the BOS bar is the current bar — no re-emission.")
+    md.append("")
 
     with open(os.path.join(REPORTS_DIR, "walkforward_latest.md"), "w") as f:
         f.write("\n".join(md))
@@ -394,7 +367,7 @@ def _write_reports(all_windows_data, aggregate, random_agg, config_snap, trades_
 
 def main():
     random.seed(42)
-    log(f"Walk-forward — {N_WINDOWS} windows × {len(VARIANTS)} variants")
+    log(f"Walk-forward v2 — {N_WINDOWS} windows × {len(VARIANTS)} variants")
 
     per_window = {w: {"retrace": [], "bos": []} for w in range(1, N_WINDOWS + 1)}
     random_results = []
@@ -404,10 +377,12 @@ def main():
         try:
             candles = fetch_candles_paginated(sym, GRANULARITY, BACKTEST_CANDLES)
         except Exception as e:
-            log(f"  fetch failed: {e}"); continue
+            log(f"  fetch failed: {e}")
+            continue
         n = len(candles)
         if n < WARMUP_BARS + DETECT_WINDOW + 500:
-            log(f"  not enough candles"); continue
+            log(f"  not enough candles")
+            continue
 
         usable_start = WARMUP_BARS + DETECT_WINDOW
         usable_end = n - MAX_HORIZON_BARS - 3
@@ -419,9 +394,11 @@ def main():
             e = s + win_size if w < N_WINDOWS - 1 else usable_end
             ret_sigs, bos_sigs = collect_signals(candles, s, e)
             for sig in ret_sigs:
-                sig["symbol"] = sym; sig["candles_ref"] = candles
+                sig["symbol"] = sym
+                sig["candles_ref"] = candles
             for sig in bos_sigs:
-                sig["symbol"] = sym; sig["candles_ref"] = candles
+                sig["symbol"] = sym
+                sig["candles_ref"] = candles
             per_window[w + 1]["retrace"].extend(ret_sigs)
             per_window[w + 1]["bos"].extend(bos_sigs)
             log(f"  W{w+1}: retrace={len(ret_sigs)} bos={len(bos_sigs)}")
@@ -451,7 +428,8 @@ def main():
                     skipped += 1
                     continue
                 if r["outcome"] == "win":
-                    wins += 1; r_won += r["rr_eff"]
+                    wins += 1
+                    r_won += r["rr_eff"]
                 elif r["outcome"] == "loss":
                     losses += 1
                 else:
@@ -471,7 +449,7 @@ def main():
             n_eval = wins + losses + timeouts
             exp = net_r / n_eval if n_eval else 0
 
-            log(f"  {vname:32s} n={n_eval:4d} skip={skipped:3d} "
+            log(f"  {vname:32s} n={n_eval:5d} skip={skipped:5d} "
                 f"W{wins}/L{losses}/T{timeouts}  WR={wr:5.1f}%  exp={exp:+.3f}R")
 
             all_windows_data.append({
@@ -497,7 +475,7 @@ def main():
         exp = net_r / n if n else 0
         aggregate[vname] = {"n": n, "skipped": skipped, "wins": wins, "losses": losses,
                             "timeouts": timeouts, "wr": wr, "expectancy": exp, "net_r": net_r}
-        log(f"  {vname:32s} n={n:4d} skip={skipped:4d} "
+        log(f"  {vname:32s} n={n:5d} skip={skipped:5d} "
             f"W{wins}/L{losses}/T{timeouts}  WR={wr:5.1f}%  exp={exp:+.3f}R  netR={net_r:+.1f}")
 
     log("\n" + "=" * 70)
