@@ -1,6 +1,6 @@
-# SMC Signal Bot — Walk-Forward Validation
+# SMC Signal Bot — Walk-Forward Validation (v2)
 
-**Generated:** 2026-10-02T09:37:31Z
+**Generated:** 2026-10-02T10:16:05Z
 
 ## Configuration
 
@@ -22,51 +22,51 @@
 
 | Window | Variant | Signals | Skipped | Wins | Losses | Timeouts | WR | Expectancy | Net R |
 |--------|---------|---------|---------|------|--------|----------|-----|------------|-------|
-| W1 | same_bar | 43 | 0 | 28 | 15 | 0 | 65.1% | +1.302 | +56.0 |
-| W1 | next_bar_open | 16 | 27 | 6 | 10 | 0 | 37.5% | -0.329 | -5.3 |
-| W1 | next_bar_limit | 9 | 34 | 0 | 9 | 0 | 0.0% | -1.000 | -9.0 |
-| W1 | prepositioned_limit | 5370 | 2468 | 1437 | 3906 | 27 | 26.9% | +0.392 | +2103.3 |
-| W1 | prepositioned_limit_confirmed | 2836 | 5002 | 1094 | 1701 | 41 | 39.1% | +0.057 | +161.7 |
-| W2 | same_bar | 44 | 0 | 33 | 11 | 0 | 75.0% | +1.809 | +79.6 |
-| W2 | next_bar_open | 19 | 25 | 11 | 8 | 0 | 57.9% | -0.087 | -1.7 |
-| W2 | next_bar_limit | 4 | 40 | 2 | 2 | 0 | 50.0% | +0.291 | +1.2 |
-| W2 | prepositioned_limit | 5538 | 2661 | 1487 | 4014 | 37 | 27.0% | +0.513 | +2843.4 |
-| W2 | prepositioned_limit_confirmed | 2660 | 5539 | 1114 | 1516 | 30 | 42.4% | +0.098 | +260.3 |
-| W3 | same_bar | 51 | 0 | 32 | 19 | 0 | 62.7% | +1.052 | +53.7 |
-| W3 | next_bar_open | 23 | 28 | 7 | 16 | 0 | 30.4% | -0.396 | -9.1 |
-| W3 | next_bar_limit | 7 | 44 | 0 | 7 | 0 | 0.0% | -1.000 | -7.0 |
-| W3 | prepositioned_limit | 5743 | 1919 | 1457 | 4224 | 62 | 25.6% | +0.285 | +1636.8 |
-| W3 | prepositioned_limit_confirmed | 2943 | 4719 | 1161 | 1724 | 58 | 40.2% | +0.076 | +225.1 |
-| W4 | same_bar | 40 | 0 | 25 | 15 | 0 | 62.5% | +1.223 | +48.9 |
-| W4 | next_bar_open | 19 | 21 | 9 | 10 | 0 | 47.4% | -0.140 | -2.7 |
-| W4 | next_bar_limit | 4 | 36 | 0 | 4 | 0 | 0.0% | -1.000 | -4.0 |
-| W4 | prepositioned_limit | 5951 | 2836 | 1374 | 4514 | 63 | 23.3% | +0.239 | +1420.1 |
-| W4 | prepositioned_limit_confirmed | 3230 | 5557 | 1252 | 1931 | 47 | 39.3% | -0.037 | -120.4 |
+| W1 | same_bar | 165 | 0 | 109 | 56 | 0 | 66.1% | +1.334 | +220.1 |
+| W1 | next_bar_open | 58 | 107 | 26 | 32 | 0 | 44.8% | -0.206 | -11.9 |
+| W1 | next_bar_limit | 30 | 135 | 0 | 30 | 0 | 0.0% | -1.000 | -30.0 |
+| W1 | prepositioned_limit | 280 | 221 | 66 | 214 | 0 | 23.6% | -0.211 | -59.0 |
+| W1 | prepositioned_limit_confirmed | 109 | 392 | 46 | 63 | 0 | 42.2% | -0.079 | -8.7 |
+| W2 | same_bar | 179 | 0 | 122 | 57 | 0 | 68.2% | +1.748 | +312.9 |
+| W2 | next_bar_open | 94 | 85 | 54 | 40 | 0 | 57.4% | -0.177 | -16.6 |
+| W2 | next_bar_limit | 9 | 170 | 3 | 6 | 0 | 33.3% | -0.132 | -1.2 |
+| W2 | prepositioned_limit | 493 | 206 | 117 | 376 | 0 | 23.7% | -0.148 | -72.9 |
+| W2 | prepositioned_limit_confirmed | 200 | 499 | 60 | 140 | 0 | 30.0% | -0.416 | -83.1 |
+| W3 | same_bar | 191 | 0 | 117 | 74 | 0 | 61.3% | +1.037 | +198.0 |
+| W3 | next_bar_open | 100 | 91 | 31 | 69 | 0 | 31.0% | -0.407 | -40.7 |
+| W3 | next_bar_limit | 21 | 170 | 0 | 21 | 0 | 0.0% | -1.000 | -21.0 |
+| W3 | prepositioned_limit | 439 | 132 | 97 | 342 | 0 | 22.1% | -0.068 | -30.0 |
+| W3 | prepositioned_limit_confirmed | 192 | 379 | 58 | 134 | 0 | 30.2% | -0.377 | -72.4 |
+| W4 | same_bar | 161 | 0 | 97 | 64 | 0 | 60.2% | +1.034 | +166.4 |
+| W4 | next_bar_open | 77 | 84 | 32 | 45 | 0 | 41.6% | -0.304 | -23.4 |
+| W4 | next_bar_limit | 15 | 146 | 0 | 15 | 0 | 0.0% | -1.000 | -15.0 |
+| W4 | prepositioned_limit | 436 | 208 | 92 | 342 | 2 | 21.2% | -0.156 | -67.8 |
+| W4 | prepositioned_limit_confirmed | 187 | 457 | 55 | 130 | 2 | 29.7% | -0.347 | -64.9 |
 
 ## Aggregate Across All Windows
 
 | Variant | Signals | Skipped | Wins | Losses | Timeouts | WR | Expectancy | Net R |
 |---------|---------|---------|------|--------|----------|-----|------------|-------|
-| same_bar | 178 | 0 | 118 | 60 | 0 | 66.3% | +1.338 | +238.2 |
-| next_bar_open | 77 | 101 | 33 | 44 | 0 | 42.9% | -0.243 | -18.7 |
-| next_bar_limit | 24 | 154 | 2 | 22 | 0 | 8.3% | -0.785 | -18.8 |
-| prepositioned_limit | 22602 | 9884 | 5755 | 16658 | 189 | 25.7% | +0.354 | +8003.5 |
-| prepositioned_limit_confirmed | 11669 | 20817 | 4621 | 6872 | 176 | 40.2% | +0.045 | +526.6 |
+| same_bar | 696 | 0 | 445 | 251 | 0 | 63.9% | +1.289 | +897.5 |
+| next_bar_open | 329 | 367 | 143 | 186 | 0 | 43.5% | -0.282 | -92.7 |
+| next_bar_limit | 75 | 621 | 3 | 72 | 0 | 4.0% | -0.896 | -67.2 |
+| prepositioned_limit | 1648 | 767 | 372 | 1274 | 2 | 22.6% | -0.139 | -229.6 |
+| prepositioned_limit_confirmed | 688 | 1727 | 219 | 467 | 2 | 31.9% | -0.333 | -229.1 |
 
 ## Random Baseline
 
 - **Signals:** 10000
-- **Wins / Losses / Timeouts:** 2025 / 7974 / 1
-- **Win rate:** 20.3%
-- **Expectancy:** +0.013 R
-- **Net R:** +126.0
+- **Wins / Losses / Timeouts:** 2009 / 7990 / 1
+- **Win rate:** 20.1%
+- **Expectancy:** +0.005 R
+- **Net R:** +46.0
 
 ## Interpretation
 
-- `same_bar`, `next_bar_open`, `next_bar_limit` = signal fires at retrace, enter immediately or next bar.
-- `prepositioned_limit` = signal fires at BOS, limit at OB mid, wait up to N bars for retrace fill.
-- `prepositioned_limit_confirmed` = same + require a direction-confirming candle after fill.
+- `same_bar`: fill on the retrace candle (fantasy benchmark, unrealistic).
+- `next_bar_open`: fill at next candle open (chase entry).
+- `next_bar_limit`: limit at OB mid, only next candle (chase entry).
+- `prepositioned_limit`: signal at BOS, limit at OB mid, wait N bars (realistic SMC entry).
+- `prepositioned_limit_confirmed`: same + require confirmation candle after fill.
 
-**Decision criteria:**
-- If prepositioned variants beat random baseline with positive expectancy → zones are genuinely respected → real edge.
-- If all variants lose to random baseline → base pattern has no edge as defined → pivot to adding FVG / session / HTF bias as core filters.
+**Fixed in v2:** BOS signals only fire when the BOS bar is the current bar — no re-emission.
