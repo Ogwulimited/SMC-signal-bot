@@ -1,0 +1,190 @@
+{
+  "generated": "2026-10-02T08:24:23Z",
+  "config": {
+    "timeframe": "M15",
+    "symbols_count": 20,
+    "candles_requested": 12000,
+    "warmup_bars": 200,
+    "detect_window": 500,
+    "n_windows": 4,
+    "random_trials": 500,
+    "max_horizon_bars": 96,
+    "spread_atr_frac": 0.04,
+    "min_rr": 1.5,
+    "min_ob_width_atr": 0.3,
+    "min_target_atr": 1.0,
+    "buffer_atr": 0.2
+  },
+  "per_window": [
+    {
+      "window": 1,
+      "variant": "same_bar",
+      "n": 43,
+      "wins": 28,
+      "losses": 15,
+      "timeouts": 0,
+      "wr": 65.11627906976744,
+      "expectancy": 1.302137855129111,
+      "net_r": 55.99192777055177
+    },
+    {
+      "window": 1,
+      "variant": "next_bar_open",
+      "n": 16,
+      "wins": 6,
+      "losses": 10,
+      "timeouts": 0,
+      "wr": 37.5,
+      "expectancy": -0.3289617844492512,
+      "net_r": -5.26338855118802
+    },
+    {
+      "window": 1,
+      "variant": "next_bar_limit",
+      "n": 9,
+      "wins": 0,
+      "losses": 9,
+      "timeouts": 0,
+      "wr": 0.0,
+      "expectancy": -1.0,
+      "net_r": -9.0
+    },
+    {
+      "window": 2,
+      "variant": "same_bar",
+      "n": 44,
+      "wins": 33,
+      "losses": 11,
+      "timeouts": 0,
+      "wr": 75.0,
+      "expectancy": 1.8092165036815417,
+      "net_r": 79.60552616198784
+    },
+    {
+      "window": 2,
+      "variant": "next_bar_open",
+      "n": 19,
+      "wins": 11,
+      "losses": 8,
+      "timeouts": 0,
+      "wr": 57.89473684210527,
+      "expectancy": -0.08735788242211932,
+      "net_r": -1.6597997660202672
+    },
+    {
+      "window": 2,
+      "variant": "next_bar_limit",
+      "n": 4,
+      "wins": 2,
+      "losses": 2,
+      "timeouts": 0,
+      "wr": 50.0,
+      "expectancy": 0.29142982402153783,
+      "net_r": 1.1657192960861513
+    },
+    {
+      "window": 3,
+      "variant": "same_bar",
+      "n": 51,
+      "wins": 32,
+      "losses": 19,
+      "timeouts": 0,
+      "wr": 62.745098039215684,
+      "expectancy": 1.052018939415625,
+      "net_r": 53.65296591019687
+    },
+    {
+      "window": 3,
+      "variant": "next_bar_open",
+      "n": 23,
+      "wins": 7,
+      "losses": 16,
+      "timeouts": 0,
+      "wr": 30.434782608695656,
+      "expectancy": -0.3959693168449162,
+      "net_r": -9.107294287433072
+    },
+    {
+      "window": 3,
+      "variant": "next_bar_limit",
+      "n": 7,
+      "wins": 0,
+      "losses": 7,
+      "timeouts": 0,
+      "wr": 0.0,
+      "expectancy": -1.0,
+      "net_r": -7.0
+    },
+    {
+      "window": 4,
+      "variant": "same_bar",
+      "n": 39,
+      "wins": 24,
+      "losses": 15,
+      "timeouts": 0,
+      "wr": 61.53846153846154,
+      "expectancy": 1.1376239104557417,
+      "net_r": 44.367332507773924
+    },
+    {
+      "window": 4,
+      "variant": "next_bar_open",
+      "n": 18,
+      "wins": 8,
+      "losses": 10,
+      "timeouts": 0,
+      "wr": 44.44444444444444,
+      "expectancy": -0.20972149387108427,
+      "net_r": -3.774986889679517
+    },
+    {
+      "window": 4,
+      "variant": "next_bar_limit",
+      "n": 4,
+      "wins": 0,
+      "losses": 4,
+      "timeouts": 0,
+      "wr": 0.0,
+      "expectancy": -1.0,
+      "net_r": -4.0
+    }
+  ],
+  "aggregate": {
+    "same_bar": {
+      "n": 177,
+      "wins": 117,
+      "losses": 60,
+      "timeouts": 0,
+      "wr": 66.10169491525424,
+      "expectancy": 1.3198743070650307,
+      "net_r": 233.61775235051044
+    },
+    "next_bar_open": {
+      "n": 76,
+      "wins": 32,
+      "losses": 44,
+      "timeouts": 0,
+      "wr": 42.10526315789473,
+      "expectancy": -0.2605982828200116,
+      "net_r": -19.805469494320878
+    },
+    "next_bar_limit": {
+      "n": 24,
+      "wins": 2,
+      "losses": 22,
+      "timeouts": 0,
+      "wr": 8.333333333333332,
+      "expectancy": -0.7847616959964103,
+      "net_r": -18.834280703913848
+    }
+  },
+  "random_baseline": {
+    "n": 10000,
+    "wins": 1906,
+    "losses": 8093,
+    "timeouts": 1,
+    "wr": 19.061906190619062,
+    "expectancy": -0.0469,
+    "net_r": -469.0
+  }
+}
