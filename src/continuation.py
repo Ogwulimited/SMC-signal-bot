@@ -1,6 +1,7 @@
 """Continuation model: HTF bias + H1 OB + FVG + liquidity confluence.
 
-v2: relaxed h1_trend check (allow None), added optional debug counters.
+v3: only recent BOS events are candidates (within CONT_MAX_BARS_BOS_TO_TOUCH).
+Prevents stale historical BOS from inflating the pool.
 """
 
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from .config import (
     SWING_LOOKBACK, ATR_PERIOD, EQ_TOLERANCE_ATR,
     BUFFER_ATR, MIN_RR, MIN_TARGET_ATR, MIN_OB_WIDTH_ATR,
     MIN_CONT_FVG_ATR, CONT_LIQUIDITY_TOL_ATR, CONT_MAX_OB_AGE,
-    HTF_SWING_LOOKBACK,
+    CONT_MAX_BARS_BOS_TO_TOUCH, HTF_SWING_LOOKBACK,
 )
 
 
@@ -95,12 +96,12 @@ def _find_ob_before_bos(candles, bos_idx, direction, max_lookback=15):
     return None
 
 
-# Counter keys for debug logging
 COUNTERS = {
     "bias_none": 0,
     "h1_trend_none": 0,
     "h1_trend_opposite": 0,
     "total_bos": 0,
+    "bos_too_old": 0,
     "bos_wrong_dir": 0,
     "no_ob": 0,
     "ob_too_narrow": 0,
@@ -140,8 +141,6 @@ def detect_continuation_signals(h1_candles, d1_candles, debug=False):
 
     bos_events, _, h1_trend = detect_bos_choch(h1_candles, h1_swings)
 
-    # Relaxed: reject only if h1_trend is OPPOSITE to bias.
-    # Allow None (trend not yet confirmed).
     if bias == "bullish" and h1_trend == "down":
         if debug:
             COUNTERS["h1_trend_opposite"] += 1
@@ -163,6 +162,12 @@ def detect_continuation_signals(h1_candles, d1_candles, debug=False):
     for bos in bos_events:
         if debug:
             COUNTERS["total_bos"] += 1
+
+        if last_idx - bos.index > CONT_MAX_BARS_BOS_TO_TOUCH:
+            if debug:
+                COUNTERS["bos_too_old"] += 1
+            continue
+
         if bias == "bullish" and bos.direction != "up":
             if debug:
                 COUNTERS["bos_wrong_dir"] += 1
