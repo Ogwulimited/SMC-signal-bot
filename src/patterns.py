@@ -1,4 +1,9 @@
-"""Detects the Reversal_SingleSweep SMC pattern and derives entry/SL/TP."""
+"""Detects the Reversal_SingleSweep SMC pattern and derives entry/SL/TP.
+
+Two detection modes:
+  - detect_patterns:        fires when the CURRENT bar touches the OB (retrace mode)
+  - detect_patterns_at_bos: fires as soon as BOS confirms (pre-position mode)
+"""
 
 from dataclasses import dataclass
 from typing import List
@@ -58,23 +63,53 @@ def _ob_already_tapped(candles, ob, before_idx):
     return False
 
 
-def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
-    """Detect patterns where the CURRENT bar produced a REAL fill at entry.
+def _build_pattern(direction, sweep, choch, bos, ob, pools, atr):
+    """Common pattern construction with quality filters. Returns Pattern or None."""
+    buffer = BUFFER_ATR * atr
+    min_ob_w = MIN_OB_WIDTH_ATR * atr
+    min_target_dist = MIN_TARGET_ATR * atr
 
-    Additional realism filters:
-      - OB zone must be at least MIN_OB_WIDTH_ATR * ATR wide.
-      - Target must be at least MIN_TARGET_ATR * ATR away from entry.
-    """
+    if (ob.high - ob.low) < min_ob_w:
+        return None
+
+    if direction == "bullish":
+        entry = (ob.high + ob.low) / 2
+        stop = ob.low - buffer
+        target = _nearest_target_above(pools, entry)
+        if target is None or target <= entry or entry <= stop:
+            return None
+        if (target - entry) < min_target_dist:
+            return None
+        rr = (target - entry) / (entry - stop)
+    else:
+        entry = (ob.high + ob.low) / 2
+        stop = ob.high + buffer
+        target = _nearest_target_below(pools, entry)
+        if target is None or target >= entry or stop <= entry:
+            return None
+        if (entry - target) < min_target_dist:
+            return None
+        rr = (entry - target) / (stop - entry)
+
+    if rr < MIN_RR:
+        return None
+
+    return Pattern(
+        direction=direction, sweep=sweep, choch=choch, bos=bos, ob=ob,
+        entry=entry, stop=stop, target=target, rr=rr,
+        retrace_index=bos.index,
+    )
+
+
+def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
+    """Retrace mode: fires only when the current bar touched the OB."""
     if atr is None or not candles:
         return []
 
     patterns: List[Pattern] = []
     last_idx = len(candles) - 1
     last_candle = candles[last_idx]
-    buffer = BUFFER_ATR * atr
     min_pen = MIN_SWEEP_PENETRATION_ATR * atr
-    min_ob_w = MIN_OB_WIDTH_ATR * atr
-    min_target_dist = MIN_TARGET_ATR * atr
 
     for sweep in sweeps:
         if last_idx - sweep.index > MAX_BARS_SWEEP_TO_ENTRY:
@@ -82,116 +117,90 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
         if _sweep_penetration(candles, sweep) < min_pen:
             continue
 
-        # ---- Bullish reversal ----
         if sweep.direction == "down":
-            choch = next(
-                (c for c in chochs
-                 if c.direction == "up"
-                 and sweep.index < c.index <= sweep.index + PATTERN_LOOKBACK_BARS),
-                None,
-            )
-            if choch is None:
-                continue
-            bos = next(
-                (b for b in boss
-                 if b.direction == "up"
-                 and choch.index < b.index <= choch.index + PATTERN_LOOKBACK_BARS),
-                None,
-            )
-            if bos is None:
-                continue
-            ob = next(
-                (o for o in obs
-                 if o.direction == "bullish" and o.bos_index == bos.index),
-                None,
-            )
-            if ob is None:
-                continue
-
-            # OB freshness + width
-            if last_idx - ob.index > MAX_OB_AGE_BARS:
-                continue
-            if (ob.high - ob.low) < min_ob_w:
-                continue
-            if _ob_already_tapped(candles, ob, last_idx):
-                continue
-
-            # Real fill check
+            choch = next((c for c in chochs if c.direction == "up"
+                          and sweep.index < c.index <= sweep.index + PATTERN_LOOKBACK_BARS), None)
+            if choch is None: continue
+            bos = next((b for b in boss if b.direction == "up"
+                        and choch.index < b.index <= choch.index + PATTERN_LOOKBACK_BARS), None)
+            if bos is None: continue
+            ob = next((o for o in obs if o.direction == "bullish" and o.bos_index == bos.index), None)
+            if ob is None: continue
+            if last_idx - ob.index > MAX_OB_AGE_BARS: continue
+            if _ob_already_tapped(candles, ob, last_idx): continue
             entry = (ob.high + ob.low) / 2
-            if last_candle["low"] > entry:
-                continue
+            if last_candle["low"] > entry: continue
 
-            stop = ob.low - buffer
-            target = _nearest_target_above(pools, entry)
-            if target is None or target <= entry or entry <= stop:
-                continue
+            p = _build_pattern("bullish", sweep, choch, bos, ob, pools, atr)
+            if p is not None:
+                p.retrace_index = last_idx
+                patterns.append(p)
 
-            # Minimum target distance
-            if (target - entry) < min_target_dist:
-                continue
-
-            rr = (target - entry) / (entry - stop)
-            if rr < MIN_RR:
-                continue
-
-            patterns.append(Pattern(
-                direction="bullish", sweep=sweep, choch=choch, bos=bos, ob=ob,
-                entry=entry, stop=stop, target=target, rr=rr, retrace_index=last_idx,
-            ))
-
-        # ---- Bearish reversal ----
         elif sweep.direction == "up":
-            choch = next(
-                (c for c in chochs
-                 if c.direction == "down"
-                 and sweep.index < c.index <= sweep.index + PATTERN_LOOKBACK_BARS),
-                None,
-            )
-            if choch is None:
-                continue
-            bos = next(
-                (b for b in boss
-                 if b.direction == "down"
-                 and choch.index < b.index <= choch.index + PATTERN_LOOKBACK_BARS),
-                None,
-            )
-            if bos is None:
-                continue
-            ob = next(
-                (o for o in obs
-                 if o.direction == "bearish" and o.bos_index == bos.index),
-                None,
-            )
-            if ob is None:
-                continue
-
-            if last_idx - ob.index > MAX_OB_AGE_BARS:
-                continue
-            if (ob.high - ob.low) < min_ob_w:
-                continue
-            if _ob_already_tapped(candles, ob, last_idx):
-                continue
-
+            choch = next((c for c in chochs if c.direction == "down"
+                          and sweep.index < c.index <= sweep.index + PATTERN_LOOKBACK_BARS), None)
+            if choch is None: continue
+            bos = next((b for b in boss if b.direction == "down"
+                        and choch.index < b.index <= choch.index + PATTERN_LOOKBACK_BARS), None)
+            if bos is None: continue
+            ob = next((o for o in obs if o.direction == "bearish" and o.bos_index == bos.index), None)
+            if ob is None: continue
+            if last_idx - ob.index > MAX_OB_AGE_BARS: continue
+            if _ob_already_tapped(candles, ob, last_idx): continue
             entry = (ob.high + ob.low) / 2
-            if last_candle["high"] < entry:
-                continue
+            if last_candle["high"] < entry: continue
 
-            stop = ob.high + buffer
-            target = _nearest_target_below(pools, entry)
-            if target is None or target >= entry or stop <= entry:
-                continue
+            p = _build_pattern("bearish", sweep, choch, bos, ob, pools, atr)
+            if p is not None:
+                p.retrace_index = last_idx
+                patterns.append(p)
 
-            if (entry - target) < min_target_dist:
-                continue
+    return patterns
 
-            rr = (entry - target) / (stop - entry)
-            if rr < MIN_RR:
-                continue
 
-            patterns.append(Pattern(
-                direction="bearish", sweep=sweep, choch=choch, bos=bos, ob=ob,
-                entry=entry, stop=stop, target=target, rr=rr, retrace_index=last_idx,
-            ))
+def detect_patterns_at_bos(candles, sweeps, chochs, boss, obs, pools, atr):
+    """Pre-position mode: fires as soon as the BOS bar is confirmed.
+
+    Does NOT require the current bar to touch the OB.
+    Caller places a limit order and waits for fill.
+    """
+    if atr is None or not candles:
+        return []
+
+    patterns: List[Pattern] = []
+    min_pen = MIN_SWEEP_PENETRATION_ATR * atr
+
+    for sweep in sweeps:
+        if _sweep_penetration(candles, sweep) < min_pen:
+            continue
+
+        if sweep.direction == "down":
+            choch = next((c for c in chochs if c.direction == "up"
+                          and sweep.index < c.index <= sweep.index + PATTERN_LOOKBACK_BARS), None)
+            if choch is None: continue
+            bos = next((b for b in boss if b.direction == "up"
+                        and choch.index < b.index <= choch.index + PATTERN_LOOKBACK_BARS), None)
+            if bos is None: continue
+            ob = next((o for o in obs if o.direction == "bullish" and o.bos_index == bos.index), None)
+            if ob is None: continue
+
+            p = _build_pattern("bullish", sweep, choch, bos, ob, pools, atr)
+            if p is not None:
+                patterns.append(p)
+
+        elif sweep.direction == "up":
+            choch = next((c for c in chochs if c.direction == "down"
+                          and sweep.index < c.index <= sweep.index + PATTERN_LOOKBACK_BARS), None)
+            if choch is None: continue
+            bos = next((b for b in boss if b.direction == "down"
+                        and choch.index < b.index <= choch.index + PATTERN_LOOKBACK_BARS), None)
+            if bos is None: continue
+            ob = next((o for o in obs if o.direction == "bearish" and o.bos_index == bos.index), None)
+            if ob is None: continue
+
+            p = _build_pattern("bearish", sweep, choch, bos, ob, pools, atr)
+            if p is not None:
+                patterns.append(p)
 
     return patterns
 
