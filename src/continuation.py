@@ -1,7 +1,6 @@
 """Continuation model: HTF bias + H1 OB + FVG + liquidity confluence.
 
-v3: only recent BOS events are candidates (within CONT_MAX_BARS_BOS_TO_TOUCH).
-Prevents stale historical BOS from inflating the pool.
+v4: fixed touched_before scan — only bars after BOS count as "prior touches".
 """
 
 from dataclasses import dataclass
@@ -220,8 +219,11 @@ def detect_continuation_signals(h1_candles, d1_candles, debug=False):
                     COUNTERS["not_touching_now"] += 1
                 continue
 
+        # FIXED: only bars AFTER the BOS count as prior touches.
+        # The displacement candle (right after OB) often overlaps entry,
+        # so scanning from ob_idx+1 falsely flagged every first touch.
         touched_before = False
-        for k in range(ob_idx + 1, last_idx):
+        for k in range(bos.index + 1, last_idx):
             c = h1_candles[k]
             if c["low"] <= entry <= c["high"]:
                 touched_before = True
