@@ -1,0 +1,133 @@
+{
+  "generated": "2026-10-02T18:22:50Z",
+  "config": {
+    "timeframe": "H1",
+    "htf_granularity_sec": 86400,
+    "symbols_count": 20,
+    "candles_requested": 8000,
+    "max_horizon_bars": 48,
+    "spread_atr_frac": 0.04,
+    "min_cont_fvg_atr": 0.15,
+    "cont_liquidity_tol_atr": 2.0,
+    "cont_confirmation_wait_bars": 5
+  },
+  "per_window": [
+    {
+      "window": 1,
+      "variant": "aggressive",
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
+      "timeouts": 0,
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
+    },
+    {
+      "window": 1,
+      "variant": "confirmed",
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
+      "timeouts": 0,
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
+    },
+    {
+      "window": 2,
+      "variant": "aggressive",
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
+      "timeouts": 0,
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
+    },
+    {
+      "window": 2,
+      "variant": "confirmed",
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
+      "timeouts": 0,
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
+    },
+    {
+      "window": 3,
+      "variant": "aggressive",
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
+      "timeouts": 0,
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
+    },
+    {
+      "window": 3,
+      "variant": "confirmed",
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
+      "timeouts": 0,
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
+    },
+    {
+      "window": 4,
+      "variant": "aggressive",
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
+      "timeouts": 0,
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
+    },
+    {
+      "window": 4,
+      "variant": "confirmed",
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
+      "timeouts": 0,
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
+    }
+  ],
+  "aggregate": {
+    "aggressive": {
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
+      "timeouts": 0,
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
+    },
+    "confirmed": {
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
+      "timeouts": 0,
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
+    }
+  },
+  "random_baseline": {
+    "n": 10000,
+    "wins": 1985,
+    "losses": 8005,
+    "timeouts": 10,
+    "wr": 19.86986986986987,
+    "expectancy": -0.0065,
+    "net_r": -65.0
+  }
+}
