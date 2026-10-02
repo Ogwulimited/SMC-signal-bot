@@ -1,13 +1,6 @@
 """Continuation model: HTF bias + H1 OB + FVG + liquidity confluence.
 
-Rules:
-  1. HTF (D1) must have a direction (bullish/bearish) via CHoCH.
-  2. H1 trend must align with HTF direction.
-  3. For each H1 BOS in the trend direction, the OB is the last opposite
-     candle before the displacement leg.
-  4. The displacement leg must contain an FVG in the trend direction.
-  5. A liquidity pool must exist within CONT_LIQUIDITY_TOL_ATR of the OB.
-  6. Signal fires when the current H1 bar touches the OB mid (first tap).
+v2: relaxed h1_trend check (allow None), added optional debug counters.
 """
 
 from dataclasses import dataclass
@@ -28,13 +21,13 @@ from .config import (
 
 @dataclass
 class ContinuationPattern:
-    direction: str          # "bullish" | "bearish"
-    ob_index: int           # H1 bar index of the OB candle
-    bos_index: int          # H1 bar index of the BOS
-    touch_index: int        # H1 bar where price first touched OB
+    direction: str
+    ob_index: int
+    bos_index: int
+    touch_index: int
     ob_high: float
     ob_low: float
-    entry: float            # OB midpoint
+    entry: float
     stop: float
     target: float
     rr: float
@@ -43,10 +36,11 @@ class ContinuationPattern:
 
 
 def detect_htf_bias(d1_candles) -> Optional[str]:
-    """Return 'bullish' / 'bearish' / None based on D1 CHoCH."""
     if not d1_candles or len(d1_candles) < HTF_SWING_LOOKBACK * 2 + 10:
         return None
     swings = find_swings(d1_candles, HTF_SWING_LOOKBACK)
+    if not swings:
+        return None
     _, _, trend = detect_bos_choch(d1_candles, swings)
     if trend == "up":
         return "bullish"
@@ -56,7 +50,6 @@ def detect_htf_bias(d1_candles) -> Optional[str]:
 
 
 def _has_matching_fvg(candles, ob_idx, bos_idx, direction, atr) -> bool:
-    """True if a matching-direction FVG exists between OB and BOS with size >= threshold."""
     fvgs = find_fvgs_in_range(candles, ob_idx, bos_idx, direction, atr)
     min_size = MIN_CONT_FVG_ATR * atr
     for f in fvgs:
@@ -66,11 +59,6 @@ def _has_matching_fvg(candles, ob_idx, bos_idx, direction, atr) -> bool:
 
 
 def _has_nearby_liquidity(pools, direction, ob_high, ob_low, atr) -> bool:
-    """A structural liquidity pool within CONT_LIQUIDITY_TOL_ATR of the OB.
-
-    For bullish: pool BELOW ob_low (inducement / protective liquidity)
-    For bearish: pool ABOVE ob_high
-    """
     tol = CONT_LIQUIDITY_TOL_ATR * atr
     if direction == "bullish":
         for p in pools:
@@ -98,7 +86,6 @@ def _nearest_target_below(pools, price):
 
 
 def _find_ob_before_bos(candles, bos_idx, direction, max_lookback=15):
-    """The last opposite-direction candle before the BOS candle."""
     for j in range(bos_idx - 1, max(0, bos_idx - max_lookback) - 1, -1):
         c = candles[j]
         if direction == "bullish" and c["close"] < c["open"]:
@@ -108,10 +95,36 @@ def _find_ob_before_bos(candles, bos_idx, direction, max_lookback=15):
     return None
 
 
-def detect_continuation_signals(h1_candles, d1_candles):
-    """Return continuation patterns whose OB was touched by the LATEST H1 bar."""
+# Counter keys for debug logging
+COUNTERS = {
+    "bias_none": 0,
+    "h1_trend_none": 0,
+    "h1_trend_opposite": 0,
+    "total_bos": 0,
+    "bos_wrong_dir": 0,
+    "no_ob": 0,
+    "ob_too_narrow": 0,
+    "ob_too_old": 0,
+    "no_fvg": 0,
+    "no_liquidity": 0,
+    "not_touching_now": 0,
+    "touched_before": 0,
+    "no_target": 0,
+    "rr_too_low": 0,
+    "emitted": 0,
+}
+
+
+def reset_counters():
+    for k in COUNTERS:
+        COUNTERS[k] = 0
+
+
+def detect_continuation_signals(h1_candles, d1_candles, debug=False):
     bias = detect_htf_bias(d1_candles)
     if bias is None:
+        if debug:
+            COUNTERS["bias_none"] += 1
         return []
 
     if len(h1_candles) < SWING_LOOKBACK * 2 + ATR_PERIOD + 50:
@@ -122,13 +135,23 @@ def detect_continuation_signals(h1_candles, d1_candles):
         return []
 
     h1_swings = find_swings(h1_candles, SWING_LOOKBACK)
+    if not h1_swings:
+        return []
+
     bos_events, _, h1_trend = detect_bos_choch(h1_candles, h1_swings)
 
-    # H1 trend must align with HTF
-    if bias == "bullish" and h1_trend != "up":
+    # Relaxed: reject only if h1_trend is OPPOSITE to bias.
+    # Allow None (trend not yet confirmed).
+    if bias == "bullish" and h1_trend == "down":
+        if debug:
+            COUNTERS["h1_trend_opposite"] += 1
         return []
-    if bias == "bearish" and h1_trend != "down":
+    if bias == "bearish" and h1_trend == "up":
+        if debug:
+            COUNTERS["h1_trend_opposite"] += 1
         return []
+    if h1_trend is None and debug:
+        COUNTERS["h1_trend_none"] += 1
 
     pools = find_liquidity_pools(h1_candles, h1_swings, atr, EQ_TOLERANCE_ATR)
 
@@ -138,43 +161,60 @@ def detect_continuation_signals(h1_candles, d1_candles):
     out: List[ContinuationPattern] = []
 
     for bos in bos_events:
+        if debug:
+            COUNTERS["total_bos"] += 1
         if bias == "bullish" and bos.direction != "up":
+            if debug:
+                COUNTERS["bos_wrong_dir"] += 1
             continue
         if bias == "bearish" and bos.direction != "down":
+            if debug:
+                COUNTERS["bos_wrong_dir"] += 1
             continue
 
         ob_idx = _find_ob_before_bos(h1_candles, bos.index, bias)
         if ob_idx is None:
+            if debug:
+                COUNTERS["no_ob"] += 1
             continue
 
         ob = h1_candles[ob_idx]
         ob_high = ob["high"]
         ob_low = ob["low"]
 
-        # OB quality gates
         if (ob_high - ob_low) < MIN_OB_WIDTH_ATR * atr:
+            if debug:
+                COUNTERS["ob_too_narrow"] += 1
             continue
         if last_idx - ob_idx > CONT_MAX_OB_AGE:
+            if debug:
+                COUNTERS["ob_too_old"] += 1
             continue
 
         has_fvg = _has_matching_fvg(h1_candles, ob_idx, bos.index, bias, atr)
         if not has_fvg:
+            if debug:
+                COUNTERS["no_fvg"] += 1
             continue
 
         has_liq = _has_nearby_liquidity(pools, bias, ob_high, ob_low, atr)
         if not has_liq:
+            if debug:
+                COUNTERS["no_liquidity"] += 1
             continue
 
-        # Only fire when the LATEST bar first touches the OB
         entry = (ob_high + ob_low) / 2
         if bias == "bullish":
             if last["low"] > entry:
+                if debug:
+                    COUNTERS["not_touching_now"] += 1
                 continue
         else:
             if last["high"] < entry:
+                if debug:
+                    COUNTERS["not_touching_now"] += 1
                 continue
 
-        # Never touched before the latest bar
         touched_before = False
         for k in range(ob_idx + 1, last_idx):
             c = h1_candles[k]
@@ -182,27 +222,42 @@ def detect_continuation_signals(h1_candles, d1_candles):
                 touched_before = True
                 break
         if touched_before:
+            if debug:
+                COUNTERS["touched_before"] += 1
             continue
 
         if bias == "bullish":
             stop = ob_low - BUFFER_ATR * atr
             target = _nearest_target_above(pools, entry)
             if target is None or target <= entry or entry <= stop:
+                if debug:
+                    COUNTERS["no_target"] += 1
                 continue
             if (target - entry) < MIN_TARGET_ATR * atr:
+                if debug:
+                    COUNTERS["no_target"] += 1
                 continue
             rr = (target - entry) / (entry - stop)
         else:
             stop = ob_high + BUFFER_ATR * atr
             target = _nearest_target_below(pools, entry)
             if target is None or target >= entry or stop <= entry:
+                if debug:
+                    COUNTERS["no_target"] += 1
                 continue
             if (entry - target) < MIN_TARGET_ATR * atr:
+                if debug:
+                    COUNTERS["no_target"] += 1
                 continue
             rr = (entry - target) / (stop - entry)
 
         if rr < MIN_RR:
+            if debug:
+                COUNTERS["rr_too_low"] += 1
             continue
+
+        if debug:
+            COUNTERS["emitted"] += 1
 
         out.append(ContinuationPattern(
             direction=bias,
