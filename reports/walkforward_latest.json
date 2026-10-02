@@ -1,25 +1,24 @@
 {
-  "generated": "2026-10-02T08:24:23Z",
+  "generated": "2026-10-02T09:37:31Z",
   "config": {
     "timeframe": "M15",
     "symbols_count": 20,
     "candles_requested": 12000,
-    "warmup_bars": 200,
-    "detect_window": 500,
     "n_windows": 4,
     "random_trials": 500,
     "max_horizon_bars": 96,
+    "max_wait_for_fill_bars": 50,
     "spread_atr_frac": 0.04,
     "min_rr": 1.5,
     "min_ob_width_atr": 0.3,
-    "min_target_atr": 1.0,
-    "buffer_atr": 0.2
+    "min_target_atr": 1.0
   },
   "per_window": [
     {
       "window": 1,
       "variant": "same_bar",
       "n": 43,
+      "skipped": 0,
       "wins": 28,
       "losses": 15,
       "timeouts": 0,
@@ -31,6 +30,7 @@
       "window": 1,
       "variant": "next_bar_open",
       "n": 16,
+      "skipped": 27,
       "wins": 6,
       "losses": 10,
       "timeouts": 0,
@@ -42,6 +42,7 @@
       "window": 1,
       "variant": "next_bar_limit",
       "n": 9,
+      "skipped": 34,
       "wins": 0,
       "losses": 9,
       "timeouts": 0,
@@ -50,9 +51,34 @@
       "net_r": -9.0
     },
     {
+      "window": 1,
+      "variant": "prepositioned_limit",
+      "n": 5370,
+      "skipped": 2468,
+      "wins": 1437,
+      "losses": 3906,
+      "timeouts": 27,
+      "wr": 26.895002807411565,
+      "expectancy": 0.39167596092332013,
+      "net_r": 2103.299910158229
+    },
+    {
+      "window": 1,
+      "variant": "prepositioned_limit_confirmed",
+      "n": 2836,
+      "skipped": 5002,
+      "wins": 1094,
+      "losses": 1701,
+      "timeouts": 41,
+      "wr": 39.14132379248658,
+      "expectancy": 0.05700455064309142,
+      "net_r": 161.66490562380727
+    },
+    {
       "window": 2,
       "variant": "same_bar",
       "n": 44,
+      "skipped": 0,
       "wins": 33,
       "losses": 11,
       "timeouts": 0,
@@ -64,6 +90,7 @@
       "window": 2,
       "variant": "next_bar_open",
       "n": 19,
+      "skipped": 25,
       "wins": 11,
       "losses": 8,
       "timeouts": 0,
@@ -75,6 +102,7 @@
       "window": 2,
       "variant": "next_bar_limit",
       "n": 4,
+      "skipped": 40,
       "wins": 2,
       "losses": 2,
       "timeouts": 0,
@@ -83,9 +111,34 @@
       "net_r": 1.1657192960861513
     },
     {
+      "window": 2,
+      "variant": "prepositioned_limit",
+      "n": 5538,
+      "skipped": 2661,
+      "wins": 1487,
+      "losses": 4014,
+      "timeouts": 37,
+      "wr": 27.03144882748591,
+      "expectancy": 0.5134298466691397,
+      "net_r": 2843.3744908536955
+    },
+    {
+      "window": 2,
+      "variant": "prepositioned_limit_confirmed",
+      "n": 2660,
+      "skipped": 5539,
+      "wins": 1114,
+      "losses": 1516,
+      "timeouts": 30,
+      "wr": 42.3574144486692,
+      "expectancy": 0.09784781044632619,
+      "net_r": 260.2751757872277
+    },
+    {
       "window": 3,
       "variant": "same_bar",
       "n": 51,
+      "skipped": 0,
       "wins": 32,
       "losses": 19,
       "timeouts": 0,
@@ -97,6 +150,7 @@
       "window": 3,
       "variant": "next_bar_open",
       "n": 23,
+      "skipped": 28,
       "wins": 7,
       "losses": 16,
       "timeouts": 0,
@@ -108,6 +162,7 @@
       "window": 3,
       "variant": "next_bar_limit",
       "n": 7,
+      "skipped": 44,
       "wins": 0,
       "losses": 7,
       "timeouts": 0,
@@ -116,75 +171,149 @@
       "net_r": -7.0
     },
     {
+      "window": 3,
+      "variant": "prepositioned_limit",
+      "n": 5743,
+      "skipped": 1919,
+      "wins": 1457,
+      "losses": 4224,
+      "timeouts": 62,
+      "wr": 25.646893152613977,
+      "expectancy": 0.28500354257451516,
+      "net_r": 1636.7753450054406
+    },
+    {
+      "window": 3,
+      "variant": "prepositioned_limit_confirmed",
+      "n": 2943,
+      "skipped": 4719,
+      "wins": 1161,
+      "losses": 1724,
+      "timeouts": 58,
+      "wr": 40.24263431542461,
+      "expectancy": 0.07647540100988011,
+      "net_r": 225.06710517207716
+    },
+    {
       "window": 4,
       "variant": "same_bar",
-      "n": 39,
-      "wins": 24,
+      "n": 40,
+      "skipped": 0,
+      "wins": 25,
       "losses": 15,
       "timeouts": 0,
-      "wr": 61.53846153846154,
-      "expectancy": 1.1376239104557417,
-      "net_r": 44.367332507773924
+      "wr": 62.5,
+      "expectancy": 1.2233833797070257,
+      "net_r": 48.93533518828103
     },
     {
       "window": 4,
       "variant": "next_bar_open",
-      "n": 18,
-      "wins": 8,
+      "n": 19,
+      "skipped": 21,
+      "wins": 9,
       "losses": 10,
       "timeouts": 0,
-      "wr": 44.44444444444444,
-      "expectancy": -0.20972149387108427,
-      "net_r": -3.774986889679517
+      "wr": 47.368421052631575,
+      "expectancy": -0.1404007241813598,
+      "net_r": -2.6676137594458362
     },
     {
       "window": 4,
       "variant": "next_bar_limit",
       "n": 4,
+      "skipped": 36,
       "wins": 0,
       "losses": 4,
       "timeouts": 0,
       "wr": 0.0,
       "expectancy": -1.0,
       "net_r": -4.0
+    },
+    {
+      "window": 4,
+      "variant": "prepositioned_limit",
+      "n": 5951,
+      "skipped": 2836,
+      "wins": 1374,
+      "losses": 4514,
+      "timeouts": 63,
+      "wr": 23.335597826086957,
+      "expectancy": 0.23862893926983525,
+      "net_r": 1420.0808175947896
+    },
+    {
+      "window": 4,
+      "variant": "prepositioned_limit_confirmed",
+      "n": 3230,
+      "skipped": 5557,
+      "wins": 1252,
+      "losses": 1931,
+      "timeouts": 47,
+      "wr": 39.3339616713792,
+      "expectancy": -0.037282590526222625,
+      "net_r": -120.42276739969907
     }
   ],
   "aggregate": {
     "same_bar": {
-      "n": 177,
-      "wins": 117,
+      "n": 178,
+      "skipped": 0,
+      "wins": 118,
       "losses": 60,
       "timeouts": 0,
-      "wr": 66.10169491525424,
-      "expectancy": 1.3198743070650307,
-      "net_r": 233.61775235051044
+      "wr": 66.29213483146067,
+      "expectancy": 1.3381222192753794,
+      "net_r": 238.18575503101755
     },
     "next_bar_open": {
-      "n": 76,
-      "wins": 32,
+      "n": 77,
+      "skipped": 101,
+      "wins": 33,
       "losses": 44,
       "timeouts": 0,
-      "wr": 42.10526315789473,
-      "expectancy": -0.2605982828200116,
-      "net_r": -19.805469494320878
+      "wr": 42.857142857142854,
+      "expectancy": -0.24283242031282073,
+      "net_r": -18.698096364087196
     },
     "next_bar_limit": {
       "n": 24,
+      "skipped": 154,
       "wins": 2,
       "losses": 22,
       "timeouts": 0,
       "wr": 8.333333333333332,
       "expectancy": -0.7847616959964103,
       "net_r": -18.834280703913848
+    },
+    "prepositioned_limit": {
+      "n": 22602,
+      "skipped": 9884,
+      "wins": 5755,
+      "losses": 16658,
+      "timeouts": 189,
+      "wr": 25.67706241913175,
+      "expectancy": 0.35410718359490995,
+      "net_r": 8003.530563612155
+    },
+    "prepositioned_limit_confirmed": {
+      "n": 11669,
+      "skipped": 20817,
+      "wins": 4621,
+      "losses": 6872,
+      "timeouts": 176,
+      "wr": 40.207082572000346,
+      "expectancy": 0.045126782002177825,
+      "net_r": 526.584419183413
     }
   },
   "random_baseline": {
     "n": 10000,
-    "wins": 1906,
-    "losses": 8093,
+    "wins": 2025,
+    "losses": 7974,
     "timeouts": 1,
-    "wr": 19.061906190619062,
-    "expectancy": -0.0469,
-    "net_r": -469.0
+    "wr": 20.25202520252025,
+    "expectancy": 0.0126,
+    "net_r": 126.0
   }
 }
