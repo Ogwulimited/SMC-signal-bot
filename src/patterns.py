@@ -1,8 +1,7 @@
 """Detects the Reversal_SingleSweep SMC pattern and derives entry/SL/TP.
 
-Two detection modes:
-  - detect_patterns:        fires when the CURRENT bar touches the OB (retrace mode)
-  - detect_patterns_at_bos: fires as soon as BOS confirms (pre-position mode)
+v2: requires a matching-direction FVG inside the displacement leg
+(OB candle -> BOS candle). An OB without imbalance is not considered valid.
 """
 
 from dataclasses import dataclass
@@ -14,6 +13,7 @@ from .config import (
     MIN_SWEEP_PENETRATION_ATR, MAX_BARS_SWEEP_TO_ENTRY, MAX_OB_AGE_BARS,
     MIN_OB_WIDTH_ATR, MIN_TARGET_ATR,
 )
+from .fvg import has_fvg_in_displacement
 
 
 @dataclass
@@ -63,31 +63,34 @@ def _ob_already_tapped(candles, ob, before_idx):
     return False
 
 
-def _build_pattern(direction, sweep, choch, bos, ob, pools, atr):
+def _build_pattern(candles, direction, sweep, choch, bos, ob, pools, atr):
     """Common pattern construction with quality filters. Returns Pattern or None."""
     buffer = BUFFER_ATR * atr
-    min_ob_w = MIN_OB_WIDTH_ATR * atr
-    min_target_dist = MIN_TARGET_ATR * atr
 
-    if (ob.high - ob.low) < min_ob_w:
+    # OB must be wide enough
+    if (ob.high - ob.low) < MIN_OB_WIDTH_ATR * atr:
         return None
 
+    # FVG filter — the displacement leg must contain a matching-direction FVG
+    if not has_fvg_in_displacement(candles, ob.index, bos.index, direction, atr):
+        return None
+
+    entry = (ob.high + ob.low) / 2
+
     if direction == "bullish":
-        entry = (ob.high + ob.low) / 2
         stop = ob.low - buffer
         target = _nearest_target_above(pools, entry)
         if target is None or target <= entry or entry <= stop:
             return None
-        if (target - entry) < min_target_dist:
+        if (target - entry) < MIN_TARGET_ATR * atr:
             return None
         rr = (target - entry) / (entry - stop)
     else:
-        entry = (ob.high + ob.low) / 2
         stop = ob.high + buffer
         target = _nearest_target_below(pools, entry)
         if target is None or target >= entry or stop <= entry:
             return None
-        if (entry - target) < min_target_dist:
+        if (entry - target) < MIN_TARGET_ATR * atr:
             return None
         rr = (entry - target) / (stop - entry)
 
@@ -102,7 +105,7 @@ def _build_pattern(direction, sweep, choch, bos, ob, pools, atr):
 
 
 def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
-    """Retrace mode: fires only when the current bar touched the OB."""
+    """Retrace mode: fires when the current bar touched the OB."""
     if atr is None or not candles:
         return []
 
@@ -131,7 +134,7 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
             entry = (ob.high + ob.low) / 2
             if last_candle["low"] > entry: continue
 
-            p = _build_pattern("bullish", sweep, choch, bos, ob, pools, atr)
+            p = _build_pattern(candles, "bullish", sweep, choch, bos, ob, pools, atr)
             if p is not None:
                 p.retrace_index = last_idx
                 patterns.append(p)
@@ -150,7 +153,7 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
             entry = (ob.high + ob.low) / 2
             if last_candle["high"] < entry: continue
 
-            p = _build_pattern("bearish", sweep, choch, bos, ob, pools, atr)
+            p = _build_pattern(candles, "bearish", sweep, choch, bos, ob, pools, atr)
             if p is not None:
                 p.retrace_index = last_idx
                 patterns.append(p)
@@ -159,11 +162,7 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
 
 
 def detect_patterns_at_bos(candles, sweeps, chochs, boss, obs, pools, atr):
-    """Pre-position mode: fires as soon as the BOS bar is confirmed.
-
-    Does NOT require the current bar to touch the OB.
-    Caller places a limit order and waits for fill.
-    """
+    """Pre-position mode: fires as soon as the BOS bar is confirmed."""
     if atr is None or not candles:
         return []
 
@@ -184,7 +183,7 @@ def detect_patterns_at_bos(candles, sweeps, chochs, boss, obs, pools, atr):
             ob = next((o for o in obs if o.direction == "bullish" and o.bos_index == bos.index), None)
             if ob is None: continue
 
-            p = _build_pattern("bullish", sweep, choch, bos, ob, pools, atr)
+            p = _build_pattern(candles, "bullish", sweep, choch, bos, ob, pools, atr)
             if p is not None:
                 patterns.append(p)
 
@@ -198,7 +197,7 @@ def detect_patterns_at_bos(candles, sweeps, chochs, boss, obs, pools, atr):
             ob = next((o for o in obs if o.direction == "bearish" and o.bos_index == bos.index), None)
             if ob is None: continue
 
-            p = _build_pattern("bearish", sweep, choch, bos, ob, pools, atr)
+            p = _build_pattern(candles, "bearish", sweep, choch, bos, ob, pools, atr)
             if p is not None:
                 patterns.append(p)
 
