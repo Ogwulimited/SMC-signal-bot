@@ -33,13 +33,13 @@ MIN_FVG_ATR = 0.0
 
 # ----- Continuation model parameters -----
 # Displacement leg must contain an FVG at least this size (fraction of ATR).
-MIN_CONT_FVG_ATR = 0.15
+MIN_CONT_FVG_ATR = 0.08
 
 # Liquidity pool must be within this many ATR of the OB for the OB to qualify.
-CONT_LIQUIDITY_TOL_ATR = 2.0
+CONT_LIQUIDITY_TOL_ATR = 3.0
 
 # OB must be no more than this many bars old when the touch fires.
-CONT_MAX_OB_AGE = 200
+CONT_MAX_OB_AGE = 800
 
 # For the "confirmed" entry: wait up to this many bars after the touch for
 # a confirming close above OB high (bullish) / below OB low (bearish).
