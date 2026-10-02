@@ -1,7 +1,6 @@
 """Detects the Reversal_SingleSweep SMC pattern and derives entry/SL/TP.
 
-v2: requires a matching-direction FVG inside the displacement leg
-(OB candle -> BOS candle). An OB without imbalance is not considered valid.
+v3: FVG check fully bypassed when MIN_FVG_ATR == 0.
 """
 
 from dataclasses import dataclass
@@ -11,7 +10,7 @@ from .smc import Sweep, CHoCH, BOS, OrderBlock
 from .config import (
     PATTERN_LOOKBACK_BARS, BUFFER_ATR, MIN_RR,
     MIN_SWEEP_PENETRATION_ATR, MAX_BARS_SWEEP_TO_ENTRY, MAX_OB_AGE_BARS,
-    MIN_OB_WIDTH_ATR, MIN_TARGET_ATR,
+    MIN_OB_WIDTH_ATR, MIN_TARGET_ATR, MIN_FVG_ATR,
 )
 from .fvg import has_fvg_in_displacement
 
@@ -64,16 +63,15 @@ def _ob_already_tapped(candles, ob, before_idx):
 
 
 def _build_pattern(candles, direction, sweep, choch, bos, ob, pools, atr):
-    """Common pattern construction with quality filters. Returns Pattern or None."""
     buffer = BUFFER_ATR * atr
 
-    # OB must be wide enough
     if (ob.high - ob.low) < MIN_OB_WIDTH_ATR * atr:
         return None
 
-    # FVG filter — the displacement leg must contain a matching-direction FVG
-    if not has_fvg_in_displacement(candles, ob.index, bos.index, direction, atr):
-        return None
+    # FVG filter — bypassed entirely when MIN_FVG_ATR == 0
+    if MIN_FVG_ATR > 0.0:
+        if not has_fvg_in_displacement(candles, ob.index, bos.index, direction, atr):
+            return None
 
     entry = (ob.high + ob.low) / 2
 
@@ -105,7 +103,6 @@ def _build_pattern(candles, direction, sweep, choch, bos, ob, pools, atr):
 
 
 def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
-    """Retrace mode: fires when the current bar touched the OB."""
     if atr is None or not candles:
         return []
 
@@ -162,7 +159,6 @@ def detect_patterns(candles, sweeps, chochs, boss, obs, pools, atr):
 
 
 def detect_patterns_at_bos(candles, sweeps, chochs, boss, obs, pools, atr):
-    """Pre-position mode: fires as soon as the BOS bar is confirmed."""
     if atr is None or not candles:
         return []
 
