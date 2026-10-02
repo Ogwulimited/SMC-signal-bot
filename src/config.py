@@ -43,7 +43,7 @@ CONT_MAX_OB_AGE = 800
 
 # Only consider BOS events that fired within the last N bars.
 # Prevents stale historical BOS from inflating the candidate pool.
-CONT_MAX_BARS_BOS_TO_TOUCH = 40
+CONT_MAX_BARS_BOS_TO_TOUCH = 200
 
 # For the "confirmed" entry: wait up to this many bars after the touch for
 # a confirming close above OB high (bullish) / below OB low (bearish).
