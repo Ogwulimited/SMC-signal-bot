@@ -1,0 +1,31 @@
+name: Continuation Backtest
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: continuation
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Run continuation backtest
+        run: python -m src.backtest_continuation
+      - name: Commit report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/ || true
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: update continuation report [skip ci]"
+          git push
