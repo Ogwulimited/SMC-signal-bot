@@ -14,7 +14,7 @@ TIMEFRAME_LABEL = "H1"
 CANDLE_COUNT = 200
 DERIV_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 
-# ----- SMC parameters -----
+# ----- SMC parameters (shared primitives) -----
 SWING_LOOKBACK = 2
 ATR_PERIOD = 14
 EQ_TOLERANCE_ATR = 0.15
@@ -23,17 +23,22 @@ DISPLACEMENT_ATR_MULT = 1.5
 MIN_RR = 1.5
 PATTERN_LOOKBACK_BARS = 30
 
-MIN_SWEEP_PENETRATION_ATR = 0.20
-MAX_BARS_SWEEP_TO_ENTRY = 80
-MAX_OB_AGE_BARS = 80
 MIN_OB_WIDTH_ATR = 0.30
 MIN_TARGET_ATR = 1.00
 
-# FVG filter — set to a value > 0 to enable, 0.0 to fully bypass
-MIN_FVG_ATR = 0.0
+# ----- Continuation model parameters -----
+# Displacement leg must contain an FVG at least this size (fraction of ATR).
+MIN_CONT_FVG_ATR = 0.15
 
-# ----- Entry wait window -----
-MAX_WAIT_FOR_FILL_BARS = 30
+# Liquidity pool must be within this many ATR of the OB for the OB to qualify.
+CONT_LIQUIDITY_TOL_ATR = 2.0
+
+# OB must be no more than this many bars old when the touch fires.
+CONT_MAX_OB_AGE = 200
+
+# For the "confirmed" entry: wait up to this many bars after the touch for
+# a confirming close above OB high (bullish) / below OB low (bearish).
+CONT_CONFIRMATION_WAIT_BARS = 5
 
 # ----- HTF bias -----
 HTF_GRANULARITY = 86400        # D1
