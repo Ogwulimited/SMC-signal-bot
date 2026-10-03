@@ -1,6 +1,6 @@
-"""Continuation model: D1 bias + H4 alignment + H1 OB entry.
+"""Continuation model: D1 bias + H1 OB entry. Time-based liquidity integrated.
 
-v5: synthetic target fallback + optional H4 trend alignment.
+v6: removed H4 filter, added PDH/PDL/weekly/session liquidity pools.
 """
 
 from dataclasses import dataclass
@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from .smc import (
     find_swings, detect_bos_choch, find_liquidity_pools,
-    compute_atr,
+    find_time_based_liquidity, compute_atr,
 )
 from .fvg import find_fvgs_in_range
 from .config import (
@@ -16,10 +16,17 @@ from .config import (
     BUFFER_ATR, MIN_RR, MIN_TARGET_ATR, MIN_OB_WIDTH_ATR,
     MIN_CONT_FVG_ATR, CONT_LIQUIDITY_TOL_ATR, CONT_MAX_OB_AGE,
     CONT_MAX_BARS_BOS_TO_TOUCH, HTF_SWING_LOOKBACK,
+    USE_TIME_BASED_LIQUIDITY,
 )
 
 
 SYNTHETIC_TARGET_ATR = 2.0
+
+# Pool kind groupings
+UPSIDE_KINDS = ("EQH", "swing_high", "PDH", "weekly_high",
+                "asia_high", "london_high", "ny_high")
+DOWNSIDE_KINDS = ("EQL", "swing_low", "PDL", "weekly_low",
+                  "asia_low", "london_low", "ny_low")
 
 
 @dataclass
@@ -37,6 +44,7 @@ class ContinuationPattern:
     has_fvg: bool
     has_liquidity_nearby: bool
     target_is_synthetic: bool
+    target_kind: str
 
 
 def detect_htf_bias(d1_candles) -> Optional[str]:
@@ -66,12 +74,12 @@ def _has_nearby_liquidity(pools, direction, ob_high, ob_low, atr) -> bool:
     tol = CONT_LIQUIDITY_TOL_ATR * atr
     if direction == "bullish":
         for p in pools:
-            if p.kind in ("EQL", "swing_low") and p.price < ob_low:
+            if p.kind in DOWNSIDE_KINDS and p.price < ob_low:
                 if (ob_low - p.price) <= tol:
                     return True
     else:
         for p in pools:
-            if p.kind in ("EQH", "swing_high") and p.price > ob_high:
+            if p.kind in UPSIDE_KINDS and p.price > ob_high:
                 if (p.price - ob_high) <= tol:
                     return True
     return False
@@ -79,14 +87,20 @@ def _has_nearby_liquidity(pools, direction, ob_high, ob_low, atr) -> bool:
 
 def _nearest_target_above(pools, price):
     cand = [p for p in pools if p.price > price and not p.swept
-            and p.kind in ("EQH", "swing_high")]
-    return min(cand, key=lambda p: p.price).price if cand else None
+            and p.kind in UPSIDE_KINDS]
+    if not cand:
+        return None, None
+    best = min(cand, key=lambda p: p.price)
+    return best.price, best.kind
 
 
 def _nearest_target_below(pools, price):
     cand = [p for p in pools if p.price < price and not p.swept
-            and p.kind in ("EQL", "swing_low")]
-    return max(cand, key=lambda p: p.price).price if cand else None
+            and p.kind in DOWNSIDE_KINDS]
+    if not cand:
+        return None, None
+    best = max(cand, key=lambda p: p.price)
+    return best.price, best.kind
 
 
 def _find_ob_before_bos(candles, bos_idx, direction, max_lookback=15):
@@ -101,7 +115,6 @@ def _find_ob_before_bos(candles, bos_idx, direction, max_lookback=15):
 
 COUNTERS = {
     "bias_none": 0,
-    "h4_misaligned": 0,
     "h1_trend_none": 0,
     "h1_trend_opposite": 0,
     "total_bos": 0,
@@ -118,6 +131,13 @@ COUNTERS = {
     "synthetic_target_used": 0,
     "rr_too_low": 0,
     "emitted": 0,
+    "target_kind_PDH": 0,
+    "target_kind_PDL": 0,
+    "target_kind_session": 0,
+    "target_kind_weekly": 0,
+    "target_kind_swing": 0,
+    "target_kind_EQ": 0,
+    "target_kind_synthetic": 0,
 }
 
 
@@ -126,23 +146,12 @@ def reset_counters():
         COUNTERS[k] = 0
 
 
-def detect_continuation_signals(h1_candles, d1_candles, h4_trend=None, debug=False):
+def detect_continuation_signals(h1_candles, d1_candles, debug=False):
     bias = detect_htf_bias(d1_candles)
     if bias is None:
         if debug:
             COUNTERS["bias_none"] += 1
         return []
-
-    # H4 alignment filter (optional)
-    if h4_trend is not None:
-        if bias == "bullish" and h4_trend != "up":
-            if debug:
-                COUNTERS["h4_misaligned"] += 1
-            return []
-        if bias == "bearish" and h4_trend != "down":
-            if debug:
-                COUNTERS["h4_misaligned"] += 1
-            return []
 
     if len(h1_candles) < SWING_LOOKBACK * 2 + ATR_PERIOD + 50:
         return []
@@ -169,6 +178,10 @@ def detect_continuation_signals(h1_candles, d1_candles, h4_trend=None, debug=Fal
         COUNTERS["h1_trend_none"] += 1
 
     pools = find_liquidity_pools(h1_candles, h1_swings, atr, EQ_TOLERANCE_ATR)
+
+    if USE_TIME_BASED_LIQUIDITY:
+        time_pools = find_time_based_liquidity(h1_candles, h1_candles[-1]["epoch"])
+        pools = pools + time_pools
 
     last_idx = len(h1_candles) - 1
     last = h1_candles[last_idx]
@@ -248,12 +261,14 @@ def detect_continuation_signals(h1_candles, d1_candles, h4_trend=None, debug=Fal
             continue
 
         target_is_synthetic = False
+        target_kind = "unknown"
 
         if bias == "bullish":
             stop = ob_low - BUFFER_ATR * atr
-            target = _nearest_target_above(pools, entry)
+            target, target_kind = _nearest_target_above(pools, entry)
             if target is None:
                 target = entry + SYNTHETIC_TARGET_ATR * atr
+                target_kind = "synthetic"
                 target_is_synthetic = True
                 if debug:
                     COUNTERS["synthetic_target_used"] += 1
@@ -268,9 +283,10 @@ def detect_continuation_signals(h1_candles, d1_candles, h4_trend=None, debug=Fal
             rr = (target - entry) / (entry - stop)
         else:
             stop = ob_high + BUFFER_ATR * atr
-            target = _nearest_target_below(pools, entry)
+            target, target_kind = _nearest_target_below(pools, entry)
             if target is None:
                 target = entry - SYNTHETIC_TARGET_ATR * atr
+                target_kind = "synthetic"
                 target_is_synthetic = True
                 if debug:
                     COUNTERS["synthetic_target_used"] += 1
@@ -291,6 +307,21 @@ def detect_continuation_signals(h1_candles, d1_candles, h4_trend=None, debug=Fal
 
         if debug:
             COUNTERS["emitted"] += 1
+            if target_kind == "PDH":
+                COUNTERS["target_kind_PDH"] += 1
+            elif target_kind == "PDL":
+                COUNTERS["target_kind_PDL"] += 1
+            elif target_kind in ("asia_high", "asia_low", "london_high",
+                                 "london_low", "ny_high", "ny_low"):
+                COUNTERS["target_kind_session"] += 1
+            elif target_kind in ("weekly_high", "weekly_low"):
+                COUNTERS["target_kind_weekly"] += 1
+            elif target_kind in ("EQH", "EQL"):
+                COUNTERS["target_kind_EQ"] += 1
+            elif target_kind in ("swing_high", "swing_low"):
+                COUNTERS["target_kind_swing"] += 1
+            elif target_kind == "synthetic":
+                COUNTERS["target_kind_synthetic"] += 1
 
         out.append(ContinuationPattern(
             direction=bias,
@@ -306,6 +337,7 @@ def detect_continuation_signals(h1_candles, d1_candles, h4_trend=None, debug=Fal
             has_fvg=has_fvg,
             has_liquidity_nearby=has_liq,
             target_is_synthetic=target_is_synthetic,
+            target_kind=target_kind,
         ))
 
     return out
