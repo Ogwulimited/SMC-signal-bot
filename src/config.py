@@ -24,7 +24,7 @@ MIN_RR = 1.5
 PATTERN_LOOKBACK_BARS = 30
 
 MIN_OB_WIDTH_ATR = 0.30
-MIN_TARGET_ATR = 1.00
+MIN_TARGET_ATR = 0.05
 
 # Legacy FVG threshold — kept for backwards compatibility with fvg.py import.
 # Set > 0 to enable FVG filtering in the reversal pattern (v2).
