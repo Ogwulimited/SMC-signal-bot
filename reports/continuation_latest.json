@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-03T19:06:39Z",
+  "generated": "2026-10-03T20:57:22Z",
   "config": {
     "symbols_count": 25,
     "failed_symbols": 0,
@@ -45,8 +45,8 @@
       "losses": 11,
       "timeouts": 0,
       "wr": 26.666666666666668,
-      "expectancy": -0.17224061892806344,
-      "net_r": -2.5836092839209517
+      "expectancy": -0.1693828695139022,
+      "net_r": -2.5407430427085327
     }
   ],
   "aggregate": {
@@ -55,16 +55,16 @@
     "losses": 22,
     "timeouts": 0,
     "wr": 47.61904761904761,
-    "expectancy": 0.3824048129367348,
-    "net_r": 16.06100214334286
+    "expectancy": 0.3834254377275066,
+    "net_r": 16.103868384555277
   },
   "random_baseline": {
     "n": 12500,
-    "wins": 2365,
-    "losses": 10128,
-    "timeouts": 7,
-    "wr": 18.930601136636515,
-    "expectancy": -0.05344,
-    "net_r": -668.0
+    "wins": 2362,
+    "losses": 10129,
+    "timeouts": 9,
+    "wr": 18.909614922744375,
+    "expectancy": -0.05448,
+    "net_r": -681.0
   }
 }
