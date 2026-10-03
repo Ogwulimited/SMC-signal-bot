@@ -1,9 +1,9 @@
 {
-  "generated": "2026-10-03T21:29:17Z",
+  "generated": "2026-10-03T22:24:09Z",
   "config": {
     "symbols_count": 25,
     "failed_symbols": 0,
-    "stack": "D1 bias + H4 alignment + H1 OB entry",
+    "stack": "D1 bias + H1 OB entry + time-based liquidity",
     "detect_window": 1000,
     "candles_per_symbol": 10000,
     "max_horizon_bars": 48
@@ -11,82 +11,82 @@
   "per_window": [
     {
       "window": 1,
-      "n": 0,
-      "wins": 0,
-      "losses": 0,
+      "n": 6,
+      "wins": 4,
+      "losses": 2,
       "timeouts": 0,
-      "wr": 0,
-      "expectancy": 0,
-      "net_r": 0.0
+      "wr": 66.66666666666666,
+      "expectancy": 0.9284291388922693,
+      "net_r": 5.570574833353616
     },
     {
       "window": 2,
-      "n": 0,
-      "wins": 0,
-      "losses": 0,
+      "n": 10,
+      "wins": 4,
+      "losses": 6,
       "timeouts": 0,
-      "wr": 0,
-      "expectancy": 0,
-      "net_r": 0.0
+      "wr": 40.0,
+      "expectancy": 0.08174543318507652,
+      "net_r": 0.8174543318507652
     },
     {
       "window": 3,
-      "n": 4,
-      "wins": 2,
+      "n": 6,
+      "wins": 4,
       "losses": 2,
       "timeouts": 0,
-      "wr": 50.0,
-      "expectancy": 0.5782714315023507,
-      "net_r": 2.313085726009403
+      "wr": 66.66666666666666,
+      "expectancy": 0.9982718821981621,
+      "net_r": 5.989631293188973
     },
     {
       "window": 4,
-      "n": 11,
-      "wins": 3,
-      "losses": 8,
+      "n": 14,
+      "wins": 4,
+      "losses": 10,
       "timeouts": 0,
-      "wr": 27.27272727272727,
-      "expectancy": -0.15498706508107948,
-      "net_r": -1.7048577158918743
+      "wr": 28.57142857142857,
+      "expectancy": -0.10095540680389156,
+      "net_r": -1.4133756952544818
     }
   ],
   "aggregate": {
-    "n": 15,
-    "wins": 5,
-    "losses": 10,
+    "n": 36,
+    "wins": 16,
+    "losses": 20,
     "timeouts": 0,
-    "wr": 33.33333333333333,
-    "expectancy": 0.04054853400783524,
-    "net_r": 0.6082280101175286
+    "wr": 44.44444444444444,
+    "expectancy": 0.30456346564274644,
+    "net_r": 10.964284763138872
   },
   "rr_stats": {
-    "n": 15,
-    "min_rr": 1.42,
+    "n": 36,
+    "min_rr": 1.4,
     "p25_rr": 1.54,
-    "median_rr": 1.75,
+    "median_rr": 1.755,
     "p75_rr": 2.21,
-    "max_rr": 3.59,
-    "mean_rr": 2.05,
-    "full_tp_hits": 5,
-    "avg_rr_won": 2.12,
+    "max_rr": 3.26,
+    "mean_rr": 1.9402777777777784,
+    "full_tp_hits": 16,
+    "avg_rr_won": 1.9337499999999994,
     "best_rr_won": 3.26,
     "worst_rr_won": 1.42,
-    "n_wins": 5,
-    "n_losses": 10,
+    "n_wins": 16,
+    "n_losses": 20,
     "n_timeouts": 0,
     "buckets": [
       {
         "bucket": "1.5-2.0",
-        "n": 7,
-        "wins": 1,
-        "losses": 6,
-        "wr": 14.285714285714285
+        "n": 21,
+        "wins": 10,
+        "losses": 11,
+        "wr": 47.61904761904761
       },
       {
         "bucket": "2.0-3.0",
-        "n": 3,
-        "wins": 1,
-        "losses": 2,
+        "n": 9,
+        "wins": 3,
+        "losses": 6,
         "wr": 33.33333333333333
       },
       {
@@ -103,15 +103,38 @@
         "losses": 0,
         "wr": 0
       }
+    ],
+    "target_kinds": [
+      {
+        "kind": "swing_low",
+        "n": 20,
+        "wins": 10,
+        "losses": 10,
+        "wr": 50.0
+      },
+      {
+        "kind": "swing_high",
+        "n": 15,
+        "wins": 5,
+        "losses": 10,
+        "wr": 33.33333333333333
+      },
+      {
+        "kind": "synthetic",
+        "n": 1,
+        "wins": 1,
+        "losses": 0,
+        "wr": 100.0
+      }
     ]
   },
   "random_baseline": {
     "n": 12500,
-    "wins": 2464,
-    "losses": 10031,
-    "timeouts": 5,
-    "wr": 19.719887955182074,
-    "expectancy": -0.014,
-    "net_r": -175.0
+    "wins": 2458,
+    "losses": 10036,
+    "timeouts": 6,
+    "wr": 19.673443252761324,
+    "expectancy": -0.01632,
+    "net_r": -204.0
   }
 }
