@@ -1,7 +1,10 @@
-"""Walk-forward backtest for the continuation model.
+"""Continuation model backtest — OPTIMIZED.
 
-v2: only the aggressive variant (confirmed has no edge).
-Extended symbol list + per-symbol error handling.
+Key optimizations:
+  - Rolling window of DETECT_WINDOW bars per detection call.
+  - D1 bias recomputed only when D1 window changes.
+  - Progress logging every 1000 bars.
+  - Only aggressive entry variant.
 """
 
 import csv
@@ -11,17 +14,17 @@ import random
 from datetime import datetime, timezone
 
 from .config import (
-    SYMBOLS, GRANULARITY, TIMEFRAME_LABEL,
+    SYMBOLS, GRANULARITY, TIMEFRAME_LABEL, DETECT_WINDOW,
     ATR_PERIOD, MAX_HORIZON_BARS, SPREAD_ATR_FRAC,
     HTF_GRANULARITY, HTF_CANDLE_COUNT,
     REPORTS_DIR,
 )
 from .deriv_client import fetch_candles_paginated
 from .smc import compute_atr
-from .continuation import detect_continuation_signals
+from .continuation import detect_continuation_signals, detect_htf_bias
 
 
-BACKTEST_CANDLES = 15000
+BACKTEST_CANDLES = 10000
 WARMUP_BARS = 500
 N_WINDOWS = 4
 RANDOM_TRIALS = 500
@@ -81,29 +84,54 @@ def simulate_aggressive(candles, sig, spread):
 
 
 def collect_signals(h1, d1, start, end):
+    """Rolling window + cached D1 bias."""
     sigs = []
+    cached_bias_epoch = None
+    cached_bias = None
+    log_every = 500
+
     for i in range(start, end):
-        h1_window = h1[: i + 1]
+        if (i - start) % log_every == 0:
+            log(f"    scanning bar {i}/{end}")
+
+        # Rolling window on H1
+        w_start = max(0, i + 1 - DETECT_WINDOW)
+        h1_window = h1[w_start : i + 1]
+
+        # D1 window — cache bias per D1 epoch
         d1_window = [c for c in d1 if c["epoch"] <= h1_window[-1]["epoch"]]
         if not d1_window:
             continue
+
+        latest_d1_epoch = d1_window[-1]["epoch"]
+        if latest_d1_epoch != cached_bias_epoch:
+            cached_bias = detect_htf_bias(d1_window)
+            cached_bias_epoch = latest_d1_epoch
+
+        if cached_bias is None:
+            continue
+
         try:
             pats = detect_continuation_signals(h1_window, d1_window)
         except Exception:
             continue
+
         for p in pats:
-            if p.touch_index != i:
+            # p.touch_index is relative to h1_window; convert to absolute
+            abs_touch = w_start + p.touch_index
+            if abs_touch != i:
                 continue
             sigs.append({
-                "index": i,
-                "touch_index": i,
+                "index": abs_touch,
+                "touch_index": abs_touch,
                 "direction": p.direction,
                 "entry": p.entry,
                 "stop": p.stop,
                 "target": p.target,
-                "ob_index": p.ob_index,
+                "ob_index": w_start + p.ob_index,
                 "atr": compute_atr(h1_window, ATR_PERIOD) or 0.0,
             })
+
     # dedupe
     seen = set()
     out = []
@@ -179,7 +207,7 @@ def _write_report(per_window_rows, aggregate, random_agg, config_snap, trades_al
             writer.writerow(t)
 
     md = []
-    md.append("# SMC Signal Bot — Continuation Model Backtest\n")
+    md.append("# SMC Signal Bot — Continuation Model Backtest (v2)\n")
     md.append(f"**Generated:** {gen}\n")
     md.append("## Configuration\n")
     md.append("| Parameter | Value |")
@@ -217,7 +245,7 @@ def _write_report(per_window_rows, aggregate, random_agg, config_snap, trades_al
 
 def main():
     random.seed(42)
-    log(f"Continuation backtest v2 — {len(SYMBOLS)} symbols, H1 entry / D1 bias")
+    log(f"Continuation backtest v2 — {len(SYMBOLS)} symbols, DETECT_WINDOW={DETECT_WINDOW}")
 
     per_window = {w: [] for w in range(1, N_WINDOWS + 1)}
     rnd_acc = []
@@ -250,6 +278,7 @@ def main():
         for w in range(N_WINDOWS):
             s = usable_start + w * win_size
             e = s + win_size if w < N_WINDOWS - 1 else usable_end
+            log(f"  W{w+1}: scanning bars {s}..{e}")
             sigs = collect_signals(h1, d1, s, e)
             for sig in sigs:
                 sig["symbol"] = sym
@@ -301,7 +330,6 @@ def main():
                                  "timeouts": timeouts, "wr": wr,
                                  "expectancy": exp, "net_r": net_r})
 
-    # Aggregate
     total_n = sum(r["n"] for r in per_window_rows)
     total_wins = sum(r["wins"] for r in per_window_rows)
     total_losses = sum(r["losses"] for r in per_window_rows)
@@ -316,7 +344,6 @@ def main():
     log(f"\n  ALL: n={total_n}  W{total_wins}/L{total_losses}/T{total_timeouts}  "
         f"WR={total_wr:.1f}%  exp={total_exp:+.3f}R  netR={total_net_r:+.1f}")
 
-    # Random
     n = sum(r["n"] for r in rnd_acc)
     wins = sum(r["wins"] for r in rnd_acc)
     losses = sum(r["losses"] for r in rnd_acc)
@@ -336,11 +363,8 @@ def main():
         "symbols_count": len(SYMBOLS),
         "failed_symbols": len(failed),
         "timeframe": TIMEFRAME_LABEL,
+        "detect_window": DETECT_WINDOW,
         "candles_per_symbol": BACKTEST_CANDLES,
-        "min_cont_fvg_atr": 0.05,
-        "cont_liquidity_tol_atr": 3.0,
-        "cont_max_bars_bos_to_touch": 150,
-        "max_horizon_bars": MAX_HORIZON_BARS,
     }
     _write_report(per_window_rows, aggregate, rnd_agg, config_snap, trades_all)
 
