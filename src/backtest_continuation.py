@@ -23,7 +23,7 @@ from .smc import compute_atr
 from .continuation import detect_continuation_signals
 
 
-BACKTEST_CANDLES = 8000       # ~333 days of H1
+BACKTEST_CANDLES = 15000       # ~333 days of H1
 WARMUP_BARS = 500
 N_WINDOWS = 4
 RANDOM_TRIALS = 500
