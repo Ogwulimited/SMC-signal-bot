@@ -1,133 +1,70 @@
 {
-  "generated": "2026-10-03T11:40:06Z",
+  "generated": "2026-10-03T19:06:39Z",
   "config": {
+    "symbols_count": 25,
+    "failed_symbols": 0,
     "timeframe": "H1",
-    "htf_granularity_sec": 86400,
-    "symbols_count": 20,
-    "candles_requested": 15000,
-    "max_horizon_bars": 48,
-    "spread_atr_frac": 0.04,
-    "min_cont_fvg_atr": 0.15,
-    "cont_liquidity_tol_atr": 2.0,
-    "cont_confirmation_wait_bars": 5
+    "detect_window": 1000,
+    "candles_per_symbol": 10000
   },
   "per_window": [
     {
       "window": 1,
-      "variant": "aggressive",
-      "n": 5,
-      "wins": 3,
+      "n": 6,
+      "wins": 4,
       "losses": 2,
       "timeouts": 0,
-      "wr": 60.0,
-      "expectancy": 0.6069270551160357,
-      "net_r": 3.034635275580179
-    },
-    {
-      "window": 1,
-      "variant": "confirmed",
-      "n": 2,
-      "wins": 1,
-      "losses": 1,
-      "timeouts": 0,
-      "wr": 50.0,
-      "expectancy": -0.46860079307277186,
-      "net_r": -0.9372015861455437
+      "wr": 66.66666666666666,
+      "expectancy": 0.7659367121015362,
+      "net_r": 4.595620272609217
     },
     {
       "window": 2,
-      "variant": "aggressive",
-      "n": 10,
-      "wins": 5,
-      "losses": 5,
+      "n": 13,
+      "wins": 7,
+      "losses": 6,
       "timeouts": 0,
-      "wr": 50.0,
-      "expectancy": 0.387313337145225,
-      "net_r": 3.8731333714522496
+      "wr": 53.84615384615385,
+      "expectancy": 0.5561775339818807,
+      "net_r": 7.230307941764449
     },
     {
-      "window": 2,
-      "variant": "confirmed",
+      "window": 3,
       "n": 8,
-      "wins": 6,
-      "losses": 2,
+      "wins": 5,
+      "losses": 3,
       "timeouts": 0,
-      "wr": 75.0,
-      "expectancy": 0.11437369544310505,
-      "net_r": 0.9149895635448404
-    },
-    {
-      "window": 3,
-      "variant": "aggressive",
-      "n": 2,
-      "wins": 2,
-      "losses": 0,
-      "timeouts": 0,
-      "wr": 100.0,
-      "expectancy": 2.31678054763593,
-      "net_r": 4.63356109527186
-    },
-    {
-      "window": 3,
-      "variant": "confirmed",
-      "n": 0,
-      "wins": 0,
-      "losses": 0,
-      "timeouts": 0,
-      "wr": 0,
-      "expectancy": 0,
-      "net_r": 0.0
+      "wr": 62.5,
+      "expectancy": 0.8523354016112681,
+      "net_r": 6.818683212890145
     },
     {
       "window": 4,
-      "variant": "aggressive",
-      "n": 2,
-      "wins": 1,
-      "losses": 1,
+      "n": 15,
+      "wins": 4,
+      "losses": 11,
       "timeouts": 0,
-      "wr": 50.0,
-      "expectancy": 0.24439507512802483,
-      "net_r": 0.48879015025604966
-    },
-    {
-      "window": 4,
-      "variant": "confirmed",
-      "n": 0,
-      "wins": 0,
-      "losses": 0,
-      "timeouts": 0,
-      "wr": 0,
-      "expectancy": 0,
-      "net_r": 0.0
+      "wr": 26.666666666666668,
+      "expectancy": -0.17224061892806344,
+      "net_r": -2.5836092839209517
     }
   ],
   "aggregate": {
-    "aggressive": {
-      "n": 19,
-      "wins": 11,
-      "losses": 8,
-      "timeouts": 0,
-      "wr": 57.89473684210527,
-      "expectancy": 0.6331642048715967,
-      "net_r": 12.030119892560338
-    },
-    "confirmed": {
-      "n": 10,
-      "wins": 7,
-      "losses": 3,
-      "timeouts": 0,
-      "wr": 70.0,
-      "expectancy": -0.002221202260070332,
-      "net_r": -0.02221202260070332
-    }
+    "n": 42,
+    "wins": 20,
+    "losses": 22,
+    "timeouts": 0,
+    "wr": 47.61904761904761,
+    "expectancy": 0.3824048129367348,
+    "net_r": 16.06100214334286
   },
   "random_baseline": {
-    "n": 10000,
-    "wins": 1899,
-    "losses": 8095,
-    "timeouts": 6,
-    "wr": 19.001400840504303,
-    "expectancy": -0.0499,
-    "net_r": -499.0
+    "n": 12500,
+    "wins": 2365,
+    "losses": 10128,
+    "timeouts": 7,
+    "wr": 18.930601136636515,
+    "expectancy": -0.05344,
+    "net_r": -668.0
   }
 }
