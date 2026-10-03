@@ -10,7 +10,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 350
     permissions:
       contents: write
     steps:
