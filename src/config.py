@@ -11,18 +11,17 @@ SYMBOLS = [
     "frxXAUUSD", "frxXAGUSD",
     # Crypto (5)
     "cryBTCUSD", "cryETHUSD", "cryLTCUSD", "cryXRPUSD", "crySOLUSD",
-    # Volatility indices (1 — always-on sanity check)
+    # Volatility indices (1)
     "R_100",
 ]
 
-# ----- Timeframe stack: D1 bias + H4 alignment + H1 entry -----
 GRANULARITY = 3600
 TIMEFRAME_LABEL = "H1"
 
 CANDLE_COUNT = 200
 DERIV_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
 
-# ----- SMC parameters (shared primitives) -----
+# ----- SMC parameters -----
 SWING_LOOKBACK = 2
 ATR_PERIOD = 14
 EQ_TOLERANCE_ATR = 0.15
@@ -34,15 +33,17 @@ PATTERN_LOOKBACK_BARS = 30
 MIN_OB_WIDTH_ATR = 0.30
 MIN_TARGET_ATR = 0.50
 
-# Legacy FVG threshold — kept for backwards compat with fvg.py import.
 MIN_FVG_ATR = 0.0
 
-# ----- Continuation model parameters -----
+# ----- Continuation model -----
 MIN_CONT_FVG_ATR = 0.05
 CONT_LIQUIDITY_TOL_ATR = 3.0
 CONT_MAX_OB_AGE = 800
 CONT_MAX_BARS_BOS_TO_TOUCH = 150
 CONT_CONFIRMATION_WAIT_BARS = 5
+
+# ----- Time-based liquidity (PDH/PDL, sessions, weekly) -----
+USE_TIME_BASED_LIQUIDITY = True
 
 # ----- Backtest performance -----
 DETECT_WINDOW = 1000
@@ -54,11 +55,6 @@ MAX_WAIT_FOR_FILL_BARS = 30
 HTF_GRANULARITY = 86400
 HTF_CANDLE_COUNT = 500
 HTF_SWING_LOOKBACK = 3
-
-# ----- H4 alignment -----
-H4_GRANULARITY = 14400
-H4_CANDLE_COUNT = 500
-H4_SWING_LOOKBACK = 3
 
 # ----- Backtest outcome simulation -----
 MAX_HORIZON_BARS = 48
