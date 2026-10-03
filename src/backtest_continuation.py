@@ -1,6 +1,6 @@
-"""Continuation backtest v3 — D1 bias + H4 alignment + H1 entry.
+"""Continuation backtest v4 — D1 bias + H1 entry + time-based liquidity.
 
-Adds R:R distribution reporting.
+Reports R:R distribution AND target-kind breakdown.
 """
 
 import csv
@@ -14,12 +14,10 @@ from .config import (
     SYMBOLS, GRANULARITY, TIMEFRAME_LABEL, DETECT_WINDOW,
     ATR_PERIOD, MAX_HORIZON_BARS, SPREAD_ATR_FRAC,
     HTF_GRANULARITY, HTF_CANDLE_COUNT,
-    H4_GRANULARITY, H4_CANDLE_COUNT, H4_SWING_LOOKBACK,
-    SWING_LOOKBACK,
     REPORTS_DIR,
 )
 from .deriv_client import fetch_candles_paginated
-from .smc import compute_atr, find_swings, detect_bos_choch
+from .smc import compute_atr
 from .continuation import detect_continuation_signals, detect_htf_bias
 
 
@@ -82,12 +80,10 @@ def simulate(candles, sig, spread):
     return {"outcome": outcome, "bars": bars, "rr": _rr(direction, entry_eff, stop_eff, target_eff)}
 
 
-def collect_signals(h1, d1, h4, start, end):
+def collect_signals(h1, d1, start, end):
     sigs = []
     cached_bias_epoch = None
     cached_bias = None
-    cached_h4_epoch = None
-    cached_h4_trend = None
     log_every = 500
 
     for i in range(start, end):
@@ -109,25 +105,8 @@ def collect_signals(h1, d1, h4, start, end):
         if cached_bias is None:
             continue
 
-        h4_window = [c for c in h4 if c["epoch"] <= h1_window[-1]["epoch"]]
-        if not h4_window:
-            continue
-        latest_h4_epoch = h4_window[-1]["epoch"]
-        if latest_h4_epoch != cached_h4_epoch:
-            if len(h4_window) >= 20:
-                try:
-                    h4_swings = find_swings(h4_window, H4_SWING_LOOKBACK)
-                    _, _, cached_h4_trend = detect_bos_choch(h4_window, h4_swings)
-                except Exception:
-                    cached_h4_trend = None
-            else:
-                cached_h4_trend = None
-            cached_h4_epoch = latest_h4_epoch
-
         try:
-            pats = detect_continuation_signals(
-                h1_window, d1_window, h4_trend=cached_h4_trend
-            )
+            pats = detect_continuation_signals(h1_window, d1_window)
         except Exception:
             continue
 
@@ -143,6 +122,7 @@ def collect_signals(h1, d1, h4, start, end):
                 "stop": p.stop,
                 "target": p.target,
                 "ob_index": w_start + p.ob_index,
+                "target_kind": p.target_kind,
                 "atr": compute_atr(h1_window, ATR_PERIOD) or 0.0,
             })
 
@@ -233,6 +213,24 @@ def _rr_stats(trades):
         b_wr = (bw / b_res * 100) if b_res > 0 else 0
         bucket_rows.append({"bucket": label, "n": len(b), "wins": bw, "losses": bl, "wr": b_wr})
 
+    # Target-kind breakdown
+    kinds = {}
+    for t in trades:
+        k = t.get("target_kind", "unknown")
+        if k not in kinds:
+            kinds[k] = {"n": 0, "wins": 0, "losses": 0}
+        kinds[k]["n"] += 1
+        if t["outcome"] == "win":
+            kinds[k]["wins"] += 1
+        elif t["outcome"] == "loss":
+            kinds[k]["losses"] += 1
+    kind_rows = []
+    for k, v in sorted(kinds.items(), key=lambda x: -x[1]["n"]):
+        res = v["wins"] + v["losses"]
+        wr = (v["wins"] / res * 100) if res > 0 else 0
+        kind_rows.append({"kind": k, "n": v["n"], "wins": v["wins"],
+                          "losses": v["losses"], "wr": wr})
+
     return {
         "n": n,
         "min_rr": min(rrs),
@@ -249,6 +247,7 @@ def _rr_stats(trades):
         "n_losses": len(losses),
         "n_timeouts": len(timeouts),
         "buckets": bucket_rows,
+        "target_kinds": kind_rows,
     }
 
 
@@ -264,14 +263,15 @@ def _write_report(per_window_rows, aggregate, random_agg, rr_stats, config_snap,
     with open(os.path.join(REPORTS_DIR, "continuation_trades.csv"), "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "window", "symbol", "touch_index", "direction",
-            "entry", "stop", "target", "outcome", "bars_held", "rr_eff",
+            "entry", "stop", "target", "target_kind",
+            "outcome", "bars_held", "rr_eff",
         ])
         writer.writeheader()
         for t in trades_all:
             writer.writerow(t)
 
     md = []
-    md.append("# SMC Signal Bot — Continuation Model Backtest (D1+H4+H1)\n")
+    md.append("# SMC Signal Bot — Continuation Backtest (D1+H1 + liquidity)\n")
     md.append(f"**Generated:** {gen}\n")
     md.append("## Configuration\n")
     md.append("| Parameter | Value |")
@@ -297,7 +297,7 @@ def _write_report(per_window_rows, aggregate, random_agg, rr_stats, config_snap,
     md.append("")
 
     if rr_stats:
-        md.append("## R:R Distribution (all trades)\n")
+        md.append("## R:R Distribution\n")
         md.append("| Metric | Value |")
         md.append("|--------|-------|")
         md.append(f"| Trades | {rr_stats['n']} |")
@@ -322,6 +322,13 @@ def _write_report(per_window_rows, aggregate, random_agg, rr_stats, config_snap,
         for b in rr_stats["buckets"]:
             md.append(f"| {b['bucket']} | {b['n']} | {b['wins']} | {b['losses']} | {b['wr']:.1f}% |")
         md.append("")
+        md.append("## Target-Kind Breakdown\n")
+        md.append("How often each liquidity type was the take-profit target.\n")
+        md.append("| Target Kind | Trades | Wins | Losses | WR |")
+        md.append("|-------------|--------|------|--------|-----|")
+        for k in rr_stats["target_kinds"]:
+            md.append(f"| {k['kind']} | {k['n']} | {k['wins']} | {k['losses']} | {k['wr']:.1f}% |")
+        md.append("")
 
     md.append("## Random Baseline\n")
     md.append(f"- Signals: {random_agg['n']}")
@@ -337,7 +344,7 @@ def _write_report(per_window_rows, aggregate, random_agg, rr_stats, config_snap,
 
 def main():
     random.seed(42)
-    log(f"Continuation v3 — D1+H4 alignment, H1 entry, {len(SYMBOLS)} symbols")
+    log(f"Continuation v4 — D1+H1 + time-based liquidity, {len(SYMBOLS)} symbols")
 
     per_window = {w: [] for w in range(1, N_WINDOWS + 1)}
     rnd_acc = []
@@ -348,16 +355,15 @@ def main():
         try:
             h1 = fetch_candles_paginated(sym, GRANULARITY, BACKTEST_CANDLES)
             d1 = fetch_candles_paginated(sym, HTF_GRANULARITY, HTF_CANDLE_COUNT)
-            h4 = fetch_candles_paginated(sym, H4_GRANULARITY, H4_CANDLE_COUNT)
         except Exception as e:
             log(f"  fetch failed: {e}")
             failed.append(sym)
             continue
-        if not h1 or not d1 or not h4:
+        if not h1 or not d1:
             log(f"  insufficient data")
             failed.append(sym)
             continue
-        log(f"  H1: {len(h1)}  H4: {len(h4)}  D1: {len(d1)}")
+        log(f"  H1: {len(h1)}  D1: {len(d1)}")
 
         n = len(h1)
         usable_start = WARMUP_BARS
@@ -371,7 +377,7 @@ def main():
         for w in range(N_WINDOWS):
             s = usable_start + w * win_size
             e = s + win_size if w < N_WINDOWS - 1 else usable_end
-            sigs = collect_signals(h1, d1, h4, s, e)
+            sigs = collect_signals(h1, d1, s, e)
             for sig in sigs:
                 sig["symbol"] = sym
                 sig["candles_ref"] = h1
@@ -409,6 +415,7 @@ def main():
                 "touch_index": sig["touch_index"], "direction": sig["direction"],
                 "entry": round(sig["entry"], 5), "stop": round(sig["stop"], 5),
                 "target": round(sig["target"], 5),
+                "target_kind": sig.get("target_kind", "unknown"),
                 "outcome": r["outcome"], "bars_held": r["bars"],
                 "rr_eff": round(r["rr"], 2),
             })
@@ -441,6 +448,9 @@ def main():
         log(f"\n  R:R — min={rr_stats['min_rr']:.2f}  median={rr_stats['median_rr']:.2f}  "
             f"max={rr_stats['max_rr']:.2f}  mean={rr_stats['mean_rr']:.2f}")
         log(f"  Full TP hits: {rr_stats['full_tp_hits']}  Avg R:R on wins: {rr_stats['avg_rr_won']:.2f}")
+        log(f"  Target kinds:")
+        for k in rr_stats["target_kinds"]:
+            log(f"    {k['kind']:15s} n={k['n']:3d}  WR={k['wr']:5.1f}%")
 
     n = sum(r["n"] for r in rnd_acc)
     wins = sum(r["wins"] for r in rnd_acc)
@@ -460,7 +470,7 @@ def main():
     config_snap = {
         "symbols_count": len(SYMBOLS),
         "failed_symbols": len(failed),
-        "stack": "D1 bias + H4 alignment + H1 OB entry",
+        "stack": "D1 bias + H1 OB entry + time-based liquidity",
         "detect_window": DETECT_WINDOW,
         "candles_per_symbol": BACKTEST_CANDLES,
         "max_horizon_bars": MAX_HORIZON_BARS,
