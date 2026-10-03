@@ -1,300 +1,484 @@
-"""Continuation model: HTF bias + H1 OB + FVG + liquidity confluence.
+"""Continuation backtest v3 — D1 bias + H4 alignment + H1 entry.
 
-v5: synthetic target fallback when no liquidity pool exists beyond entry.
+Adds R:R distribution reporting.
 """
 
-from dataclasses import dataclass
-from typing import List, Optional
+import csv
+import json
+import os
+import random
+import statistics
+from datetime import datetime, timezone
 
-from .smc import (
-    find_swings, detect_bos_choch, find_liquidity_pools,
-    compute_atr,
-)
-from .fvg import find_fvgs_in_range
 from .config import (
-    SWING_LOOKBACK, ATR_PERIOD, EQ_TOLERANCE_ATR,
-    BUFFER_ATR, MIN_RR, MIN_TARGET_ATR, MIN_OB_WIDTH_ATR,
-    MIN_CONT_FVG_ATR, CONT_LIQUIDITY_TOL_ATR, CONT_MAX_OB_AGE,
-    CONT_MAX_BARS_BOS_TO_TOUCH, HTF_SWING_LOOKBACK,
+    SYMBOLS, GRANULARITY, TIMEFRAME_LABEL, DETECT_WINDOW,
+    ATR_PERIOD, MAX_HORIZON_BARS, SPREAD_ATR_FRAC,
+    HTF_GRANULARITY, HTF_CANDLE_COUNT,
+    H4_GRANULARITY, H4_CANDLE_COUNT, H4_SWING_LOOKBACK,
+    SWING_LOOKBACK,
+    REPORTS_DIR,
 )
+from .deriv_client import fetch_candles_paginated
+from .smc import compute_atr, find_swings, detect_bos_choch
+from .continuation import detect_continuation_signals, detect_htf_bias
 
 
-SYNTHETIC_TARGET_ATR = 2.0  # fallback target distance in ATR
+BACKTEST_CANDLES = 10000
+WARMUP_BARS = 500
+N_WINDOWS = 4
+RANDOM_TRIALS = 500
 
 
-@dataclass
-class ContinuationPattern:
-    direction: str
-    ob_index: int
-    bos_index: int
-    touch_index: int
-    ob_high: float
-    ob_low: float
-    entry: float
-    stop: float
-    target: float
-    rr: float
-    has_fvg: bool
-    has_liquidity_nearby: bool
-    target_is_synthetic: bool
+def log(m):
+    print(m, flush=True)
 
 
-def detect_htf_bias(d1_candles) -> Optional[str]:
-    if not d1_candles or len(d1_candles) < HTF_SWING_LOOKBACK * 2 + 10:
-        return None
-    swings = find_swings(d1_candles, HTF_SWING_LOOKBACK)
-    if not swings:
-        return None
-    _, _, trend = detect_bos_choch(d1_candles, swings)
-    if trend == "up":
-        return "bullish"
-    if trend == "down":
-        return "bearish"
-    return None
+def _walk_exit(candles, start_idx, direction, stop_eff, target_eff):
+    end = min(start_idx + MAX_HORIZON_BARS, len(candles))
+    for k in range(start_idx, end):
+        c = candles[k]
+        if direction == "bullish":
+            if c["low"] <= stop_eff: return "loss", k
+            if c["high"] >= target_eff: return "win", k
+        else:
+            if c["high"] >= stop_eff: return "loss", k
+            if c["low"] <= target_eff: return "win", k
+    return "timeout", None
 
 
-def _has_matching_fvg(candles, ob_idx, bos_idx, direction, atr) -> bool:
-    fvgs = find_fvgs_in_range(candles, ob_idx, bos_idx, direction, atr)
-    min_size = MIN_CONT_FVG_ATR * atr
-    for f in fvgs:
-        if (f["high"] - f["low"]) >= min_size:
-            return True
-    return False
-
-
-def _has_nearby_liquidity(pools, direction, ob_high, ob_low, atr) -> bool:
-    tol = CONT_LIQUIDITY_TOL_ATR * atr
+def _rr(direction, entry, stop, target):
     if direction == "bullish":
-        for p in pools:
-            if p.kind in ("EQL", "swing_low") and p.price < ob_low:
-                if (ob_low - p.price) <= tol:
-                    return True
-    else:
-        for p in pools:
-            if p.kind in ("EQH", "swing_high") and p.price > ob_high:
-                if (p.price - ob_high) <= tol:
-                    return True
-    return False
+        return (target - entry) / (entry - stop) if entry > stop else 0
+    return (entry - target) / (stop - entry) if stop > entry else 0
 
 
-def _nearest_target_above(pools, price):
-    cand = [p for p in pools if p.price > price and not p.swept
-            and p.kind in ("EQH", "swing_high")]
-    return min(cand, key=lambda p: p.price).price if cand else None
+def _apply_spread(direction, entry_raw, stop, target, spread):
+    half = spread / 2.0
+    if direction == "bullish":
+        return entry_raw + half, stop, target - half
+    return entry_raw - half, stop, target + half
 
 
-def _nearest_target_below(pools, price):
-    cand = [p for p in pools if p.price < price and not p.swept
-            and p.kind in ("EQL", "swing_low")]
-    return max(cand, key=lambda p: p.price).price if cand else None
+def _valid_geo(direction, e, s, t):
+    if direction == "bullish":
+        return e > s and t > e
+    return e < s and t < e
 
 
-def _find_ob_before_bos(candles, bos_idx, direction, max_lookback=15):
-    for j in range(bos_idx - 1, max(0, bos_idx - max_lookback) - 1, -1):
-        c = candles[j]
-        if direction == "bullish" and c["close"] < c["open"]:
-            return j
-        if direction == "bearish" and c["close"] > c["open"]:
-            return j
-    return None
+def simulate(candles, sig, spread):
+    idx = sig["touch_index"]
+    direction = sig["direction"]
+    entry_eff, stop_eff, target_eff = _apply_spread(
+        direction, sig["entry"], sig["stop"], sig["target"], spread)
+    if not _valid_geo(direction, entry_eff, stop_eff, target_eff):
+        return None
+    tb = candles[idx]
+    if direction == "bullish" and tb["low"] <= stop_eff:
+        return {"outcome": "loss", "bars": 0, "rr": _rr(direction, entry_eff, stop_eff, target_eff)}
+    if direction == "bearish" and tb["high"] >= stop_eff:
+        return {"outcome": "loss", "bars": 0, "rr": _rr(direction, entry_eff, stop_eff, target_eff)}
+    outcome, hit = _walk_exit(candles, idx + 1, direction, stop_eff, target_eff)
+    bars = (hit - idx) if hit is not None else None
+    return {"outcome": outcome, "bars": bars, "rr": _rr(direction, entry_eff, stop_eff, target_eff)}
 
 
-COUNTERS = {
-    "bias_none": 0,
-    "h1_trend_none": 0,
-    "h1_trend_opposite": 0,
-    "total_bos": 0,
-    "bos_too_old": 0,
-    "bos_wrong_dir": 0,
-    "no_ob": 0,
-    "ob_too_narrow": 0,
-    "ob_too_old": 0,
-    "no_fvg": 0,
-    "no_liquidity": 0,
-    "not_touching_now": 0,
-    "touched_before": 0,
-    "no_target": 0,
-    "synthetic_target_used": 0,
-    "rr_too_low": 0,
-    "emitted": 0,
-}
+def collect_signals(h1, d1, h4, start, end):
+    sigs = []
+    cached_bias_epoch = None
+    cached_bias = None
+    cached_h4_epoch = None
+    cached_h4_trend = None
+    log_every = 500
 
+    for i in range(start, end):
+        if (i - start) % log_every == 0:
+            log(f"    scanning bar {i}/{end}")
 
-def reset_counters():
-    for k in COUNTERS:
-        COUNTERS[k] = 0
-
-
-def detect_continuation_signals(h1_candles, d1_candles, debug=False):
-    bias = detect_htf_bias(d1_candles)
-    if bias is None:
-        if debug:
-            COUNTERS["bias_none"] += 1
-        return []
-
-    if len(h1_candles) < SWING_LOOKBACK * 2 + ATR_PERIOD + 50:
-        return []
-
-    atr = compute_atr(h1_candles, ATR_PERIOD)
-    if atr is None:
-        return []
-
-    h1_swings = find_swings(h1_candles, SWING_LOOKBACK)
-    if not h1_swings:
-        return []
-
-    bos_events, _, h1_trend = detect_bos_choch(h1_candles, h1_swings)
-
-    if bias == "bullish" and h1_trend == "down":
-        if debug:
-            COUNTERS["h1_trend_opposite"] += 1
-        return []
-    if bias == "bearish" and h1_trend == "up":
-        if debug:
-            COUNTERS["h1_trend_opposite"] += 1
-        return []
-    if h1_trend is None and debug:
-        COUNTERS["h1_trend_none"] += 1
-
-    pools = find_liquidity_pools(h1_candles, h1_swings, atr, EQ_TOLERANCE_ATR)
-
-    last_idx = len(h1_candles) - 1
-    last = h1_candles[last_idx]
-
-    out: List[ContinuationPattern] = []
-
-    for bos in bos_events:
-        if debug:
-            COUNTERS["total_bos"] += 1
-
-        if last_idx - bos.index > CONT_MAX_BARS_BOS_TO_TOUCH:
-            if debug:
-                COUNTERS["bos_too_old"] += 1
+        w_start = max(0, i + 1 - DETECT_WINDOW)
+        h1_window = h1[w_start : i + 1]
+        if len(h1_window) < 50:
             continue
 
-        if bias == "bullish" and bos.direction != "up":
-            if debug:
-                COUNTERS["bos_wrong_dir"] += 1
+        # ---- D1 bias (cached per D1 epoch) ----
+        d1_window = [c for c in d1 if c["epoch"] <= h1_window[-1]["epoch"]]
+        if not d1_window:
             continue
-        if bias == "bearish" and bos.direction != "down":
-            if debug:
-                COUNTERS["bos_wrong_dir"] += 1
-            continue
-
-        ob_idx = _find_ob_before_bos(h1_candles, bos.index, bias)
-        if ob_idx is None:
-            if debug:
-                COUNTERS["no_ob"] += 1
+        latest_d1_epoch = d1_window[-1]["epoch"]
+        if latest_d1_epoch != cached_bias_epoch:
+            cached_bias = detect_htf_bias(d1_window)
+            cached_bias_epoch = latest_d1_epoch
+        if cached_bias is None:
             continue
 
-        ob = h1_candles[ob_idx]
-        ob_high = ob["high"]
-        ob_low = ob["low"]
-
-        if (ob_high - ob_low) < MIN_OB_WIDTH_ATR * atr:
-            if debug:
-                COUNTERS["ob_too_narrow"] += 1
+        # ---- H4 trend (cached per H4 epoch) ----
+        h4_window = [c for c in h4 if c["epoch"] <= h1_window[-1]["epoch"]]
+        if not h4_window:
             continue
-        if last_idx - ob_idx > CONT_MAX_OB_AGE:
-            if debug:
-                COUNTERS["ob_too_old"] += 1
-            continue
+        latest_h4_epoch = h4_window[-1]["epoch"]
+        if latest_h4_epoch != cached_h4_epoch:
+            if len(h4_window) >= 20:
+                try:
+                    h4_swings = find_swings(h4_window, H4_SWING_LOOKBACK)
+                    _, _, cached_h4_trend = detect_bos_choch(h4_window, h4_swings)
+                except Exception:
+                    cached_h4_trend = None
+            else:
+                cached_h4_trend = None
+            cached_h4_epoch = latest_h4_epoch
 
-        has_fvg = _has_matching_fvg(h1_candles, ob_idx, bos.index, bias, atr)
-        if not has_fvg:
-            if debug:
-                COUNTERS["no_fvg"] += 1
-            continue
-
-        has_liq = _has_nearby_liquidity(pools, bias, ob_high, ob_low, atr)
-        if not has_liq:
-            if debug:
-                COUNTERS["no_liquidity"] += 1
+        try:
+            pats = detect_continuation_signals(
+                h1_window, d1_window, h4_trend=cached_h4_trend
+            )
+        except Exception:
             continue
 
-        entry = (ob_high + ob_low) / 2
-        if bias == "bullish":
-            if last["low"] > entry:
-                if debug:
-                    COUNTERS["not_touching_now"] += 1
+        for p in pats:
+            abs_touch = w_start + p.touch_index
+            if abs_touch != i:
                 continue
-        else:
-            if last["high"] < entry:
-                if debug:
-                    COUNTERS["not_touching_now"] += 1
-                continue
+            sigs.append({
+                "index": abs_touch,
+                "touch_index": abs_touch,
+                "direction": p.direction,
+                "entry": p.entry,
+                "stop": p.stop,
+                "target": p.target,
+                "ob_index": w_start + p.ob_index,
+                "atr": compute_atr(h1_window, ATR_PERIOD) or 0.0,
+            })
 
-        touched_before = False
-        for k in range(bos.index + 1, last_idx):
-            c = h1_candles[k]
-            if c["low"] <= entry <= c["high"]:
-                touched_before = True
-                break
-        if touched_before:
-            if debug:
-                COUNTERS["touched_before"] += 1
+    # dedupe
+    seen = set()
+    out = []
+    for s in sigs:
+        key = (s["direction"], round(s["entry"], 5), round(s["target"], 5))
+        if key in seen:
             continue
-
-        target_is_synthetic = False
-
-        if bias == "bullish":
-            stop = ob_low - BUFFER_ATR * atr
-            target = _nearest_target_above(pools, entry)
-            if target is None:
-                # Fallback: synthetic target
-                target = entry + SYNTHETIC_TARGET_ATR * atr
-                target_is_synthetic = True
-                if debug:
-                    COUNTERS["synthetic_target_used"] += 1
-            if target <= entry or entry <= stop:
-                if debug:
-                    COUNTERS["no_target"] += 1
-                continue
-            if (target - entry) < MIN_TARGET_ATR * atr:
-                if debug:
-                    COUNTERS["no_target"] += 1
-                continue
-            rr = (target - entry) / (entry - stop)
-        else:
-            stop = ob_high + BUFFER_ATR * atr
-            target = _nearest_target_below(pools, entry)
-            if target is None:
-                target = entry - SYNTHETIC_TARGET_ATR * atr
-                target_is_synthetic = True
-                if debug:
-                    COUNTERS["synthetic_target_used"] += 1
-            if target >= entry or stop <= entry:
-                if debug:
-                    COUNTERS["no_target"] += 1
-                continue
-            if (entry - target) < MIN_TARGET_ATR * atr:
-                if debug:
-                    COUNTERS["no_target"] += 1
-                continue
-            rr = (entry - target) / (stop - entry)
-
-        if rr < MIN_RR:
-            if debug:
-                COUNTERS["rr_too_low"] += 1
-            continue
-
-        if debug:
-            COUNTERS["emitted"] += 1
-
-        out.append(ContinuationPattern(
-            direction=bias,
-            ob_index=ob_idx,
-            bos_index=bos.index,
-            touch_index=last_idx,
-            ob_high=ob_high,
-            ob_low=ob_low,
-            entry=entry,
-            stop=stop,
-            target=target,
-            rr=rr,
-            has_fvg=has_fvg,
-            has_liquidity_nearby=has_liq,
-            target_is_synthetic=target_is_synthetic,
-        ))
-
+        seen.add(key)
+        out.append(s)
     return out
+
+
+def random_baseline(candles, n_trials):
+    wins = losses = timeouts = 0
+    r_won = 0.0
+    n = len(candles)
+    for _ in range(n_trials):
+        i = random.randint(WARMUP_BARS, n - MAX_HORIZON_BARS - 3)
+        direction = random.choice(["bullish", "bearish"])
+        atr = compute_atr(candles[i - ATR_PERIOD * 2 : i], ATR_PERIOD)
+        if atr is None:
+            continue
+        nxt = candles[i + 1]
+        entry = nxt["open"]
+        stop_dist = 0.5 * atr
+        target_dist = 2.0 * atr
+        spread = SPREAD_ATR_FRAC * atr
+        if direction == "bullish":
+            entry_eff = entry + spread / 2
+            stop_eff = entry - stop_dist
+            target_eff = entry + target_dist - spread / 2
+        else:
+            entry_eff = entry - spread / 2
+            stop_eff = entry + stop_dist
+            target_eff = entry - target_dist + spread / 2
+        if direction == "bullish" and nxt["low"] <= stop_eff:
+            losses += 1
+            continue
+        if direction == "bearish" and nxt["high"] >= stop_eff:
+            losses += 1
+            continue
+        outcome, _ = _walk_exit(candles, i + 2, direction, stop_eff, target_eff)
+        if outcome == "win":
+            wins += 1
+            r_won += target_dist / stop_dist
+        elif outcome == "loss":
+            losses += 1
+        else:
+            timeouts += 1
+    resolved = wins + losses
+    wr = (wins / resolved * 100) if resolved > 0 else 0
+    net_r = r_won - losses
+    return {"n": n_trials, "wins": wins, "losses": losses, "timeouts": timeouts,
+            "wr": wr, "expectancy": net_r / n_trials if n_trials else 0, "net_r": net_r}
+
+
+# ---------- Report ----------
+
+def _rr_stats(trades):
+    """Compute R:R distribution + win/loss analysis."""
+    if not trades:
+        return {}
+    rrs = [t["rr_eff"] for t in trades]
+    rrs_sorted = sorted(rrs)
+    n = len(rrs_sorted)
+
+    def pct(p):
+        if n == 0: return 0.0
+        idx = max(0, min(n - 1, int(p * (n - 1))))
+        return rrs_sorted[idx]
+
+    wins = [t for t in trades if t["outcome"] == "win"]
+    losses = [t for t in trades if t["outcome"] == "loss"]
+    timeouts = [t for t in trades if t["outcome"] == "timeout"]
+
+    win_rrs = [t["rr_eff"] for t in wins]
+
+    buckets = [
+        ("1.5-2.0", 1.5, 2.0),
+        ("2.0-3.0", 2.0, 3.0),
+        ("3.0-5.0", 3.0, 5.0),
+        ("5.0+",    5.0, 1e9),
+    ]
+    bucket_rows = []
+    for label, lo, hi in buckets:
+        b = [t for t in trades if lo <= t["rr_eff"] < hi]
+        bw = sum(1 for t in b if t["outcome"] == "win")
+        bl = sum(1 for t in b if t["outcome"] == "loss")
+        b_res = bw + bl
+        b_wr = (bw / b_res * 100) if b_res > 0 else 0
+        bucket_rows.append({
+            "bucket": label, "n": len(b),
+            "wins": bw, "losses": bl, "wr": b_wr,
+        })
+
+    return {
+        "n": n,
+        "min_rr": min(rrs),
+        "p25_rr": pct(0.25),
+        "median_rr": statistics.median(rrs),
+        "p75_rr": pct(0.75),
+        "max_rr": max(rrs),
+        "mean_rr": sum(rrs) / n,
+        "full_tp_hits": len(wins),
+        "avg_rr_won": (sum(win_rrs) / len(win_rrs)) if win_rrs else 0,
+        "best_rr_won": max(win_rrs) if win_rrs else 0,
+        "worst_rr_won": min(win_rrs) if win_rrs else 0,
+        "n_wins": len(wins),
+        "n_losses": len(losses),
+        "n_timeouts": len(timeouts),
+        "buckets": bucket_rows,
+    }
+
+
+def _write_report(per_window_rows, aggregate, random_agg, rr_stats, config_snap, trades_all):
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    gen = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    with open(os.path.join(REPORTS_DIR, "continuation_latest.json"), "w") as f:
+        json.dump({"generated": gen, "config": config_snap,
+                   "per_window": per_window_rows, "aggregate": aggregate,
+                   "rr_stats": rr_stats, "random_baseline": random_agg}, f, indent=2)
+
+    with open(os.path.join(REPORTS_DIR, "continuation_trades.csv"), "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=[
+            "window", "symbol", "touch_index", "direction",
+            "entry", "stop", "target", "outcome", "bars_held", "rr_eff",
+        ])
+        writer.writeheader()
+        for t in trades_all:
+            writer.writerow(t)
+
+    md = []
+    md.append("# SMC Signal Bot — Continuation Model Backtest (D1+H4+H1)\n")
+    md.append(f"**Generated:** {gen}\n")
+    md.append("## Configuration\n")
+    md.append("| Parameter | Value |")
+    md.append("|-----------|-------|")
+    for k, v in config_snap.items():
+        md.append(f"| {k} | {v} |")
+    md.append("")
+    md.append("## Per-Window Results\n")
+    md.append("| Window | Signals | Wins | Losses | Timeouts | WR | Expectancy | Net R |")
+    md.append("|--------|---------|------|--------|----------|-----|------------|-------|")
+    for r in per_window_rows:
+        md.append(
+            f"| W{r['window']} | {r['n']} | {r['wins']} | {r['losses']} | "
+            f"{r['timeouts']} | {r['wr']:.1f}% | {r['expectancy']:+.3f} | {r['net_r']:+.1f} |"
+        )
+    md.append("")
+    md.append("## Aggregate\n")
+    md.append(f"- Signals: {aggregate['n']}")
+    md.append(f"- Wins / Losses / Timeouts: {aggregate['wins']} / {aggregate['losses']} / {aggregate['timeouts']}")
+    md.append(f"- Win rate: {aggregate['wr']:.1f}%")
+    md.append(f"- Expectancy: {aggregate['expectancy']:+.3f} R")
+    md.append(f"- Net R: {aggregate['net_r']:+.1f}")
+    md.append("")
+
+    if rr_stats:
+        md.append("## R:R Distribution (all trades)\n")
+        md.append("| Metric | Value |")
+        md.append("|--------|-------|")
+        md.append(f"| Trades | {rr_stats['n']} |")
+        md.append(f"| Min R:R | {rr_stats['min_rr']:.2f} |")
+        md.append(f"| 25th pct | {rr_stats['p25_rr']:.2f} |")
+        md.append(f"| Median R:R | {rr_stats['median_rr']:.2f} |")
+        md.append(f"| 75th pct | {rr_stats['p75_rr']:.2f} |")
+        md.append(f"| Max R:R | {rr_stats['max_rr']:.2f} |")
+        md.append(f"| Mean R:R | {rr_stats['mean_rr']:.2f} |")
+        md.append("")
+        md.append("## Winners vs Losers\n")
+        md.append(f"- Full TP hits: **{rr_stats['full_tp_hits']}**")
+        md.append(f"- Avg R:R on wins: **{rr_stats['avg_rr_won']:.2f}**")
+        md.append(f"- Best win R:R: {rr_stats['best_rr_won']:.2f}")
+        md.append(f"- Worst win R:R: {rr_stats['worst_rr_won']:.2f}")
+        md.append(f"- Losses (all −1.00 R): {rr_stats['n_losses']}")
+        md.append(f"- Timeouts (0 R): {rr_stats['n_timeouts']}")
+        md.append("")
+        md.append("## R:R Buckets\n")
+        md.append("| R:R Range | Trades | Wins | Losses | WR |")
+        md.append("|-----------|--------|------|--------|-----|")
+        for b in rr_stats["buckets"]:
+            md.append(
+                f"| {b['bucket']} | {b['n']} | {b['wins']} | {b['losses']} | {b['wr']:.1f}% |"
+            )
+        md.append("")
+
+    md.append("## Random Baseline\n")
+    md.append(f"- Signals: {random_agg['n']}")
+    md.append(f"- WR: {random_agg['wr']:.1f}%")
+    md.append(f"- Expectancy: {random_agg['expectancy']:+.3f} R")
+    md.append("")
+
+    with open(os.path.join(REPORTS_DIR, "continuation_latest.md"), "w") as f:
+        f.write("\n".join(md))
+
+    log(f"\nReports written to {REPORTS_DIR}/")
+
+
+def main():
+    random.seed(42)
+    log(f"Continuation v3 — D1+H4 alignment, H1 entry, {len(SYMBOLS)} symbols")
+
+    per_window = {w: [] for w in range(1, N_WINDOWS + 1)}
+    rnd_acc = []
+    failed = []
+
+    for sym_idx, sym in enumerate(SYMBOLS, 1):
+        log(f"\n[{sym_idx}/{len(SYMBOLS)}] {sym}")
+        try:
+            h1 = fetch_candles_paginated(sym, GRANULARITY, BACKTEST_CANDLES)
+            d1 = fetch_candles_paginated(sym, HTF_GRANULARITY, HTF_CANDLE_COUNT)
+            h4 = fetch_candles_paginated(sym, H4_GRANULARITY, H4_CANDLE_COUNT)
+        except Exception as e:
+            log(f"  fetch failed: {e}")
+            failed.append(sym)
+            continue
+        if not h1 or not d1 or not h4:
+            log(f"  insufficient data")
+            failed.append(sym)
+            continue
+        log(f"  H1: {len(h1)}  H4: {len(h4)}  D1: {len(d1)}")
+
+        n = len(h1)
+        usable_start = WARMUP_BARS
+        usable_end = n - MAX_HORIZON_BARS - 3
+        if usable_end <= usable_start:
+            failed.append(sym)
+            continue
+        span = usable_end - usable_start
+        win_size = span // N_WINDOWS
+
+        for w in range(N_WINDOWS):
+            s = usable_start + w * win_size
+            e = s + win_size if w < N_WINDOWS - 1 else usable_end
+            sigs = collect_signals(h1, d1, h4, s, e)
+            for sig in sigs:
+                sig["symbol"] = sym
+                sig["candles_ref"] = h1
+                sig["window"] = w + 1
+            per_window[w + 1].extend(sigs)
+            log(f"  W{w+1}: {len(sigs)} signals")
+
+        rnd = random_baseline(h1, RANDOM_TRIALS)
+        rnd_acc.append(rnd)
+
+    log("\n" + "=" * 70)
+    log("AGGREGATE")
+    log("=" * 70)
+    per_window_rows = []
+    trades_all = []
+    for w in range(1, N_WINDOWS + 1):
+        sigs = per_window[w]
+        wins = losses = timeouts = 0
+        r_won = 0.0
+        for sig in sigs:
+            candles = sig["candles_ref"]
+            spread = SPREAD_ATR_FRAC * sig["atr"]
+            r = simulate(candles, sig, spread)
+            if r is None:
+                continue
+            if r["outcome"] == "win":
+                wins += 1
+                r_won += r["rr"]
+            elif r["outcome"] == "loss":
+                losses += 1
+            else:
+                timeouts += 1
+            trades_all.append({
+                "window": w, "symbol": sig.get("symbol", ""),
+                "touch_index": sig["touch_index"], "direction": sig["direction"],
+                "entry": round(sig["entry"], 5), "stop": round(sig["stop"], 5),
+                "target": round(sig["target"], 5),
+                "outcome": r["outcome"], "bars_held": r["bars"],
+                "rr_eff": round(r["rr"], 2),
+            })
+        net_r = r_won - losses
+        resolved = wins + losses
+        wr = (wins / resolved * 100) if resolved > 0 else 0
+        n_eval = wins + losses + timeouts
+        exp = net_r / n_eval if n_eval else 0
+        log(f"  W{w}: n={n_eval:4d}  W{wins}/L{losses}/T{timeouts}  WR={wr:5.1f}%  exp={exp:+.3f}R")
+        per_window_rows.append({"window": w, "n": n_eval, "wins": wins, "losses": losses,
+                                 "timeouts": timeouts, "wr": wr,
+                                 "expectancy": exp, "net_r": net_r})
+
+    total_n = sum(r["n"] for r in per_window_rows)
+    total_wins = sum(r["wins"] for r in per_window_rows)
+    total_losses = sum(r["losses"] for r in per_window_rows)
+    total_timeouts = sum(r["timeouts"] for r in per_window_rows)
+    total_net_r = sum(r["net_r"] for r in per_window_rows)
+    total_resolved = total_wins + total_losses
+    total_wr = (total_wins / total_resolved * 100) if total_resolved > 0 else 0
+    total_exp = total_net_r / total_n if total_n else 0
+    aggregate = {"n": total_n, "wins": total_wins, "losses": total_losses,
+                 "timeouts": total_timeouts, "wr": total_wr,
+                 "expectancy": total_exp, "net_r": total_net_r}
+    log(f"\n  ALL: n={total_n}  W{total_wins}/L{total_losses}/T{total_timeouts}  "
+        f"WR={total_wr:.1f}%  exp={total_exp:+.3f}R  netR={total_net_r:+.1f}")
+
+    rr_stats = _rr_stats(trades_all)
+    if rr_stats:
+        log(f"\n  R:R — min={rr_stats['min_rr']:.2f}  median={rr_stats['median_rr']:.2f}  "
+            f"max={rr_stats['max_rr']:.2f}  mean={rr_stats['mean_rr']:.2f}")
+        log(f"  Full TP hits: {rr_stats['full_tp_hits']}  Avg R:R on wins: {rr_stats['avg_rr_won']:.2f}")
+
+    n = sum(r["n"] for r in rnd_acc)
+    wins = sum(r["wins"] for r in rnd_acc)
+    losses = sum(r["losses"] for r in rnd_acc)
+    timeouts = sum(r["timeouts"] for r in rnd_acc)
+    net_r = sum(r["net_r"] for r in rnd_acc)
+    resolved = wins + losses
+    wr = (wins / resolved * 100) if resolved > 0 else 0
+    exp = net_r / n if n else 0
+    rnd_agg = {"n": n, "wins": wins, "losses": losses, "timeouts": timeouts,
+               "wr": wr, "expectancy": exp, "net_r": net_r}
+    log(f"\n  RANDOM: n={n}  WR={wr:.1f}%  exp={exp:+.3f}R")
+
+    if failed:
+        log(f"\n  FAILED SYMBOLS ({len(failed)}): {', '.join(failed)}")
+
+    config_snap = {
+        "symbols_count": len(SYMBOLS),
+        "failed_symbols": len(failed),
+        "stack": "D1 bias + H4 alignment + H1 OB entry",
+        "detect_window": DETECT_WINDOW,
+        "candles_per_symbol": BACKTEST_CANDLES,
+        "max_horizon_bars": MAX_HORIZON_BARS,
+    }
+    _write_report(per_window_rows, aggregate, rnd_agg, rr_stats, config_snap, trades_all)
+
+
+if __name__ == "__main__":
+    main()
