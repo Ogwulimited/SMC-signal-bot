@@ -1,6 +1,6 @@
-# SMC Signal Bot — Continuation Model Backtest (v2)
+# SMC Signal Bot — Continuation Model Backtest (D1+H4+H1)
 
-**Generated:** 2026-10-03T20:57:22Z
+**Generated:** 2026-10-03T21:29:17Z
 
 ## Configuration
 
@@ -8,29 +8,60 @@
 |-----------|-------|
 | symbols_count | 25 |
 | failed_symbols | 0 |
-| timeframe | H1 |
+| stack | D1 bias + H4 alignment + H1 OB entry |
 | detect_window | 1000 |
 | candles_per_symbol | 10000 |
+| max_horizon_bars | 48 |
 
-## Per-Window Results (aggressive entry)
+## Per-Window Results
 
 | Window | Signals | Wins | Losses | Timeouts | WR | Expectancy | Net R |
 |--------|---------|------|--------|----------|-----|------------|-------|
-| W1 | 6 | 4 | 2 | 0 | 66.7% | +0.766 | +4.6 |
-| W2 | 13 | 7 | 6 | 0 | 53.8% | +0.556 | +7.2 |
-| W3 | 8 | 5 | 3 | 0 | 62.5% | +0.852 | +6.8 |
-| W4 | 15 | 4 | 11 | 0 | 26.7% | -0.169 | -2.5 |
+| W1 | 0 | 0 | 0 | 0 | 0.0% | +0.000 | +0.0 |
+| W2 | 0 | 0 | 0 | 0 | 0.0% | +0.000 | +0.0 |
+| W3 | 4 | 2 | 2 | 0 | 50.0% | +0.578 | +2.3 |
+| W4 | 11 | 3 | 8 | 0 | 27.3% | -0.155 | -1.7 |
 
 ## Aggregate
 
-- Signals: 42
-- Wins / Losses / Timeouts: 20 / 22 / 0
-- Win rate: 47.6%
-- Expectancy: +0.383 R
-- Net R: +16.1
+- Signals: 15
+- Wins / Losses / Timeouts: 5 / 10 / 0
+- Win rate: 33.3%
+- Expectancy: +0.041 R
+- Net R: +0.6
+
+## R:R Distribution (all trades)
+
+| Metric | Value |
+|--------|-------|
+| Trades | 15 |
+| Min R:R | 1.42 |
+| 25th pct | 1.54 |
+| Median R:R | 1.75 |
+| 75th pct | 2.21 |
+| Max R:R | 3.59 |
+| Mean R:R | 2.05 |
+
+## Winners vs Losers
+
+- Full TP hits: **5**
+- Avg R:R on wins: **2.12**
+- Best win R:R: 3.26
+- Worst win R:R: 1.42
+- Losses (all −1.00 R): 10
+- Timeouts (0 R): 0
+
+## R:R Buckets
+
+| R:R Range | Trades | Wins | Losses | WR |
+|-----------|--------|------|--------|-----|
+| 1.5-2.0 | 7 | 1 | 6 | 14.3% |
+| 2.0-3.0 | 3 | 1 | 2 | 33.3% |
+| 3.0-5.0 | 2 | 1 | 1 | 50.0% |
+| 5.0+ | 0 | 0 | 0 | 0.0% |
 
 ## Random Baseline
 
 - Signals: 12500
-- WR: 18.9%
-- Expectancy: -0.054 R
+- WR: 19.7%
+- Expectancy: -0.014 R

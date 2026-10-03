@@ -1,70 +1,117 @@
 {
-  "generated": "2026-10-03T20:57:22Z",
+  "generated": "2026-10-03T21:29:17Z",
   "config": {
     "symbols_count": 25,
     "failed_symbols": 0,
-    "timeframe": "H1",
+    "stack": "D1 bias + H4 alignment + H1 OB entry",
     "detect_window": 1000,
-    "candles_per_symbol": 10000
+    "candles_per_symbol": 10000,
+    "max_horizon_bars": 48
   },
   "per_window": [
     {
       "window": 1,
-      "n": 6,
-      "wins": 4,
-      "losses": 2,
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
       "timeouts": 0,
-      "wr": 66.66666666666666,
-      "expectancy": 0.7659367121015362,
-      "net_r": 4.595620272609217
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
     },
     {
       "window": 2,
-      "n": 13,
-      "wins": 7,
-      "losses": 6,
+      "n": 0,
+      "wins": 0,
+      "losses": 0,
       "timeouts": 0,
-      "wr": 53.84615384615385,
-      "expectancy": 0.5561775339818807,
-      "net_r": 7.230307941764449
+      "wr": 0,
+      "expectancy": 0,
+      "net_r": 0.0
     },
     {
       "window": 3,
-      "n": 8,
-      "wins": 5,
-      "losses": 3,
+      "n": 4,
+      "wins": 2,
+      "losses": 2,
       "timeouts": 0,
-      "wr": 62.5,
-      "expectancy": 0.8523354016112681,
-      "net_r": 6.818683212890145
+      "wr": 50.0,
+      "expectancy": 0.5782714315023507,
+      "net_r": 2.313085726009403
     },
     {
       "window": 4,
-      "n": 15,
-      "wins": 4,
-      "losses": 11,
+      "n": 11,
+      "wins": 3,
+      "losses": 8,
       "timeouts": 0,
-      "wr": 26.666666666666668,
-      "expectancy": -0.1693828695139022,
-      "net_r": -2.5407430427085327
+      "wr": 27.27272727272727,
+      "expectancy": -0.15498706508107948,
+      "net_r": -1.7048577158918743
     }
   ],
   "aggregate": {
-    "n": 42,
-    "wins": 20,
-    "losses": 22,
+    "n": 15,
+    "wins": 5,
+    "losses": 10,
     "timeouts": 0,
-    "wr": 47.61904761904761,
-    "expectancy": 0.3834254377275066,
-    "net_r": 16.103868384555277
+    "wr": 33.33333333333333,
+    "expectancy": 0.04054853400783524,
+    "net_r": 0.6082280101175286
+  },
+  "rr_stats": {
+    "n": 15,
+    "min_rr": 1.42,
+    "p25_rr": 1.54,
+    "median_rr": 1.75,
+    "p75_rr": 2.21,
+    "max_rr": 3.59,
+    "mean_rr": 2.05,
+    "full_tp_hits": 5,
+    "avg_rr_won": 2.12,
+    "best_rr_won": 3.26,
+    "worst_rr_won": 1.42,
+    "n_wins": 5,
+    "n_losses": 10,
+    "n_timeouts": 0,
+    "buckets": [
+      {
+        "bucket": "1.5-2.0",
+        "n": 7,
+        "wins": 1,
+        "losses": 6,
+        "wr": 14.285714285714285
+      },
+      {
+        "bucket": "2.0-3.0",
+        "n": 3,
+        "wins": 1,
+        "losses": 2,
+        "wr": 33.33333333333333
+      },
+      {
+        "bucket": "3.0-5.0",
+        "n": 2,
+        "wins": 1,
+        "losses": 1,
+        "wr": 50.0
+      },
+      {
+        "bucket": "5.0+",
+        "n": 0,
+        "wins": 0,
+        "losses": 0,
+        "wr": 0
+      }
+    ]
   },
   "random_baseline": {
     "n": 12500,
-    "wins": 2362,
-    "losses": 10129,
-    "timeouts": 9,
-    "wr": 18.909614922744375,
-    "expectancy": -0.05448,
-    "net_r": -681.0
+    "wins": 2464,
+    "losses": 10031,
+    "timeouts": 5,
+    "wr": 19.719887955182074,
+    "expectancy": -0.014,
+    "net_r": -175.0
   }
 }
