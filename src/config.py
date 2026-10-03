@@ -1,21 +1,18 @@
 """Configuration for the SMC signal bot."""
 
 SYMBOLS = [
-    # Forex majors
+    # Forex majors (7)
     "frxEURUSD", "frxGBPUSD", "frxAUDUSD", "frxUSDCAD", "frxUSDCHF",
     "frxUSDJPY", "frxNZDUSD",
-    # Forex crosses
+    # Forex crosses (10)
     "frxEURGBP", "frxEURJPY", "frxGBPJPY", "frxAUDJPY", "frxEURAUD",
-    "frxGBPAUD", "frxCADJPY", "frxNZDJPY", "frxGBPCHF", "frxGBPNZD",
-    "frxGBPCAD", "frxAUDCAD", "frxAUDCHF", "frxAUDNZD", "frxEURCAD",
-    "frxEURCHF", "frxEURNZD", "frxCHFJPY",
-    # Metals
+    "frxGBPAUD", "frxCADJPY", "frxNZDJPY", "frxGBPCHF", "frxEURNZD",
+    # Metals (2)
     "frxXAUUSD", "frxXAGUSD",
-    # Crypto
+    # Crypto (5)
     "cryBTCUSD", "cryETHUSD", "cryLTCUSD", "cryXRPUSD", "crySOLUSD",
-    "cryBCHUSD", "cryADAUSD", "cryDOTUSD", "cryMATICUSD", "cryBNBUSD",
-    # Volatility indices (24/7 — always-on testing)
-    "R_10", "R_25", "R_50", "R_75", "R_100",
+    # Volatility indices (1 — always-on sanity check)
+    "R_100",
 ]
 
 # ----- Timeframe stack: H1 entry, D1 bias -----
@@ -37,26 +34,19 @@ PATTERN_LOOKBACK_BARS = 30
 MIN_OB_WIDTH_ATR = 0.30
 MIN_TARGET_ATR = 0.50
 
-# Legacy FVG threshold — kept for backwards compat with fvg.py import.
 MIN_FVG_ATR = 0.0
 
 # ----- Continuation model parameters -----
-# Displacement leg must contain an FVG at least this size (fraction of ATR).
-# Loosened from 0.08 to 0.05 for more signals.
 MIN_CONT_FVG_ATR = 0.05
-
-# Liquidity pool must be within this many ATR of the OB.
 CONT_LIQUIDITY_TOL_ATR = 3.0
-
-# OB must be no more than this many bars old when the touch fires.
 CONT_MAX_OB_AGE = 800
-
-# Only consider BOS events that fired within the last N bars.
-# Tightened from 200 to 150 to skip stale BOS after the retrace window.
 CONT_MAX_BARS_BOS_TO_TOUCH = 150
-
-# For the "confirmed" entry: wait up to this many bars after the touch.
 CONT_CONFIRMATION_WAIT_BARS = 5
+
+# ----- Backtest performance -----
+# Rolling window: only scan this many H1 bars per detection call.
+# Must be > CONT_MAX_OB_AGE + CONT_MAX_BARS_BOS_TO_TOUCH to be safe.
+DETECT_WINDOW = 1000
 
 # ----- Entry wait window (reversal model) -----
 MAX_WAIT_FOR_FILL_BARS = 30
