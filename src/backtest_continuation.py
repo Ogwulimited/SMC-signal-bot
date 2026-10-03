@@ -1,26 +1,25 @@
-"""Continuation model backtest — OPTIMIZED.
+"""Continuation backtest v3 — D1 bias + H4 alignment + H1 entry.
 
-Key optimizations:
-  - Rolling window of DETECT_WINDOW bars per detection call.
-  - D1 bias recomputed only when D1 window changes.
-  - Progress logging every 1000 bars.
-  - Only aggressive entry variant.
+Adds R:R distribution reporting.
 """
 
 import csv
 import json
 import os
 import random
+import statistics
 from datetime import datetime, timezone
 
 from .config import (
     SYMBOLS, GRANULARITY, TIMEFRAME_LABEL, DETECT_WINDOW,
     ATR_PERIOD, MAX_HORIZON_BARS, SPREAD_ATR_FRAC,
     HTF_GRANULARITY, HTF_CANDLE_COUNT,
+    H4_GRANULARITY, H4_CANDLE_COUNT, H4_SWING_LOOKBACK,
+    SWING_LOOKBACK,
     REPORTS_DIR,
 )
 from .deriv_client import fetch_candles_paginated
-from .smc import compute_atr
+from .smc import compute_atr, find_swings, detect_bos_choch
 from .continuation import detect_continuation_signals, detect_htf_bias
 
 
@@ -66,7 +65,7 @@ def _valid_geo(direction, e, s, t):
     return e < s and t < e
 
 
-def simulate_aggressive(candles, sig, spread):
+def simulate(candles, sig, spread):
     idx = sig["touch_index"]
     direction = sig["direction"]
     entry_eff, stop_eff, target_eff = _apply_spread(
@@ -83,41 +82,56 @@ def simulate_aggressive(candles, sig, spread):
     return {"outcome": outcome, "bars": bars, "rr": _rr(direction, entry_eff, stop_eff, target_eff)}
 
 
-def collect_signals(h1, d1, start, end):
-    """Rolling window + cached D1 bias."""
+def collect_signals(h1, d1, h4, start, end):
     sigs = []
     cached_bias_epoch = None
     cached_bias = None
+    cached_h4_epoch = None
+    cached_h4_trend = None
     log_every = 500
 
     for i in range(start, end):
         if (i - start) % log_every == 0:
             log(f"    scanning bar {i}/{end}")
 
-        # Rolling window on H1
         w_start = max(0, i + 1 - DETECT_WINDOW)
         h1_window = h1[w_start : i + 1]
+        if len(h1_window) < 50:
+            continue
 
-        # D1 window — cache bias per D1 epoch
         d1_window = [c for c in d1 if c["epoch"] <= h1_window[-1]["epoch"]]
         if not d1_window:
             continue
-
         latest_d1_epoch = d1_window[-1]["epoch"]
         if latest_d1_epoch != cached_bias_epoch:
             cached_bias = detect_htf_bias(d1_window)
             cached_bias_epoch = latest_d1_epoch
-
         if cached_bias is None:
             continue
 
+        h4_window = [c for c in h4 if c["epoch"] <= h1_window[-1]["epoch"]]
+        if not h4_window:
+            continue
+        latest_h4_epoch = h4_window[-1]["epoch"]
+        if latest_h4_epoch != cached_h4_epoch:
+            if len(h4_window) >= 20:
+                try:
+                    h4_swings = find_swings(h4_window, H4_SWING_LOOKBACK)
+                    _, _, cached_h4_trend = detect_bos_choch(h4_window, h4_swings)
+                except Exception:
+                    cached_h4_trend = None
+            else:
+                cached_h4_trend = None
+            cached_h4_epoch = latest_h4_epoch
+
         try:
-            pats = detect_continuation_signals(h1_window, d1_window)
+            pats = detect_continuation_signals(
+                h1_window, d1_window, h4_trend=cached_h4_trend
+            )
         except Exception:
             continue
 
         for p in pats:
-            # p.touch_index is relative to h1_window; convert to absolute
             abs_touch = w_start + p.touch_index
             if abs_touch != i:
                 continue
@@ -132,7 +146,6 @@ def collect_signals(h1, d1, start, end):
                 "atr": compute_atr(h1_window, ATR_PERIOD) or 0.0,
             })
 
-    # dedupe
     seen = set()
     out = []
     for s in sigs:
@@ -188,14 +201,65 @@ def random_baseline(candles, n_trials):
             "wr": wr, "expectancy": net_r / n_trials if n_trials else 0, "net_r": net_r}
 
 
-def _write_report(per_window_rows, aggregate, random_agg, config_snap, trades_all):
+def _rr_stats(trades):
+    if not trades:
+        return {}
+    rrs = [t["rr_eff"] for t in trades]
+    rrs_sorted = sorted(rrs)
+    n = len(rrs_sorted)
+
+    def pct(p):
+        if n == 0: return 0.0
+        idx = max(0, min(n - 1, int(p * (n - 1))))
+        return rrs_sorted[idx]
+
+    wins = [t for t in trades if t["outcome"] == "win"]
+    losses = [t for t in trades if t["outcome"] == "loss"]
+    timeouts = [t for t in trades if t["outcome"] == "timeout"]
+    win_rrs = [t["rr_eff"] for t in wins]
+
+    buckets = [
+        ("1.5-2.0", 1.5, 2.0),
+        ("2.0-3.0", 2.0, 3.0),
+        ("3.0-5.0", 3.0, 5.0),
+        ("5.0+",    5.0, 1e9),
+    ]
+    bucket_rows = []
+    for label, lo, hi in buckets:
+        b = [t for t in trades if lo <= t["rr_eff"] < hi]
+        bw = sum(1 for t in b if t["outcome"] == "win")
+        bl = sum(1 for t in b if t["outcome"] == "loss")
+        b_res = bw + bl
+        b_wr = (bw / b_res * 100) if b_res > 0 else 0
+        bucket_rows.append({"bucket": label, "n": len(b), "wins": bw, "losses": bl, "wr": b_wr})
+
+    return {
+        "n": n,
+        "min_rr": min(rrs),
+        "p25_rr": pct(0.25),
+        "median_rr": statistics.median(rrs),
+        "p75_rr": pct(0.75),
+        "max_rr": max(rrs),
+        "mean_rr": sum(rrs) / n,
+        "full_tp_hits": len(wins),
+        "avg_rr_won": (sum(win_rrs) / len(win_rrs)) if win_rrs else 0,
+        "best_rr_won": max(win_rrs) if win_rrs else 0,
+        "worst_rr_won": min(win_rrs) if win_rrs else 0,
+        "n_wins": len(wins),
+        "n_losses": len(losses),
+        "n_timeouts": len(timeouts),
+        "buckets": bucket_rows,
+    }
+
+
+def _write_report(per_window_rows, aggregate, random_agg, rr_stats, config_snap, trades_all):
     os.makedirs(REPORTS_DIR, exist_ok=True)
     gen = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     with open(os.path.join(REPORTS_DIR, "continuation_latest.json"), "w") as f:
         json.dump({"generated": gen, "config": config_snap,
                    "per_window": per_window_rows, "aggregate": aggregate,
-                   "random_baseline": random_agg}, f, indent=2)
+                   "rr_stats": rr_stats, "random_baseline": random_agg}, f, indent=2)
 
     with open(os.path.join(REPORTS_DIR, "continuation_trades.csv"), "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
@@ -207,7 +271,7 @@ def _write_report(per_window_rows, aggregate, random_agg, config_snap, trades_al
             writer.writerow(t)
 
     md = []
-    md.append("# SMC Signal Bot — Continuation Model Backtest (v2)\n")
+    md.append("# SMC Signal Bot — Continuation Model Backtest (D1+H4+H1)\n")
     md.append(f"**Generated:** {gen}\n")
     md.append("## Configuration\n")
     md.append("| Parameter | Value |")
@@ -215,7 +279,7 @@ def _write_report(per_window_rows, aggregate, random_agg, config_snap, trades_al
     for k, v in config_snap.items():
         md.append(f"| {k} | {v} |")
     md.append("")
-    md.append("## Per-Window Results (aggressive entry)\n")
+    md.append("## Per-Window Results\n")
     md.append("| Window | Signals | Wins | Losses | Timeouts | WR | Expectancy | Net R |")
     md.append("|--------|---------|------|--------|----------|-----|------------|-------|")
     for r in per_window_rows:
@@ -231,6 +295,34 @@ def _write_report(per_window_rows, aggregate, random_agg, config_snap, trades_al
     md.append(f"- Expectancy: {aggregate['expectancy']:+.3f} R")
     md.append(f"- Net R: {aggregate['net_r']:+.1f}")
     md.append("")
+
+    if rr_stats:
+        md.append("## R:R Distribution (all trades)\n")
+        md.append("| Metric | Value |")
+        md.append("|--------|-------|")
+        md.append(f"| Trades | {rr_stats['n']} |")
+        md.append(f"| Min R:R | {rr_stats['min_rr']:.2f} |")
+        md.append(f"| 25th pct | {rr_stats['p25_rr']:.2f} |")
+        md.append(f"| Median R:R | {rr_stats['median_rr']:.2f} |")
+        md.append(f"| 75th pct | {rr_stats['p75_rr']:.2f} |")
+        md.append(f"| Max R:R | {rr_stats['max_rr']:.2f} |")
+        md.append(f"| Mean R:R | {rr_stats['mean_rr']:.2f} |")
+        md.append("")
+        md.append("## Winners vs Losers\n")
+        md.append(f"- Full TP hits: **{rr_stats['full_tp_hits']}**")
+        md.append(f"- Avg R:R on wins: **{rr_stats['avg_rr_won']:.2f}**")
+        md.append(f"- Best win R:R: {rr_stats['best_rr_won']:.2f}")
+        md.append(f"- Worst win R:R: {rr_stats['worst_rr_won']:.2f}")
+        md.append(f"- Losses (all −1.00 R): {rr_stats['n_losses']}")
+        md.append(f"- Timeouts (0 R): {rr_stats['n_timeouts']}")
+        md.append("")
+        md.append("## R:R Buckets\n")
+        md.append("| R:R Range | Trades | Wins | Losses | WR |")
+        md.append("|-----------|--------|------|--------|-----|")
+        for b in rr_stats["buckets"]:
+            md.append(f"| {b['bucket']} | {b['n']} | {b['wins']} | {b['losses']} | {b['wr']:.1f}% |")
+        md.append("")
+
     md.append("## Random Baseline\n")
     md.append(f"- Signals: {random_agg['n']}")
     md.append(f"- WR: {random_agg['wr']:.1f}%")
@@ -245,7 +337,7 @@ def _write_report(per_window_rows, aggregate, random_agg, config_snap, trades_al
 
 def main():
     random.seed(42)
-    log(f"Continuation backtest v2 — {len(SYMBOLS)} symbols, DETECT_WINDOW={DETECT_WINDOW}")
+    log(f"Continuation v3 — D1+H4 alignment, H1 entry, {len(SYMBOLS)} symbols")
 
     per_window = {w: [] for w in range(1, N_WINDOWS + 1)}
     rnd_acc = []
@@ -256,15 +348,16 @@ def main():
         try:
             h1 = fetch_candles_paginated(sym, GRANULARITY, BACKTEST_CANDLES)
             d1 = fetch_candles_paginated(sym, HTF_GRANULARITY, HTF_CANDLE_COUNT)
+            h4 = fetch_candles_paginated(sym, H4_GRANULARITY, H4_CANDLE_COUNT)
         except Exception as e:
             log(f"  fetch failed: {e}")
             failed.append(sym)
             continue
-        if not h1 or not d1:
+        if not h1 or not d1 or not h4:
             log(f"  insufficient data")
             failed.append(sym)
             continue
-        log(f"  H1: {len(h1)}  D1: {len(d1)}")
+        log(f"  H1: {len(h1)}  H4: {len(h4)}  D1: {len(d1)}")
 
         n = len(h1)
         usable_start = WARMUP_BARS
@@ -278,8 +371,7 @@ def main():
         for w in range(N_WINDOWS):
             s = usable_start + w * win_size
             e = s + win_size if w < N_WINDOWS - 1 else usable_end
-            log(f"  W{w+1}: scanning bars {s}..{e}")
-            sigs = collect_signals(h1, d1, s, e)
+            sigs = collect_signals(h1, d1, h4, s, e)
             for sig in sigs:
                 sig["symbol"] = sym
                 sig["candles_ref"] = h1
@@ -302,7 +394,7 @@ def main():
         for sig in sigs:
             candles = sig["candles_ref"]
             spread = SPREAD_ATR_FRAC * sig["atr"]
-            r = simulate_aggressive(candles, sig, spread)
+            r = simulate(candles, sig, spread)
             if r is None:
                 continue
             if r["outcome"] == "win":
@@ -344,6 +436,12 @@ def main():
     log(f"\n  ALL: n={total_n}  W{total_wins}/L{total_losses}/T{total_timeouts}  "
         f"WR={total_wr:.1f}%  exp={total_exp:+.3f}R  netR={total_net_r:+.1f}")
 
+    rr_stats = _rr_stats(trades_all)
+    if rr_stats:
+        log(f"\n  R:R — min={rr_stats['min_rr']:.2f}  median={rr_stats['median_rr']:.2f}  "
+            f"max={rr_stats['max_rr']:.2f}  mean={rr_stats['mean_rr']:.2f}")
+        log(f"  Full TP hits: {rr_stats['full_tp_hits']}  Avg R:R on wins: {rr_stats['avg_rr_won']:.2f}")
+
     n = sum(r["n"] for r in rnd_acc)
     wins = sum(r["wins"] for r in rnd_acc)
     losses = sum(r["losses"] for r in rnd_acc)
@@ -362,11 +460,12 @@ def main():
     config_snap = {
         "symbols_count": len(SYMBOLS),
         "failed_symbols": len(failed),
-        "timeframe": TIMEFRAME_LABEL,
+        "stack": "D1 bias + H4 alignment + H1 OB entry",
         "detect_window": DETECT_WINDOW,
         "candles_per_symbol": BACKTEST_CANDLES,
+        "max_horizon_bars": MAX_HORIZON_BARS,
     }
-    _write_report(per_window_rows, aggregate, rnd_agg, config_snap, trades_all)
+    _write_report(per_window_rows, aggregate, rnd_agg, rr_stats, config_snap, trades_all)
 
 
 if __name__ == "__main__":
