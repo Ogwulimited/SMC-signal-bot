@@ -15,7 +15,7 @@ SYMBOLS = [
     "R_100",
 ]
 
-# ----- Timeframe stack: H1 entry, D1 bias -----
+# ----- Timeframe stack: D1 bias + H4 alignment + H1 entry -----
 GRANULARITY = 3600
 TIMEFRAME_LABEL = "H1"
 
@@ -34,6 +34,7 @@ PATTERN_LOOKBACK_BARS = 30
 MIN_OB_WIDTH_ATR = 0.30
 MIN_TARGET_ATR = 0.50
 
+# Legacy FVG threshold — kept for backwards compat with fvg.py import.
 MIN_FVG_ATR = 0.0
 
 # ----- Continuation model parameters -----
@@ -44,17 +45,20 @@ CONT_MAX_BARS_BOS_TO_TOUCH = 150
 CONT_CONFIRMATION_WAIT_BARS = 5
 
 # ----- Backtest performance -----
-# Rolling window: only scan this many H1 bars per detection call.
-# Must be > CONT_MAX_OB_AGE + CONT_MAX_BARS_BOS_TO_TOUCH to be safe.
 DETECT_WINDOW = 1000
 
 # ----- Entry wait window (reversal model) -----
 MAX_WAIT_FOR_FILL_BARS = 30
 
-# ----- HTF bias -----
+# ----- HTF bias (D1) -----
 HTF_GRANULARITY = 86400
 HTF_CANDLE_COUNT = 500
 HTF_SWING_LOOKBACK = 3
+
+# ----- H4 alignment -----
+H4_GRANULARITY = 14400
+H4_CANDLE_COUNT = 500
+H4_SWING_LOOKBACK = 3
 
 # ----- Backtest outcome simulation -----
 MAX_HORIZON_BARS = 48
