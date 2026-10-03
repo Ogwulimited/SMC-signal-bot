@@ -1,6 +1,6 @@
 """Continuation model: HTF bias + H1 OB + FVG + liquidity confluence.
 
-v4: fixed touched_before scan — only bars after BOS count as "prior touches".
+v5: synthetic target fallback when no liquidity pool exists beyond entry.
 """
 
 from dataclasses import dataclass
@@ -19,6 +19,9 @@ from .config import (
 )
 
 
+SYNTHETIC_TARGET_ATR = 2.0  # fallback target distance in ATR
+
+
 @dataclass
 class ContinuationPattern:
     direction: str
@@ -33,6 +36,7 @@ class ContinuationPattern:
     rr: float
     has_fvg: bool
     has_liquidity_nearby: bool
+    target_is_synthetic: bool
 
 
 def detect_htf_bias(d1_candles) -> Optional[str]:
@@ -110,6 +114,7 @@ COUNTERS = {
     "not_touching_now": 0,
     "touched_before": 0,
     "no_target": 0,
+    "synthetic_target_used": 0,
     "rr_too_low": 0,
     "emitted": 0,
 }
@@ -219,9 +224,6 @@ def detect_continuation_signals(h1_candles, d1_candles, debug=False):
                     COUNTERS["not_touching_now"] += 1
                 continue
 
-        # FIXED: only bars AFTER the BOS count as prior touches.
-        # The displacement candle (right after OB) often overlaps entry,
-        # so scanning from ob_idx+1 falsely flagged every first touch.
         touched_before = False
         for k in range(bos.index + 1, last_idx):
             c = h1_candles[k]
@@ -233,10 +235,18 @@ def detect_continuation_signals(h1_candles, d1_candles, debug=False):
                 COUNTERS["touched_before"] += 1
             continue
 
+        target_is_synthetic = False
+
         if bias == "bullish":
             stop = ob_low - BUFFER_ATR * atr
             target = _nearest_target_above(pools, entry)
-            if target is None or target <= entry or entry <= stop:
+            if target is None:
+                # Fallback: synthetic target
+                target = entry + SYNTHETIC_TARGET_ATR * atr
+                target_is_synthetic = True
+                if debug:
+                    COUNTERS["synthetic_target_used"] += 1
+            if target <= entry or entry <= stop:
                 if debug:
                     COUNTERS["no_target"] += 1
                 continue
@@ -248,7 +258,12 @@ def detect_continuation_signals(h1_candles, d1_candles, debug=False):
         else:
             stop = ob_high + BUFFER_ATR * atr
             target = _nearest_target_below(pools, entry)
-            if target is None or target >= entry or stop <= entry:
+            if target is None:
+                target = entry - SYNTHETIC_TARGET_ATR * atr
+                target_is_synthetic = True
+                if debug:
+                    COUNTERS["synthetic_target_used"] += 1
+            if target >= entry or stop <= entry:
                 if debug:
                     COUNTERS["no_target"] += 1
                 continue
@@ -279,6 +294,7 @@ def detect_continuation_signals(h1_candles, d1_candles, debug=False):
             rr=rr,
             has_fvg=has_fvg,
             has_liquidity_nearby=has_liq,
+            target_is_synthetic=target_is_synthetic,
         ))
 
     return out
