@@ -1,22 +1,21 @@
 """SMC structural primitives: swings, BOS/CHoCH, liquidity, sweeps, order blocks."""
 
+import datetime as dt
 from dataclasses import dataclass
 from typing import List, Optional
 
-
-# ---------- Data objects ----------
 
 @dataclass
 class Swing:
     index: int
     price: float
-    kind: str  # "high" or "low"
+    kind: str
 
 
 @dataclass
 class BOS:
     index: int
-    direction: str  # "up" or "down"
+    direction: str
     broken_swing_index: int
     broken_price: float
 
@@ -32,7 +31,7 @@ class CHoCH:
 
 @dataclass
 class LiquidityPool:
-    kind: str              # "EQH" | "EQL" | "swing_high" | "swing_low"
+    kind: str
     price: float
     swing_indices: List[int]
     swept: bool = False
@@ -42,22 +41,20 @@ class LiquidityPool:
 @dataclass
 class Sweep:
     index: int
-    direction: str         # "up" (swept a high) | "down" (swept a low)
+    direction: str
     pool_price: float
     pool_kind: str
 
 
 @dataclass
 class OrderBlock:
-    direction: str         # "bullish" | "bearish"
-    index: int             # bar index of the OB candle
+    direction: str
+    index: int
     high: float
     low: float
     bos_index: int
     mitigated: bool = False
 
-
-# ---------- ATR ----------
 
 def compute_atr(candles, period=14):
     if len(candles) < period + 1:
@@ -72,19 +69,15 @@ def compute_atr(candles, period=14):
     return sum(trs[-period:]) / period
 
 
-# ---------- Swings ----------
-
 def find_swings(candles, n=2):
     swings = []
     for i in range(n, len(candles) - n):
         high = candles[i]["high"]
         low = candles[i]["low"]
-
         is_high = all(candles[j]["high"] < high for j in range(i - n, i)) and \
                   all(candles[j]["high"] < high for j in range(i + 1, i + n + 1))
         is_low = all(candles[j]["low"] > low for j in range(i - n, i)) and \
                  all(candles[j]["low"] > low for j in range(i + 1, i + n + 1))
-
         if is_high:
             swings.append(Swing(index=i, price=high, kind="high"))
         if is_low:
@@ -92,22 +85,10 @@ def find_swings(candles, n=2):
     return swings
 
 
-# ---------- BOS / CHoCH ----------
-
 def detect_bos_choch(candles, swings):
-    """State machine: the latest unconsumed swing high/low is the active reference.
-
-    A close above the active high reference:
-      - if already in an uptrend -> BOS up
-      - otherwise -> CHoCH up (trend flips to up)
-    Symmetric for the low reference.
-
-    On trend flip, stale unconsumed references on the opposite side are discarded.
-    """
     bos_events: List[BOS] = []
     choch_events: List[CHoCH] = []
     trend = None
-
     swings_sorted = sorted(swings, key=lambda s: s.index)
     consumed = set()
 
@@ -148,8 +129,6 @@ def detect_bos_choch(candles, swings):
 
     return bos_events, choch_events, trend
 
-
-# ---------- Liquidity pools ----------
 
 def find_liquidity_pools(candles, swings, atr, eq_tol_atr=0.15):
     pools: List[LiquidityPool] = []
@@ -203,7 +182,75 @@ def find_liquidity_pools(candles, swings, atr, eq_tol_atr=0.15):
     return pools
 
 
-# ---------- Sweeps ----------
+# ---------- Time-based liquidity (PDH/PDL, weekly, sessions) ----------
+
+def _utc_hour(epoch):
+    return dt.datetime.fromtimestamp(epoch, tz=dt.timezone.utc).hour
+
+
+def _utc_day_start(epoch):
+    d = dt.datetime.fromtimestamp(epoch, tz=dt.timezone.utc)
+    return int(dt.datetime(d.year, d.month, d.day, tzinfo=dt.timezone.utc).timestamp())
+
+
+def _utc_week_start(epoch):
+    d = dt.datetime.fromtimestamp(epoch, tz=dt.timezone.utc)
+    day_start = dt.datetime(d.year, d.month, d.day, tzinfo=dt.timezone.utc)
+    monday = day_start - dt.timedelta(days=d.weekday())
+    return int(monday.timestamp())
+
+
+def find_time_based_liquidity(candles, as_of_epoch):
+    """Return PDH/PDL, prior-week high/low, and prior-session extremes.
+
+    Uses ONLY candles strictly before as_of_epoch. No look-ahead.
+    Sessions use UTC windows:
+      Asia:   00:00-06:00
+      London: 07:00-16:00
+      NY:     12:00-21:00
+    """
+    pools: List[LiquidityPool] = []
+
+    # We only need the last ~10 days of bars
+    cutoff = as_of_epoch - 10 * 86400
+    recent = [c for c in candles if cutoff <= c["epoch"] < as_of_epoch]
+    if not recent:
+        return pools
+
+    cur_day_start = _utc_day_start(as_of_epoch)
+
+    # --- Previous completed day ---
+    pd_start = cur_day_start - 86400
+    pd_bars = [c for c in recent if pd_start <= c["epoch"] < cur_day_start]
+    if pd_bars:
+        pdh = max(c["high"] for c in pd_bars)
+        pdl = min(c["low"] for c in pd_bars)
+        pools.append(LiquidityPool(kind="PDH", price=pdh, swing_indices=[]))
+        pools.append(LiquidityPool(kind="PDL", price=pdl, swing_indices=[]))
+
+    # --- Previous completed ISO week ---
+    cur_monday = _utc_week_start(as_of_epoch)
+    prev_monday = cur_monday - 7 * 86400
+    pw_bars = [c for c in recent if prev_monday <= c["epoch"] < cur_monday]
+    if pw_bars:
+        pwh = max(c["high"] for c in pw_bars)
+        pwl = min(c["low"] for c in pw_bars)
+        pools.append(LiquidityPool(kind="weekly_high", price=pwh, swing_indices=[]))
+        pools.append(LiquidityPool(kind="weekly_low", price=pwl, swing_indices=[]))
+
+    # --- Previous session extremes (from previous completed day) ---
+    if pd_bars:
+        sessions = [("asia", 0, 6), ("london", 7, 16), ("ny", 12, 21)]
+        for name, sh, eh in sessions:
+            s_bars = [c for c in pd_bars if sh <= _utc_hour(c["epoch"]) < eh]
+            if s_bars:
+                s_high = max(c["high"] for c in s_bars)
+                s_low = min(c["low"] for c in s_bars)
+                pools.append(LiquidityPool(kind=f"{name}_high", price=s_high, swing_indices=[]))
+                pools.append(LiquidityPool(kind=f"{name}_low", price=s_low, swing_indices=[]))
+
+    return pools
+
 
 def detect_sweeps(candles, pools, atr):
     sweeps: List[Sweep] = []
@@ -214,13 +261,15 @@ def detect_sweeps(candles, pools, atr):
         for i, c in enumerate(candles):
             if i < earliest_allowed:
                 continue
-            if pool.kind in ("EQH", "swing_high"):
+            if pool.kind in ("EQH", "swing_high", "PDH", "weekly_high",
+                             "asia_high", "london_high", "ny_high"):
                 if c["high"] > pool.price and c["close"] < pool.price:
                     sweeps.append(Sweep(i, "up", pool.price, pool.kind))
                     pool.swept = True
                     pool.swept_index = i
                     break
-            elif pool.kind in ("EQL", "swing_low"):
+            elif pool.kind in ("EQL", "swing_low", "PDL", "weekly_low",
+                               "asia_low", "london_low", "ny_low"):
                 if c["low"] < pool.price and c["close"] > pool.price:
                     sweeps.append(Sweep(i, "down", pool.price, pool.kind))
                     pool.swept = True
@@ -228,8 +277,6 @@ def detect_sweeps(candles, pools, atr):
                     break
     return sweeps
 
-
-# ---------- Order blocks ----------
 
 def detect_order_blocks(candles, bos_events, atr, displacement_mult=1.5):
     obs: List[OrderBlock] = []
