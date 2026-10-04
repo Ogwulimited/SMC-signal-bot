@@ -2,7 +2,7 @@
 
 Fetches H1 + D1 for each recommended pair, runs the continuation detector,
 sends signals to Telegram when a fresh OB touch fires on the last completed
-H1 candle.
+H1 candle, and records each sent signal as a pending trade for the monitor.
 """
 
 import time
@@ -17,6 +17,7 @@ from .continuation import detect_continuation_signals
 from .telegram_client import send_signal
 from .state_store import (
     load_state, save_state, already_sent, in_cooldown, record_sent,
+    add_pending_trade,
 )
 
 
@@ -79,6 +80,17 @@ def main():
                     bias=p.direction,
                 )
                 record_sent(state, symbol, direction_label, sig, now)
+                add_pending_trade(
+                    state=state,
+                    symbol=symbol,
+                    direction=p.direction,
+                    entry=p.entry,
+                    stop=p.stop,
+                    target=p.target,
+                    rr=p.rr,
+                    target_kind=p.target_kind,
+                    sent_epoch=now,
+                )
                 total_sent += 1
                 print(
                     f"[{symbol}] SENT {p.direction} "
