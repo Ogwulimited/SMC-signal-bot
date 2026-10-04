@@ -2,7 +2,6 @@
 
 # Frozen model: only the 19 recommended pairs from the per-symbol backtest.
 RECOMMENDED_PAIRS = [
-    # Top performers (sorted by expectancy)
     "frxAUDNZD",
     "frxNZDCHF",
     "frxEURAUD",
@@ -75,12 +74,19 @@ HTF_SWING_LOOKBACK = 3
 MAX_HORIZON_BARS = 48
 SPREAD_ATR_FRAC = 0.04
 
+# ----- Telegram -----
 TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
 
+# ----- State -----
 STATE_FILE = "state.json"
+SIGNAL_COOLDOWN_SECONDS = 3600  # 1 hour between same symbol+direction
 
-# Cooldown between signals for the same symbol+direction (safety net).
-SIGNAL_COOLDOWN_SECONDS = 3600  # 1 hour
+# ----- Trade monitor -----
+TRADES_FILE = "trades.json"
+MONITOR_GRANULARITY = 900                    # M15 bars for outcome checks
+MAX_TRADE_DURATION_SECONDS = 48 * 3600       # 48h timeout → 0R
+MONITOR_CANDLE_COUNT = 300                   # ~3 days of M15 candles per check
 
+# ----- Reports -----
 REPORTS_DIR = "reports"
