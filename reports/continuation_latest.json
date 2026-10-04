@@ -1,9 +1,9 @@
 {
-  "generated": "2026-10-04T07:09:55Z",
+  "generated": "2026-10-04T08:10:53Z",
   "config": {
     "symbols_count": 31,
     "failed_symbols": 0,
-    "stack": "D1 bias + H1 OB entry + time-based liquidity",
+    "min_trades_for_recommendation": 8,
     "detect_window": 1000,
     "candles_per_symbol": 10000,
     "max_horizon_bars": 48
@@ -11,13 +11,14 @@
   "per_window": [
     {
       "window": 1,
-      "n": 94,
-      "wins": 29,
-      "losses": 65,
+      "n": 92,
+      "wins": 28,
+      "losses": 64,
       "timeouts": 0,
-      "wr": 30.851063829787233,
-      "expectancy": 0.25047373575603554,
-      "net_r": 23.54453116106734
+      "wr": 30.434782608695656,
+      "expectancy": 0.2328260869565216,
+      "net_r": 21.419999999999987,
+      "avg_rr_won": 3.0507142857142853
     },
     {
       "window": 2,
@@ -26,8 +27,9 @@
       "losses": 90,
       "timeouts": 0,
       "wr": 32.33082706766917,
-      "expectancy": 0.24311229040271926,
-      "net_r": 32.33393462356166
+      "expectancy": 0.2430827067669174,
+      "net_r": 32.33000000000001,
+      "avg_rr_won": 2.8448837209302327
     },
     {
       "window": 3,
@@ -36,8 +38,9 @@
       "losses": 67,
       "timeouts": 1,
       "wr": 31.63265306122449,
-      "expectancy": 0.15022044791381522,
-      "net_r": 14.871824343467708
+      "expectancy": 0.1501010101010101,
+      "net_r": 14.86,
+      "avg_rr_won": 2.6406451612903226
     },
     {
       "window": 4,
@@ -46,165 +49,592 @@
       "losses": 60,
       "timeouts": 1,
       "wr": 31.818181818181817,
-      "expectancy": 0.5130035811804387,
-      "net_r": 45.65731872505904
+      "expectancy": 0.5130337078651683,
+      "net_r": 45.65999999999998,
+      "avg_rr_won": 3.773571428571428
     }
   ],
   "aggregate": {
-    "n": 415,
-    "wins": 131,
-    "losses": 282,
+    "n": 413,
+    "wins": 130,
+    "losses": 281,
     "timeouts": 2,
-    "wr": 31.719128329297817,
-    "expectancy": 0.28050026229676084,
-    "net_r": 116.40760885315575
+    "wr": 31.630170316301705,
+    "expectancy": 0.27668280871670714,
+    "net_r": 114.27000000000004,
+    "avg_rr_won": 3.040538461538462
   },
-  "rr_stats": {
-    "n": 415,
-    "min_rr": 1.42,
-    "p25_rr": 2.25,
-    "median_rr": 3.1,
-    "p75_rr": 4.77,
-    "max_rr": 11.51,
-    "mean_rr": 3.7197349397590345,
-    "full_tp_hits": 131,
-    "avg_rr_won": 3.0411450381679392,
-    "best_rr_won": 10.02,
-    "worst_rr_won": 1.45,
-    "n_wins": 131,
-    "n_losses": 282,
-    "n_timeouts": 2,
-    "buckets": [
-      {
-        "bucket": "1.5-2.0",
-        "n": 68,
-        "wins": 34,
-        "losses": 34,
-        "wr": 50.0
-      },
-      {
-        "bucket": "2.0-3.0",
-        "n": 122,
-        "wins": 41,
-        "losses": 81,
-        "wr": 33.60655737704918
-      },
-      {
-        "bucket": "3.0-5.0",
-        "n": 132,
-        "wins": 39,
-        "losses": 93,
-        "wr": 29.545454545454547
-      },
-      {
-        "bucket": "5.0+",
-        "n": 86,
-        "wins": 14,
-        "losses": 70,
-        "wr": 16.666666666666664
-      }
-    ],
-    "target_kinds": [
-      {
-        "kind": "weekly_high",
-        "n": 74,
-        "wins": 12,
-        "losses": 62,
-        "wr": 16.216216216216218
-      },
-      {
-        "kind": "weekly_low",
-        "n": 51,
-        "wins": 15,
-        "losses": 35,
-        "wr": 30.0
-      },
-      {
-        "kind": "ny_high",
-        "n": 50,
-        "wins": 10,
-        "losses": 39,
-        "wr": 20.408163265306122
-      },
-      {
-        "kind": "ny_low",
-        "n": 47,
-        "wins": 17,
-        "losses": 30,
-        "wr": 36.17021276595745
-      },
-      {
-        "kind": "asia_low",
-        "n": 45,
-        "wins": 20,
-        "losses": 25,
-        "wr": 44.44444444444444
-      },
-      {
-        "kind": "asia_high",
-        "n": 32,
-        "wins": 14,
-        "losses": 18,
-        "wr": 43.75
-      },
-      {
-        "kind": "london_high",
-        "n": 31,
-        "wins": 11,
-        "losses": 20,
-        "wr": 35.483870967741936
-      },
-      {
-        "kind": "PDH",
-        "n": 27,
-        "wins": 12,
-        "losses": 15,
-        "wr": 44.44444444444444
-      },
-      {
-        "kind": "PDL",
-        "n": 26,
-        "wins": 10,
-        "losses": 16,
-        "wr": 38.46153846153847
-      },
-      {
-        "kind": "london_low",
-        "n": 24,
-        "wins": 6,
-        "losses": 18,
-        "wr": 25.0
-      },
-      {
-        "kind": "swing_high",
-        "n": 4,
-        "wins": 2,
-        "losses": 2,
-        "wr": 50.0
-      },
-      {
-        "kind": "swing_low",
-        "n": 3,
-        "wins": 1,
-        "losses": 2,
-        "wr": 33.33333333333333
-      },
-      {
-        "kind": "synthetic",
-        "n": 1,
-        "wins": 1,
-        "losses": 0,
-        "wr": 100.0
-      }
-    ]
+  "per_symbol": [
+    {
+      "symbol": "frxAUDNZD",
+      "n": 20,
+      "wins": 9,
+      "losses": 11,
+      "timeouts": 0,
+      "wr": 45.0,
+      "expectancy": 1.6464999999999996,
+      "net_r": 32.92999999999999,
+      "avg_rr_won": 4.88111111111111
+    },
+    {
+      "symbol": "frxNZDCHF",
+      "n": 12,
+      "wins": 6,
+      "losses": 6,
+      "timeouts": 0,
+      "wr": 50.0,
+      "expectancy": 0.9833333333333334,
+      "net_r": 11.8,
+      "avg_rr_won": 2.966666666666667
+    },
+    {
+      "symbol": "frxEURAUD",
+      "n": 10,
+      "wins": 5,
+      "losses": 5,
+      "timeouts": 0,
+      "wr": 50.0,
+      "expectancy": 0.8630000000000001,
+      "net_r": 8.63,
+      "avg_rr_won": 2.726
+    },
+    {
+      "symbol": "frxGBPAUD",
+      "n": 19,
+      "wins": 7,
+      "losses": 12,
+      "timeouts": 0,
+      "wr": 36.84210526315789,
+      "expectancy": 0.7657894736842106,
+      "net_r": 14.55,
+      "avg_rr_won": 3.792857142857143
+    },
+    {
+      "symbol": "frxEURNZD",
+      "n": 12,
+      "wins": 5,
+      "losses": 7,
+      "timeouts": 0,
+      "wr": 41.66666666666667,
+      "expectancy": 0.7316666666666666,
+      "net_r": 8.78,
+      "avg_rr_won": 3.1559999999999997
+    },
+    {
+      "symbol": "frxNZDCAD",
+      "n": 20,
+      "wins": 9,
+      "losses": 11,
+      "timeouts": 0,
+      "wr": 45.0,
+      "expectancy": 0.6635,
+      "net_r": 13.27,
+      "avg_rr_won": 2.6966666666666668
+    },
+    {
+      "symbol": "frxAUDJPY",
+      "n": 10,
+      "wins": 5,
+      "losses": 5,
+      "timeouts": 0,
+      "wr": 50.0,
+      "expectancy": 0.658,
+      "net_r": 6.58,
+      "avg_rr_won": 2.316
+    },
+    {
+      "symbol": "frxGBPUSD",
+      "n": 20,
+      "wins": 7,
+      "losses": 13,
+      "timeouts": 0,
+      "wr": 35.0,
+      "expectancy": 0.5429999999999998,
+      "net_r": 10.859999999999996,
+      "avg_rr_won": 3.408571428571428
+    },
+    {
+      "symbol": "cryETHUSD",
+      "n": 17,
+      "wins": 7,
+      "losses": 10,
+      "timeouts": 0,
+      "wr": 41.17647058823529,
+      "expectancy": 0.526470588235294,
+      "net_r": 8.95,
+      "avg_rr_won": 2.707142857142857
+    },
+    {
+      "symbol": "frxNZDJPY",
+      "n": 17,
+      "wins": 6,
+      "losses": 11,
+      "timeouts": 0,
+      "wr": 35.294117647058826,
+      "expectancy": 0.5076470588235296,
+      "net_r": 8.630000000000003,
+      "avg_rr_won": 3.271666666666667
+    },
+    {
+      "symbol": "cryBTCUSD",
+      "n": 16,
+      "wins": 6,
+      "losses": 10,
+      "timeouts": 0,
+      "wr": 37.5,
+      "expectancy": 0.4481250000000001,
+      "net_r": 7.170000000000002,
+      "avg_rr_won": 2.861666666666667
+    },
+    {
+      "symbol": "frxGBPCHF",
+      "n": 16,
+      "wins": 5,
+      "losses": 11,
+      "timeouts": 0,
+      "wr": 31.25,
+      "expectancy": 0.3374999999999999,
+      "net_r": 5.399999999999999,
+      "avg_rr_won": 3.28
+    },
+    {
+      "symbol": "frxEURCHF",
+      "n": 11,
+      "wins": 3,
+      "losses": 8,
+      "timeouts": 0,
+      "wr": 27.27272727272727,
+      "expectancy": 0.3318181818181817,
+      "net_r": 3.6499999999999986,
+      "avg_rr_won": 3.883333333333333
+    },
+    {
+      "symbol": "frxEURUSD",
+      "n": 17,
+      "wins": 5,
+      "losses": 12,
+      "timeouts": 0,
+      "wr": 29.411764705882355,
+      "expectancy": 0.29470588235294104,
+      "net_r": 5.009999999999998,
+      "avg_rr_won": 3.4019999999999997
+    },
+    {
+      "symbol": "frxGBPNZD",
+      "n": 16,
+      "wins": 6,
+      "losses": 9,
+      "timeouts": 1,
+      "wr": 40.0,
+      "expectancy": 0.24749999999999994,
+      "net_r": 3.959999999999999,
+      "avg_rr_won": 2.1599999999999997
+    },
+    {
+      "symbol": "frxUSDCHF",
+      "n": 21,
+      "wins": 6,
+      "losses": 14,
+      "timeouts": 1,
+      "wr": 30.0,
+      "expectancy": 0.1995238095238094,
+      "net_r": 4.189999999999998,
+      "avg_rr_won": 3.0316666666666663
+    },
+    {
+      "symbol": "frxAUDCAD",
+      "n": 11,
+      "wins": 3,
+      "losses": 8,
+      "timeouts": 0,
+      "wr": 27.27272727272727,
+      "expectancy": 0.16272727272727264,
+      "net_r": 1.7899999999999991,
+      "avg_rr_won": 3.263333333333333
+    },
+    {
+      "symbol": "frxUSDJPY",
+      "n": 10,
+      "wins": 2,
+      "losses": 8,
+      "timeouts": 0,
+      "wr": 20.0,
+      "expectancy": 0.09299999999999997,
+      "net_r": 0.9299999999999997,
+      "avg_rr_won": 4.465
+    },
+    {
+      "symbol": "frxCADJPY",
+      "n": 13,
+      "wins": 4,
+      "losses": 9,
+      "timeouts": 0,
+      "wr": 30.76923076923077,
+      "expectancy": 0.07307692307692316,
+      "net_r": 0.9500000000000011,
+      "avg_rr_won": 2.4875000000000003
+    },
+    {
+      "symbol": "frxGBPJPY",
+      "n": 10,
+      "wins": 3,
+      "losses": 7,
+      "timeouts": 0,
+      "wr": 30.0,
+      "expectancy": -0.027000000000000045,
+      "net_r": -0.27000000000000046,
+      "avg_rr_won": 2.243333333333333
+    },
+    {
+      "symbol": "frxAUDCHF",
+      "n": 13,
+      "wins": 3,
+      "losses": 10,
+      "timeouts": 0,
+      "wr": 23.076923076923077,
+      "expectancy": -0.0684615384615385,
+      "net_r": -0.8900000000000006,
+      "avg_rr_won": 3.0366666666666666
+    },
+    {
+      "symbol": "frxNZDUSD",
+      "n": 9,
+      "wins": 3,
+      "losses": 6,
+      "timeouts": 0,
+      "wr": 33.33333333333333,
+      "expectancy": -0.11555555555555556,
+      "net_r": -1.04,
+      "avg_rr_won": 1.6533333333333333
+    },
+    {
+      "symbol": "frxGBPCAD",
+      "n": 18,
+      "wins": 4,
+      "losses": 14,
+      "timeouts": 0,
+      "wr": 22.22222222222222,
+      "expectancy": -0.2222222222222222,
+      "net_r": -4.0,
+      "avg_rr_won": 2.5
+    },
+    {
+      "symbol": "frxAUDUSD",
+      "n": 7,
+      "wins": 2,
+      "losses": 5,
+      "timeouts": 0,
+      "wr": 28.57142857142857,
+      "expectancy": -0.2357142857142857,
+      "net_r": -1.65,
+      "avg_rr_won": 1.675
+    },
+    {
+      "symbol": "frxCHFJPY",
+      "n": 9,
+      "wins": 2,
+      "losses": 7,
+      "timeouts": 0,
+      "wr": 22.22222222222222,
+      "expectancy": -0.26333333333333336,
+      "net_r": -2.37,
+      "avg_rr_won": 2.315
+    },
+    {
+      "symbol": "frxUSDCAD",
+      "n": 12,
+      "wins": 2,
+      "losses": 10,
+      "timeouts": 0,
+      "wr": 16.666666666666664,
+      "expectancy": -0.42250000000000004,
+      "net_r": -5.07,
+      "avg_rr_won": 2.465
+    },
+    {
+      "symbol": "frxEURCAD",
+      "n": 9,
+      "wins": 1,
+      "losses": 8,
+      "timeouts": 0,
+      "wr": 11.11111111111111,
+      "expectancy": -0.47333333333333333,
+      "net_r": -4.26,
+      "avg_rr_won": 3.74
+    },
+    {
+      "symbol": "frxCADCHF",
+      "n": 12,
+      "wins": 1,
+      "losses": 11,
+      "timeouts": 0,
+      "wr": 8.333333333333332,
+      "expectancy": -0.5750000000000001,
+      "net_r": -6.9,
+      "avg_rr_won": 4.1
+    },
+    {
+      "symbol": "frxEURJPY",
+      "n": 7,
+      "wins": 1,
+      "losses": 6,
+      "timeouts": 0,
+      "wr": 14.285714285714285,
+      "expectancy": -0.5914285714285714,
+      "net_r": -4.14,
+      "avg_rr_won": 1.86
+    },
+    {
+      "symbol": "frxEURGBP",
+      "n": 15,
+      "wins": 2,
+      "losses": 13,
+      "timeouts": 0,
+      "wr": 13.333333333333334,
+      "expectancy": -0.6113333333333333,
+      "net_r": -9.17,
+      "avg_rr_won": 1.915
+    },
+    {
+      "symbol": "frxXAUUSD",
+      "n": 4,
+      "wins": 0,
+      "losses": 4,
+      "timeouts": 0,
+      "wr": 0.0,
+      "expectancy": -1.0,
+      "net_r": -4,
+      "avg_rr_won": 0
+    }
+  ],
+  "recommended": [
+    {
+      "symbol": "frxAUDNZD",
+      "n": 20,
+      "wins": 9,
+      "losses": 11,
+      "timeouts": 0,
+      "wr": 45.0,
+      "expectancy": 1.6464999999999996,
+      "net_r": 32.92999999999999,
+      "avg_rr_won": 4.88111111111111
+    },
+    {
+      "symbol": "frxNZDCHF",
+      "n": 12,
+      "wins": 6,
+      "losses": 6,
+      "timeouts": 0,
+      "wr": 50.0,
+      "expectancy": 0.9833333333333334,
+      "net_r": 11.8,
+      "avg_rr_won": 2.966666666666667
+    },
+    {
+      "symbol": "frxEURAUD",
+      "n": 10,
+      "wins": 5,
+      "losses": 5,
+      "timeouts": 0,
+      "wr": 50.0,
+      "expectancy": 0.8630000000000001,
+      "net_r": 8.63,
+      "avg_rr_won": 2.726
+    },
+    {
+      "symbol": "frxGBPAUD",
+      "n": 19,
+      "wins": 7,
+      "losses": 12,
+      "timeouts": 0,
+      "wr": 36.84210526315789,
+      "expectancy": 0.7657894736842106,
+      "net_r": 14.55,
+      "avg_rr_won": 3.792857142857143
+    },
+    {
+      "symbol": "frxEURNZD",
+      "n": 12,
+      "wins": 5,
+      "losses": 7,
+      "timeouts": 0,
+      "wr": 41.66666666666667,
+      "expectancy": 0.7316666666666666,
+      "net_r": 8.78,
+      "avg_rr_won": 3.1559999999999997
+    },
+    {
+      "symbol": "frxNZDCAD",
+      "n": 20,
+      "wins": 9,
+      "losses": 11,
+      "timeouts": 0,
+      "wr": 45.0,
+      "expectancy": 0.6635,
+      "net_r": 13.27,
+      "avg_rr_won": 2.6966666666666668
+    },
+    {
+      "symbol": "frxAUDJPY",
+      "n": 10,
+      "wins": 5,
+      "losses": 5,
+      "timeouts": 0,
+      "wr": 50.0,
+      "expectancy": 0.658,
+      "net_r": 6.58,
+      "avg_rr_won": 2.316
+    },
+    {
+      "symbol": "frxGBPUSD",
+      "n": 20,
+      "wins": 7,
+      "losses": 13,
+      "timeouts": 0,
+      "wr": 35.0,
+      "expectancy": 0.5429999999999998,
+      "net_r": 10.859999999999996,
+      "avg_rr_won": 3.408571428571428
+    },
+    {
+      "symbol": "cryETHUSD",
+      "n": 17,
+      "wins": 7,
+      "losses": 10,
+      "timeouts": 0,
+      "wr": 41.17647058823529,
+      "expectancy": 0.526470588235294,
+      "net_r": 8.95,
+      "avg_rr_won": 2.707142857142857
+    },
+    {
+      "symbol": "frxNZDJPY",
+      "n": 17,
+      "wins": 6,
+      "losses": 11,
+      "timeouts": 0,
+      "wr": 35.294117647058826,
+      "expectancy": 0.5076470588235296,
+      "net_r": 8.630000000000003,
+      "avg_rr_won": 3.271666666666667
+    },
+    {
+      "symbol": "cryBTCUSD",
+      "n": 16,
+      "wins": 6,
+      "losses": 10,
+      "timeouts": 0,
+      "wr": 37.5,
+      "expectancy": 0.4481250000000001,
+      "net_r": 7.170000000000002,
+      "avg_rr_won": 2.861666666666667
+    },
+    {
+      "symbol": "frxGBPCHF",
+      "n": 16,
+      "wins": 5,
+      "losses": 11,
+      "timeouts": 0,
+      "wr": 31.25,
+      "expectancy": 0.3374999999999999,
+      "net_r": 5.399999999999999,
+      "avg_rr_won": 3.28
+    },
+    {
+      "symbol": "frxEURCHF",
+      "n": 11,
+      "wins": 3,
+      "losses": 8,
+      "timeouts": 0,
+      "wr": 27.27272727272727,
+      "expectancy": 0.3318181818181817,
+      "net_r": 3.6499999999999986,
+      "avg_rr_won": 3.883333333333333
+    },
+    {
+      "symbol": "frxEURUSD",
+      "n": 17,
+      "wins": 5,
+      "losses": 12,
+      "timeouts": 0,
+      "wr": 29.411764705882355,
+      "expectancy": 0.29470588235294104,
+      "net_r": 5.009999999999998,
+      "avg_rr_won": 3.4019999999999997
+    },
+    {
+      "symbol": "frxGBPNZD",
+      "n": 16,
+      "wins": 6,
+      "losses": 9,
+      "timeouts": 1,
+      "wr": 40.0,
+      "expectancy": 0.24749999999999994,
+      "net_r": 3.959999999999999,
+      "avg_rr_won": 2.1599999999999997
+    },
+    {
+      "symbol": "frxUSDCHF",
+      "n": 21,
+      "wins": 6,
+      "losses": 14,
+      "timeouts": 1,
+      "wr": 30.0,
+      "expectancy": 0.1995238095238094,
+      "net_r": 4.189999999999998,
+      "avg_rr_won": 3.0316666666666663
+    },
+    {
+      "symbol": "frxAUDCAD",
+      "n": 11,
+      "wins": 3,
+      "losses": 8,
+      "timeouts": 0,
+      "wr": 27.27272727272727,
+      "expectancy": 0.16272727272727264,
+      "net_r": 1.7899999999999991,
+      "avg_rr_won": 3.263333333333333
+    },
+    {
+      "symbol": "frxUSDJPY",
+      "n": 10,
+      "wins": 2,
+      "losses": 8,
+      "timeouts": 0,
+      "wr": 20.0,
+      "expectancy": 0.09299999999999997,
+      "net_r": 0.9299999999999997,
+      "avg_rr_won": 4.465
+    },
+    {
+      "symbol": "frxCADJPY",
+      "n": 13,
+      "wins": 4,
+      "losses": 9,
+      "timeouts": 0,
+      "wr": 30.76923076923077,
+      "expectancy": 0.07307692307692316,
+      "net_r": 0.9500000000000011,
+      "avg_rr_won": 2.4875000000000003
+    }
+  ],
+  "filtered_aggregate": {
+    "n": 288,
+    "wins": 106,
+    "losses": 180,
+    "timeouts": 2,
+    "wr": 37.06293706293706,
+    "expectancy": 0.5487152777777777,
+    "net_r": 158.02999999999997,
+    "avg_rr_won": 3.188962264150943
   },
   "random_baseline": {
     "n": 15500,
-    "wins": 2953,
-    "losses": 12535,
-    "timeouts": 12,
-    "wr": 19.066373966942148,
-    "expectancy": -0.04664516129032258,
-    "net_r": -723.0
+    "wins": 2976,
+    "losses": 12515,
+    "timeouts": 9,
+    "wr": 19.211154864114647,
+    "expectancy": -0.039419354838709675,
+    "net_r": -611.0
   }
 }
