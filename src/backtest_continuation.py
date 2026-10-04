@@ -1,6 +1,10 @@
-"""Continuation backtest v4 — D1 bias + H1 entry + time-based liquidity.
+"""Continuation backtest v5 — per-symbol breakdown.
 
-Reports R:R distribution AND target-kind breakdown.
+Same model as v4. Adds:
+  - Per-symbol performance table
+  - Ranking by expectancy
+  - Recommended pairs list (positive expectancy + min trades)
+  - Filtered aggregate (what the model looks like trading only recommended pairs)
 """
 
 import csv
@@ -25,6 +29,8 @@ BACKTEST_CANDLES = 10000
 WARMUP_BARS = 500
 N_WINDOWS = 4
 RANDOM_TRIALS = 500
+
+MIN_TRADES_FOR_RECOMMENDATION = 8
 
 
 def log(m):
@@ -181,84 +187,37 @@ def random_baseline(candles, n_trials):
             "wr": wr, "expectancy": net_r / n_trials if n_trials else 0, "net_r": net_r}
 
 
-def _rr_stats(trades):
+def _aggregate_trades(trades):
     if not trades:
-        return {}
-    rrs = [t["rr_eff"] for t in trades]
-    rrs_sorted = sorted(rrs)
-    n = len(rrs_sorted)
-
-    def pct(p):
-        if n == 0: return 0.0
-        idx = max(0, min(n - 1, int(p * (n - 1))))
-        return rrs_sorted[idx]
-
+        return {"n": 0, "wins": 0, "losses": 0, "timeouts": 0,
+                "wr": 0, "expectancy": 0, "net_r": 0, "avg_rr_won": 0}
     wins = [t for t in trades if t["outcome"] == "win"]
     losses = [t for t in trades if t["outcome"] == "loss"]
     timeouts = [t for t in trades if t["outcome"] == "timeout"]
-    win_rrs = [t["rr_eff"] for t in wins]
-
-    buckets = [
-        ("1.5-2.0", 1.5, 2.0),
-        ("2.0-3.0", 2.0, 3.0),
-        ("3.0-5.0", 3.0, 5.0),
-        ("5.0+",    5.0, 1e9),
-    ]
-    bucket_rows = []
-    for label, lo, hi in buckets:
-        b = [t for t in trades if lo <= t["rr_eff"] < hi]
-        bw = sum(1 for t in b if t["outcome"] == "win")
-        bl = sum(1 for t in b if t["outcome"] == "loss")
-        b_res = bw + bl
-        b_wr = (bw / b_res * 100) if b_res > 0 else 0
-        bucket_rows.append({"bucket": label, "n": len(b), "wins": bw, "losses": bl, "wr": b_wr})
-
-    # Target-kind breakdown
-    kinds = {}
-    for t in trades:
-        k = t.get("target_kind", "unknown")
-        if k not in kinds:
-            kinds[k] = {"n": 0, "wins": 0, "losses": 0}
-        kinds[k]["n"] += 1
-        if t["outcome"] == "win":
-            kinds[k]["wins"] += 1
-        elif t["outcome"] == "loss":
-            kinds[k]["losses"] += 1
-    kind_rows = []
-    for k, v in sorted(kinds.items(), key=lambda x: -x[1]["n"]):
-        res = v["wins"] + v["losses"]
-        wr = (v["wins"] / res * 100) if res > 0 else 0
-        kind_rows.append({"kind": k, "n": v["n"], "wins": v["wins"],
-                          "losses": v["losses"], "wr": wr})
-
+    r_won = sum(t["rr_eff"] for t in wins)
+    net_r = r_won - len(losses)
+    resolved = len(wins) + len(losses)
+    wr = (len(wins) / resolved * 100) if resolved > 0 else 0
+    n = len(trades)
+    exp = net_r / n if n > 0 else 0
+    avg_rr_won = (sum(t["rr_eff"] for t in wins) / len(wins)) if wins else 0
     return {
-        "n": n,
-        "min_rr": min(rrs),
-        "p25_rr": pct(0.25),
-        "median_rr": statistics.median(rrs),
-        "p75_rr": pct(0.75),
-        "max_rr": max(rrs),
-        "mean_rr": sum(rrs) / n,
-        "full_tp_hits": len(wins),
-        "avg_rr_won": (sum(win_rrs) / len(win_rrs)) if win_rrs else 0,
-        "best_rr_won": max(win_rrs) if win_rrs else 0,
-        "worst_rr_won": min(win_rrs) if win_rrs else 0,
-        "n_wins": len(wins),
-        "n_losses": len(losses),
-        "n_timeouts": len(timeouts),
-        "buckets": bucket_rows,
-        "target_kinds": kind_rows,
+        "n": n, "wins": len(wins), "losses": len(losses), "timeouts": len(timeouts),
+        "wr": wr, "expectancy": exp, "net_r": net_r, "avg_rr_won": avg_rr_won,
     }
 
 
-def _write_report(per_window_rows, aggregate, random_agg, rr_stats, config_snap, trades_all):
+def _write_report(per_window_rows, aggregate, random_agg, per_symbol,
+                  recommended, filtered_agg, config_snap, trades_all):
     os.makedirs(REPORTS_DIR, exist_ok=True)
     gen = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     with open(os.path.join(REPORTS_DIR, "continuation_latest.json"), "w") as f:
         json.dump({"generated": gen, "config": config_snap,
                    "per_window": per_window_rows, "aggregate": aggregate,
-                   "rr_stats": rr_stats, "random_baseline": random_agg}, f, indent=2)
+                   "per_symbol": per_symbol, "recommended": recommended,
+                   "filtered_aggregate": filtered_agg,
+                   "random_baseline": random_agg}, f, indent=2)
 
     with open(os.path.join(REPORTS_DIR, "continuation_trades.csv"), "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=[
@@ -271,7 +230,7 @@ def _write_report(per_window_rows, aggregate, random_agg, rr_stats, config_snap,
             writer.writerow(t)
 
     md = []
-    md.append("# SMC Signal Bot — Continuation Backtest (D1+H1 + liquidity)\n")
+    md.append("# SMC Signal Bot — Continuation Backtest (per-symbol)\n")
     md.append(f"**Generated:** {gen}\n")
     md.append("## Configuration\n")
     md.append("| Parameter | Value |")
@@ -279,56 +238,69 @@ def _write_report(per_window_rows, aggregate, random_agg, rr_stats, config_snap,
     for k, v in config_snap.items():
         md.append(f"| {k} | {v} |")
     md.append("")
-    md.append("## Per-Window Results\n")
-    md.append("| Window | Signals | Wins | Losses | Timeouts | WR | Expectancy | Net R |")
-    md.append("|--------|---------|------|--------|----------|-----|------------|-------|")
-    for r in per_window_rows:
-        md.append(
-            f"| W{r['window']} | {r['n']} | {r['wins']} | {r['losses']} | "
-            f"{r['timeouts']} | {r['wr']:.1f}% | {r['expectancy']:+.3f} | {r['net_r']:+.1f} |"
-        )
-    md.append("")
-    md.append("## Aggregate\n")
+
+    md.append("## Overall Aggregate (all 31 symbols)\n")
     md.append(f"- Signals: {aggregate['n']}")
     md.append(f"- Wins / Losses / Timeouts: {aggregate['wins']} / {aggregate['losses']} / {aggregate['timeouts']}")
-    md.append(f"- Win rate: {aggregate['wr']:.1f}%")
-    md.append(f"- Expectancy: {aggregate['expectancy']:+.3f} R")
+    md.append(f"- Win rate: **{aggregate['wr']:.1f}%**")
+    md.append(f"- Expectancy: **{aggregate['expectancy']:+.3f} R**")
     md.append(f"- Net R: {aggregate['net_r']:+.1f}")
     md.append("")
 
-    if rr_stats:
-        md.append("## R:R Distribution\n")
-        md.append("| Metric | Value |")
-        md.append("|--------|-------|")
-        md.append(f"| Trades | {rr_stats['n']} |")
-        md.append(f"| Min R:R | {rr_stats['min_rr']:.2f} |")
-        md.append(f"| 25th pct | {rr_stats['p25_rr']:.2f} |")
-        md.append(f"| Median R:R | {rr_stats['median_rr']:.2f} |")
-        md.append(f"| 75th pct | {rr_stats['p75_rr']:.2f} |")
-        md.append(f"| Max R:R | {rr_stats['max_rr']:.2f} |")
-        md.append(f"| Mean R:R | {rr_stats['mean_rr']:.2f} |")
-        md.append("")
-        md.append("## Winners vs Losers\n")
-        md.append(f"- Full TP hits: **{rr_stats['full_tp_hits']}**")
-        md.append(f"- Avg R:R on wins: **{rr_stats['avg_rr_won']:.2f}**")
-        md.append(f"- Best win R:R: {rr_stats['best_rr_won']:.2f}")
-        md.append(f"- Worst win R:R: {rr_stats['worst_rr_won']:.2f}")
-        md.append(f"- Losses (all −1.00 R): {rr_stats['n_losses']}")
-        md.append(f"- Timeouts (0 R): {rr_stats['n_timeouts']}")
-        md.append("")
-        md.append("## R:R Buckets\n")
-        md.append("| R:R Range | Trades | Wins | Losses | WR |")
-        md.append("|-----------|--------|------|--------|-----|")
-        for b in rr_stats["buckets"]:
-            md.append(f"| {b['bucket']} | {b['n']} | {b['wins']} | {b['losses']} | {b['wr']:.1f}% |")
-        md.append("")
-        md.append("## Target-Kind Breakdown\n")
-        md.append("How often each liquidity type was the take-profit target.\n")
-        md.append("| Target Kind | Trades | Wins | Losses | WR |")
-        md.append("|-------------|--------|------|--------|-----|")
-        for k in rr_stats["target_kinds"]:
-            md.append(f"| {k['kind']} | {k['n']} | {k['wins']} | {k['losses']} | {k['wr']:.1f}% |")
-        md.append("")
+    md.append("## Per-Symbol Performance (sorted by expectancy)\n")
+    md.append("| Symbol | Trades | Wins | Losses | WR | Avg R:R on Wins | Net R | Expectancy |")
+    md.append("|--------|--------|------|--------|-----|-----------------|-------|------------|")
+    for s in per_symbol:
+        if s["n"] == 0:
+            md.append(f"| {s['symbol']} | 0 | – | – | – | – | – | – |")
+            continue
+        md.append(
+            f"| {s['symbol']} | {s['n']} | {s['wins']} | {s['losses']} | "
+            f"{s['wr']:.1f}% | {s['avg_rr_won']:.2f} | {s['net_r']:+.1f} | "
+            f"{s['expectancy']:+.3f} |"
+        )
+    md.append("")
+
+    md.append(f"## Recommended Pairs (positive expectancy + ≥{MIN_TRADES_FOR_RECOMMENDATION} trades)\n")
+    if recommended:
+        md.append("| Symbol | Trades | WR | Net R | Expectancy |")
+        md.append("|--------|--------|-----|-------|------------|")
+        for s in recommended:
+            md.append(
+                f"| {s['symbol']} | {s['n']} | {s['wr']:.1f}% | "
+                f"{s['net_r']:+.1f} | {s['expectancy']:+.3f} |"
+            )
+    else:
+        md.append("_No pairs met the recommendation threshold._")
+    md.append("")
+
+    md.append("## Filtered Aggregate (recommended pairs only)\n")
+    md.append(f"- Pairs: {len(recommended)}")
+    md.append(f"- Signals: {filtered_agg['n']}")
+    md.append(f"- Wins / Losses / Timeouts: {filtered_agg['wins']} / {filtered_agg['losses']} / {filtered_agg['timeouts']}")
+    md.append(f"- Win rate: **{filtered_agg['wr']:.1f}%**")
+    md.append(f"- Expectancy: **{filtered_agg['expectancy']:+.3f} R**")
+    md.append(f"- Net R: {filtered_agg['net_r']:+.1f}")
+    md.append("")
+
+    md.append("## Excluded Pairs (negative or unproven)\n")
+    excluded = [s for s in per_symbol
+                if s["n"] > 0 and (
+                    s["n"] < MIN_TRADES_FOR_RECOMMENDATION or s["expectancy"] <= 0
+                )]
+    if excluded:
+        md.append("| Symbol | Trades | WR | Net R | Expectancy | Reason |")
+        md.append("|--------|--------|-----|-------|------------|--------|")
+        for s in excluded:
+            if s["n"] < MIN_TRADES_FOR_RECOMMENDATION:
+                reason = "too few trades"
+            else:
+                reason = "negative expectancy"
+            md.append(
+                f"| {s['symbol']} | {s['n']} | {s['wr']:.1f}% | "
+                f"{s['net_r']:+.1f} | {s['expectancy']:+.3f} | {reason} |"
+            )
+    md.append("")
 
     md.append("## Random Baseline\n")
     md.append(f"- Signals: {random_agg['n']}")
@@ -344,7 +316,7 @@ def _write_report(per_window_rows, aggregate, random_agg, rr_stats, config_snap,
 
 def main():
     random.seed(42)
-    log(f"Continuation v4 — D1+H1 + time-based liquidity, {len(SYMBOLS)} symbols")
+    log(f"Continuation per-symbol analysis — {len(SYMBOLS)} symbols")
 
     per_window = {w: [] for w in range(1, N_WINDOWS + 1)}
     rnd_acc = []
@@ -388,70 +360,62 @@ def main():
         rnd = random_baseline(h1, RANDOM_TRIALS)
         rnd_acc.append(rnd)
 
-    log("\n" + "=" * 70)
-    log("AGGREGATE")
-    log("=" * 70)
-    per_window_rows = []
-    trades_all = []
+    # Simulate all signals, accumulate trades per symbol
+    log("\nSimulating all trades...")
+    all_trades = []
     for w in range(1, N_WINDOWS + 1):
-        sigs = per_window[w]
-        wins = losses = timeouts = 0
-        r_won = 0.0
-        for sig in sigs:
+        for sig in per_window[w]:
             candles = sig["candles_ref"]
             spread = SPREAD_ATR_FRAC * sig["atr"]
             r = simulate(candles, sig, spread)
             if r is None:
                 continue
-            if r["outcome"] == "win":
-                wins += 1
-                r_won += r["rr"]
-            elif r["outcome"] == "loss":
-                losses += 1
-            else:
-                timeouts += 1
-            trades_all.append({
-                "window": w, "symbol": sig.get("symbol", ""),
-                "touch_index": sig["touch_index"], "direction": sig["direction"],
-                "entry": round(sig["entry"], 5), "stop": round(sig["stop"], 5),
+            all_trades.append({
+                "window": w,
+                "symbol": sig["symbol"],
+                "touch_index": sig["touch_index"],
+                "direction": sig["direction"],
+                "entry": round(sig["entry"], 5),
+                "stop": round(sig["stop"], 5),
                 "target": round(sig["target"], 5),
                 "target_kind": sig.get("target_kind", "unknown"),
-                "outcome": r["outcome"], "bars_held": r["bars"],
+                "outcome": r["outcome"],
+                "bars_held": r["bars"],
                 "rr_eff": round(r["rr"], 2),
             })
-        net_r = r_won - losses
-        resolved = wins + losses
-        wr = (wins / resolved * 100) if resolved > 0 else 0
-        n_eval = wins + losses + timeouts
-        exp = net_r / n_eval if n_eval else 0
-        log(f"  W{w}: n={n_eval:4d}  W{wins}/L{losses}/T{timeouts}  WR={wr:5.1f}%  exp={exp:+.3f}R")
-        per_window_rows.append({"window": w, "n": n_eval, "wins": wins, "losses": losses,
-                                 "timeouts": timeouts, "wr": wr,
-                                 "expectancy": exp, "net_r": net_r})
 
-    total_n = sum(r["n"] for r in per_window_rows)
-    total_wins = sum(r["wins"] for r in per_window_rows)
-    total_losses = sum(r["losses"] for r in per_window_rows)
-    total_timeouts = sum(r["timeouts"] for r in per_window_rows)
-    total_net_r = sum(r["net_r"] for r in per_window_rows)
-    total_resolved = total_wins + total_losses
-    total_wr = (total_wins / total_resolved * 100) if total_resolved > 0 else 0
-    total_exp = total_net_r / total_n if total_n else 0
-    aggregate = {"n": total_n, "wins": total_wins, "losses": total_losses,
-                 "timeouts": total_timeouts, "wr": total_wr,
-                 "expectancy": total_exp, "net_r": total_net_r}
-    log(f"\n  ALL: n={total_n}  W{total_wins}/L{total_losses}/T{total_timeouts}  "
-        f"WR={total_wr:.1f}%  exp={total_exp:+.3f}R  netR={total_net_r:+.1f}")
+    # Per-window aggregates
+    per_window_rows = []
+    for w in range(1, N_WINDOWS + 1):
+        w_trades = [t for t in all_trades if t["window"] == w]
+        agg = _aggregate_trades(w_trades)
+        per_window_rows.append({"window": w, **agg})
+        log(f"  W{w}: n={agg['n']:4d}  W{agg['wins']}/L{agg['losses']}/T{agg['timeouts']}  "
+            f"WR={agg['wr']:5.1f}%  exp={agg['expectancy']:+.3f}R")
 
-    rr_stats = _rr_stats(trades_all)
-    if rr_stats:
-        log(f"\n  R:R — min={rr_stats['min_rr']:.2f}  median={rr_stats['median_rr']:.2f}  "
-            f"max={rr_stats['max_rr']:.2f}  mean={rr_stats['mean_rr']:.2f}")
-        log(f"  Full TP hits: {rr_stats['full_tp_hits']}  Avg R:R on wins: {rr_stats['avg_rr_won']:.2f}")
-        log(f"  Target kinds:")
-        for k in rr_stats["target_kinds"]:
-            log(f"    {k['kind']:15s} n={k['n']:3d}  WR={k['wr']:5.1f}%")
+    # Overall aggregate
+    aggregate = _aggregate_trades(all_trades)
+    log(f"\n  ALL: n={aggregate['n']}  W{aggregate['wins']}/L{aggregate['losses']}/T{aggregate['timeouts']}  "
+        f"WR={aggregate['wr']:.1f}%  exp={aggregate['expectancy']:+.3f}R  netR={aggregate['net_r']:+.1f}")
 
+    # Per-symbol aggregates
+    per_symbol = []
+    for sym in SYMBOLS:
+        sym_trades = [t for t in all_trades if t["symbol"] == sym]
+        agg = _aggregate_trades(sym_trades)
+        per_symbol.append({"symbol": sym, **agg})
+    per_symbol.sort(key=lambda x: x["expectancy"], reverse=True)
+
+    # Recommendations
+    recommended = [s for s in per_symbol
+                   if s["n"] >= MIN_TRADES_FOR_RECOMMENDATION and s["expectancy"] > 0]
+
+    # Filtered aggregate
+    recommended_syms = {s["symbol"] for s in recommended}
+    filtered_trades = [t for t in all_trades if t["symbol"] in recommended_syms]
+    filtered_agg = _aggregate_trades(filtered_trades)
+
+    # Random
     n = sum(r["n"] for r in rnd_acc)
     wins = sum(r["wins"] for r in rnd_acc)
     losses = sum(r["losses"] for r in rnd_acc)
@@ -462,7 +426,40 @@ def main():
     exp = net_r / n if n else 0
     rnd_agg = {"n": n, "wins": wins, "losses": losses, "timeouts": timeouts,
                "wr": wr, "expectancy": exp, "net_r": net_r}
-    log(f"\n  RANDOM: n={n}  WR={wr:.1f}%  exp={exp:+.3f}R")
+
+    log("\n" + "=" * 70)
+    log("PER-SYMBOL PERFORMANCE (sorted by expectancy)")
+    log("=" * 70)
+    log(f"{'Symbol':18s} {'N':>4s} {'W':>4s} {'L':>4s} {'WR%':>6s} {'AvgRRwon':>9s} {'NetR':>7s} {'ExpR':>8s}")
+    for s in per_symbol:
+        if s["n"] == 0:
+            log(f"{s['symbol']:18s}    0    -    -      -         -       -        -")
+            continue
+        log(f"{s['symbol']:18s} {s['n']:4d} {s['wins']:4d} {s['losses']:4d} "
+            f"{s['wr']:6.1f} {s['avg_rr_won']:9.2f} {s['net_r']:+7.1f} {s['expectancy']:+8.3f}")
+
+    log("\n" + "=" * 70)
+    log(f"RECOMMENDED PAIRS (positive expectancy, ≥{MIN_TRADES_FOR_RECOMMENDATION} trades)")
+    log("=" * 70)
+    if recommended:
+        for s in recommended:
+            log(f"  {s['symbol']:18s} n={s['n']:3d}  WR={s['wr']:5.1f}%  "
+                f"NetR={s['net_r']:+6.1f}  Exp={s['expectancy']:+.3f}")
+    else:
+        log("  (none)")
+
+    log("\n" + "=" * 70)
+    log("FILTERED AGGREGATE (recommended pairs only)")
+    log("=" * 70)
+    log(f"  Pairs: {len(recommended)}")
+    log(f"  Signals: {filtered_agg['n']}")
+    log(f"  W/L/T: {filtered_agg['wins']}/{filtered_agg['losses']}/{filtered_agg['timeouts']}")
+    log(f"  WR: {filtered_agg['wr']:.1f}%")
+    log(f"  Expectancy: {filtered_agg['expectancy']:+.3f} R")
+    log(f"  Net R: {filtered_agg['net_r']:+.1f}")
+
+    log("\n  RANDOM: n={}  WR={:.1f}%  exp={:+.3f}R".format(
+        rnd_agg["n"], rnd_agg["wr"], rnd_agg["expectancy"]))
 
     if failed:
         log(f"\n  FAILED SYMBOLS ({len(failed)}): {', '.join(failed)}")
@@ -470,12 +467,13 @@ def main():
     config_snap = {
         "symbols_count": len(SYMBOLS),
         "failed_symbols": len(failed),
-        "stack": "D1 bias + H1 OB entry + time-based liquidity",
+        "min_trades_for_recommendation": MIN_TRADES_FOR_RECOMMENDATION,
         "detect_window": DETECT_WINDOW,
         "candles_per_symbol": BACKTEST_CANDLES,
         "max_horizon_bars": MAX_HORIZON_BARS,
     }
-    _write_report(per_window_rows, aggregate, rnd_agg, rr_stats, config_snap, trades_all)
+    _write_report(per_window_rows, aggregate, rnd_agg, per_symbol,
+                  recommended, filtered_agg, config_snap, all_trades)
 
 
 if __name__ == "__main__":
