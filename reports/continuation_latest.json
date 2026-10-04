@@ -1,7 +1,7 @@
 {
-  "generated": "2026-10-04T06:30:46Z",
+  "generated": "2026-10-04T07:09:55Z",
   "config": {
-    "symbols_count": 25,
+    "symbols_count": 31,
     "failed_symbols": 0,
     "stack": "D1 bias + H1 OB entry + time-based liquidity",
     "detect_window": 1000,
@@ -11,183 +11,183 @@
   "per_window": [
     {
       "window": 1,
-      "n": 87,
+      "n": 94,
       "wins": 29,
-      "losses": 57,
-      "timeouts": 1,
-      "wr": 33.72093023255814,
-      "expectancy": 0.32735141776353394,
-      "net_r": 28.479573345427454
+      "losses": 65,
+      "timeouts": 0,
+      "wr": 30.851063829787233,
+      "expectancy": 0.25047373575603554,
+      "net_r": 23.54453116106734
     },
     {
       "window": 2,
-      "n": 112,
-      "wins": 34,
-      "losses": 78,
+      "n": 133,
+      "wins": 43,
+      "losses": 90,
       "timeouts": 0,
-      "wr": 30.357142857142854,
-      "expectancy": 0.17553124643585072,
-      "net_r": 19.65949960081528
+      "wr": 32.33082706766917,
+      "expectancy": 0.24311229040271926,
+      "net_r": 32.33393462356166
     },
     {
       "window": 3,
-      "n": 78,
-      "wins": 23,
-      "losses": 54,
+      "n": 99,
+      "wins": 31,
+      "losses": 67,
       "timeouts": 1,
-      "wr": 29.87012987012987,
-      "expectancy": 0.03634313486554629,
-      "net_r": 2.8347645195126105
+      "wr": 31.63265306122449,
+      "expectancy": 0.15022044791381522,
+      "net_r": 14.871824343467708
     },
     {
       "window": 4,
-      "n": 67,
-      "wins": 19,
-      "losses": 48,
-      "timeouts": 0,
-      "wr": 28.35820895522388,
-      "expectancy": 0.13397250197180072,
-      "net_r": 8.976157632110649
+      "n": 89,
+      "wins": 28,
+      "losses": 60,
+      "timeouts": 1,
+      "wr": 31.818181818181817,
+      "expectancy": 0.5130035811804387,
+      "net_r": 45.65731872505904
     }
   ],
   "aggregate": {
-    "n": 344,
-    "wins": 105,
-    "losses": 237,
+    "n": 415,
+    "wins": 131,
+    "losses": 282,
     "timeouts": 2,
-    "wr": 30.701754385964914,
-    "expectancy": 0.17427324156356394,
-    "net_r": 59.949995097865994
+    "wr": 31.719128329297817,
+    "expectancy": 0.28050026229676084,
+    "net_r": 116.40760885315575
   },
   "rr_stats": {
-    "n": 344,
+    "n": 415,
     "min_rr": 1.42,
-    "p25_rr": 2.14,
-    "median_rr": 2.91,
-    "p75_rr": 4.39,
-    "max_rr": 10.04,
-    "mean_rr": 3.572063953488373,
-    "full_tp_hits": 105,
-    "avg_rr_won": 2.827619047619048,
-    "best_rr_won": 7.69,
+    "p25_rr": 2.25,
+    "median_rr": 3.1,
+    "p75_rr": 4.77,
+    "max_rr": 11.51,
+    "mean_rr": 3.7197349397590345,
+    "full_tp_hits": 131,
+    "avg_rr_won": 3.0411450381679392,
+    "best_rr_won": 10.02,
     "worst_rr_won": 1.45,
-    "n_wins": 105,
-    "n_losses": 237,
+    "n_wins": 131,
+    "n_losses": 282,
     "n_timeouts": 2,
     "buckets": [
       {
         "bucket": "1.5-2.0",
-        "n": 58,
-        "wins": 27,
-        "losses": 31,
-        "wr": 46.55172413793103
+        "n": 68,
+        "wins": 34,
+        "losses": 34,
+        "wr": 50.0
       },
       {
         "bucket": "2.0-3.0",
-        "n": 116,
-        "wins": 40,
-        "losses": 76,
-        "wr": 34.48275862068966
+        "n": 122,
+        "wins": 41,
+        "losses": 81,
+        "wr": 33.60655737704918
       },
       {
         "bucket": "3.0-5.0",
-        "n": 101,
-        "wins": 26,
-        "losses": 75,
-        "wr": 25.742574257425744
+        "n": 132,
+        "wins": 39,
+        "losses": 93,
+        "wr": 29.545454545454547
       },
       {
         "bucket": "5.0+",
-        "n": 63,
-        "wins": 9,
-        "losses": 52,
-        "wr": 14.754098360655737
+        "n": 86,
+        "wins": 14,
+        "losses": 70,
+        "wr": 16.666666666666664
       }
     ],
     "target_kinds": [
       {
         "kind": "weekly_high",
-        "n": 53,
-        "wins": 5,
-        "losses": 48,
-        "wr": 9.433962264150944
-      },
-      {
-        "kind": "ny_high",
-        "n": 44,
-        "wins": 11,
-        "losses": 32,
-        "wr": 25.581395348837212
-      },
-      {
-        "kind": "ny_low",
-        "n": 42,
-        "wins": 14,
-        "losses": 28,
-        "wr": 33.33333333333333
-      },
-      {
-        "kind": "asia_low",
-        "n": 38,
-        "wins": 13,
-        "losses": 25,
-        "wr": 34.21052631578947
+        "n": 74,
+        "wins": 12,
+        "losses": 62,
+        "wr": 16.216216216216218
       },
       {
         "kind": "weekly_low",
-        "n": 34,
-        "wins": 11,
-        "losses": 22,
-        "wr": 33.33333333333333
+        "n": 51,
+        "wins": 15,
+        "losses": 35,
+        "wr": 30.0
       },
       {
-        "kind": "PDL",
-        "n": 32,
-        "wins": 13,
-        "losses": 19,
-        "wr": 40.625
+        "kind": "ny_high",
+        "n": 50,
+        "wins": 10,
+        "losses": 39,
+        "wr": 20.408163265306122
       },
       {
-        "kind": "london_low",
-        "n": 26,
-        "wins": 8,
-        "losses": 18,
-        "wr": 30.76923076923077
+        "kind": "ny_low",
+        "n": 47,
+        "wins": 17,
+        "losses": 30,
+        "wr": 36.17021276595745
       },
       {
-        "kind": "PDH",
-        "n": 25,
-        "wins": 8,
-        "losses": 17,
-        "wr": 32.0
-      },
-      {
-        "kind": "london_high",
-        "n": 24,
-        "wins": 11,
-        "losses": 13,
-        "wr": 45.83333333333333
+        "kind": "asia_low",
+        "n": 45,
+        "wins": 20,
+        "losses": 25,
+        "wr": 44.44444444444444
       },
       {
         "kind": "asia_high",
-        "n": 22,
-        "wins": 8,
-        "losses": 14,
-        "wr": 36.36363636363637
+        "n": 32,
+        "wins": 14,
+        "losses": 18,
+        "wr": 43.75
       },
       {
-        "kind": "swing_low",
-        "n": 2,
-        "wins": 1,
-        "losses": 1,
-        "wr": 50.0
+        "kind": "london_high",
+        "n": 31,
+        "wins": 11,
+        "losses": 20,
+        "wr": 35.483870967741936
+      },
+      {
+        "kind": "PDH",
+        "n": 27,
+        "wins": 12,
+        "losses": 15,
+        "wr": 44.44444444444444
+      },
+      {
+        "kind": "PDL",
+        "n": 26,
+        "wins": 10,
+        "losses": 16,
+        "wr": 38.46153846153847
+      },
+      {
+        "kind": "london_low",
+        "n": 24,
+        "wins": 6,
+        "losses": 18,
+        "wr": 25.0
       },
       {
         "kind": "swing_high",
-        "n": 1,
+        "n": 4,
+        "wins": 2,
+        "losses": 2,
+        "wr": 50.0
+      },
+      {
+        "kind": "swing_low",
+        "n": 3,
         "wins": 1,
-        "losses": 0,
-        "wr": 100.0
+        "losses": 2,
+        "wr": 33.33333333333333
       },
       {
         "kind": "synthetic",
@@ -199,12 +199,12 @@
     ]
   },
   "random_baseline": {
-    "n": 12500,
-    "wins": 2437,
-    "losses": 10053,
-    "timeouts": 10,
-    "wr": 19.51160928742994,
-    "expectancy": -0.0244,
-    "net_r": -305.0
+    "n": 15500,
+    "wins": 2953,
+    "losses": 12535,
+    "timeouts": 12,
+    "wr": 19.066373966942148,
+    "expectancy": -0.04664516129032258,
+    "net_r": -723.0
   }
 }

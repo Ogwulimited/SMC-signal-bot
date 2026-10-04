@@ -1,12 +1,12 @@
 # SMC Signal Bot — Continuation Backtest (D1+H1 + liquidity)
 
-**Generated:** 2026-10-04T06:30:46Z
+**Generated:** 2026-10-04T07:09:55Z
 
 ## Configuration
 
 | Parameter | Value |
 |-----------|-------|
-| symbols_count | 25 |
+| symbols_count | 31 |
 | failed_symbols | 0 |
 | stack | D1 bias + H1 OB entry + time-based liquidity |
 | detect_window | 1000 |
@@ -17,48 +17,48 @@
 
 | Window | Signals | Wins | Losses | Timeouts | WR | Expectancy | Net R |
 |--------|---------|------|--------|----------|-----|------------|-------|
-| W1 | 87 | 29 | 57 | 1 | 33.7% | +0.327 | +28.5 |
-| W2 | 112 | 34 | 78 | 0 | 30.4% | +0.176 | +19.7 |
-| W3 | 78 | 23 | 54 | 1 | 29.9% | +0.036 | +2.8 |
-| W4 | 67 | 19 | 48 | 0 | 28.4% | +0.134 | +9.0 |
+| W1 | 94 | 29 | 65 | 0 | 30.9% | +0.250 | +23.5 |
+| W2 | 133 | 43 | 90 | 0 | 32.3% | +0.243 | +32.3 |
+| W3 | 99 | 31 | 67 | 1 | 31.6% | +0.150 | +14.9 |
+| W4 | 89 | 28 | 60 | 1 | 31.8% | +0.513 | +45.7 |
 
 ## Aggregate
 
-- Signals: 344
-- Wins / Losses / Timeouts: 105 / 237 / 2
-- Win rate: 30.7%
-- Expectancy: +0.174 R
-- Net R: +59.9
+- Signals: 415
+- Wins / Losses / Timeouts: 131 / 282 / 2
+- Win rate: 31.7%
+- Expectancy: +0.281 R
+- Net R: +116.4
 
 ## R:R Distribution
 
 | Metric | Value |
 |--------|-------|
-| Trades | 344 |
+| Trades | 415 |
 | Min R:R | 1.42 |
-| 25th pct | 2.14 |
-| Median R:R | 2.91 |
-| 75th pct | 4.39 |
-| Max R:R | 10.04 |
-| Mean R:R | 3.57 |
+| 25th pct | 2.25 |
+| Median R:R | 3.10 |
+| 75th pct | 4.77 |
+| Max R:R | 11.51 |
+| Mean R:R | 3.72 |
 
 ## Winners vs Losers
 
-- Full TP hits: **105**
-- Avg R:R on wins: **2.83**
-- Best win R:R: 7.69
+- Full TP hits: **131**
+- Avg R:R on wins: **3.04**
+- Best win R:R: 10.02
 - Worst win R:R: 1.45
-- Losses (all −1.00 R): 237
+- Losses (all −1.00 R): 282
 - Timeouts (0 R): 2
 
 ## R:R Buckets
 
 | R:R Range | Trades | Wins | Losses | WR |
 |-----------|--------|------|--------|-----|
-| 1.5-2.0 | 58 | 27 | 31 | 46.6% |
-| 2.0-3.0 | 116 | 40 | 76 | 34.5% |
-| 3.0-5.0 | 101 | 26 | 75 | 25.7% |
-| 5.0+ | 63 | 9 | 52 | 14.8% |
+| 1.5-2.0 | 68 | 34 | 34 | 50.0% |
+| 2.0-3.0 | 122 | 41 | 81 | 33.6% |
+| 3.0-5.0 | 132 | 39 | 93 | 29.5% |
+| 5.0+ | 86 | 14 | 70 | 16.7% |
 
 ## Target-Kind Breakdown
 
@@ -66,22 +66,22 @@ How often each liquidity type was the take-profit target.
 
 | Target Kind | Trades | Wins | Losses | WR |
 |-------------|--------|------|--------|-----|
-| weekly_high | 53 | 5 | 48 | 9.4% |
-| ny_high | 44 | 11 | 32 | 25.6% |
-| ny_low | 42 | 14 | 28 | 33.3% |
-| asia_low | 38 | 13 | 25 | 34.2% |
-| weekly_low | 34 | 11 | 22 | 33.3% |
-| PDL | 32 | 13 | 19 | 40.6% |
-| london_low | 26 | 8 | 18 | 30.8% |
-| PDH | 25 | 8 | 17 | 32.0% |
-| london_high | 24 | 11 | 13 | 45.8% |
-| asia_high | 22 | 8 | 14 | 36.4% |
-| swing_low | 2 | 1 | 1 | 50.0% |
-| swing_high | 1 | 1 | 0 | 100.0% |
+| weekly_high | 74 | 12 | 62 | 16.2% |
+| weekly_low | 51 | 15 | 35 | 30.0% |
+| ny_high | 50 | 10 | 39 | 20.4% |
+| ny_low | 47 | 17 | 30 | 36.2% |
+| asia_low | 45 | 20 | 25 | 44.4% |
+| asia_high | 32 | 14 | 18 | 43.8% |
+| london_high | 31 | 11 | 20 | 35.5% |
+| PDH | 27 | 12 | 15 | 44.4% |
+| PDL | 26 | 10 | 16 | 38.5% |
+| london_low | 24 | 6 | 18 | 25.0% |
+| swing_high | 4 | 2 | 2 | 50.0% |
+| swing_low | 3 | 1 | 2 | 33.3% |
 | synthetic | 1 | 1 | 0 | 100.0% |
 
 ## Random Baseline
 
-- Signals: 12500
-- WR: 19.5%
-- Expectancy: -0.024 R
+- Signals: 15500
+- WR: 19.1%
+- Expectancy: -0.047 R
