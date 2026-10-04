@@ -1,6 +1,6 @@
-"""Continuation model: D1 bias + H1 OB entry. Time-based liquidity integrated.
+"""Continuation model: D1 bias + H1 OB entry. Time-based liquidity prioritized.
 
-v6: removed H4 filter, added PDH/PDL/weekly/session liquidity pools.
+v7: target selector prefers major (time-based) liquidity within PREFER_MAJOR_LIQ_ATR.
 """
 
 from dataclasses import dataclass
@@ -16,17 +16,21 @@ from .config import (
     BUFFER_ATR, MIN_RR, MIN_TARGET_ATR, MIN_OB_WIDTH_ATR,
     MIN_CONT_FVG_ATR, CONT_LIQUIDITY_TOL_ATR, CONT_MAX_OB_AGE,
     CONT_MAX_BARS_BOS_TO_TOUCH, HTF_SWING_LOOKBACK,
-    USE_TIME_BASED_LIQUIDITY,
+    USE_TIME_BASED_LIQUIDITY, PREFER_MAJOR_LIQ_ATR,
 )
 
 
 SYNTHETIC_TARGET_ATR = 2.0
 
-# Pool kind groupings
+# Full groupings — used for fallback
 UPSIDE_KINDS = ("EQH", "swing_high", "PDH", "weekly_high",
                 "asia_high", "london_high", "ny_high")
 DOWNSIDE_KINDS = ("EQL", "swing_low", "PDL", "weekly_low",
                   "asia_low", "london_low", "ny_low")
+
+# Major (time-based) pools — preferred when in range
+MAJOR_UPSIDE = ("PDH", "weekly_high", "asia_high", "london_high", "ny_high")
+MAJOR_DOWNSIDE = ("PDL", "weekly_low", "asia_low", "london_low", "ny_low")
 
 
 @dataclass
@@ -85,22 +89,44 @@ def _has_nearby_liquidity(pools, direction, ob_high, ob_low, atr) -> bool:
     return False
 
 
-def _nearest_target_above(pools, price):
+def _nearest_target_above(pools, price, atr):
+    """Prefer major (time-based) liquidity if within PREFER_MAJOR_LIQ_ATR.
+    Fall back to nearest pool of any type. Returns (price, kind) or (None, None).
+    """
+    # 1. Try major pools first
+    major = [p for p in pools if p.price > price and not p.swept
+             and p.kind in MAJOR_UPSIDE]
+    if major:
+        best_major = min(major, key=lambda p: p.price)
+        if (best_major.price - price) <= PREFER_MAJOR_LIQ_ATR * atr:
+            return best_major.price, best_major.kind
+
+    # 2. Fall back to any pool
     cand = [p for p in pools if p.price > price and not p.swept
             and p.kind in UPSIDE_KINDS]
-    if not cand:
-        return None, None
-    best = min(cand, key=lambda p: p.price)
-    return best.price, best.kind
+    if cand:
+        best = min(cand, key=lambda p: p.price)
+        return best.price, best.kind
+
+    return None, None
 
 
-def _nearest_target_below(pools, price):
+def _nearest_target_below(pools, price, atr):
+    """Mirror of _nearest_target_above for downside."""
+    major = [p for p in pools if p.price < price and not p.swept
+             and p.kind in MAJOR_DOWNSIDE]
+    if major:
+        best_major = max(major, key=lambda p: p.price)
+        if (price - best_major.price) <= PREFER_MAJOR_LIQ_ATR * atr:
+            return best_major.price, best_major.kind
+
     cand = [p for p in pools if p.price < price and not p.swept
             and p.kind in DOWNSIDE_KINDS]
-    if not cand:
-        return None, None
-    best = max(cand, key=lambda p: p.price)
-    return best.price, best.kind
+    if cand:
+        best = max(cand, key=lambda p: p.price)
+        return best.price, best.kind
+
+    return None, None
 
 
 def _find_ob_before_bos(candles, bos_idx, direction, max_lookback=15):
@@ -265,7 +291,7 @@ def detect_continuation_signals(h1_candles, d1_candles, debug=False):
 
         if bias == "bullish":
             stop = ob_low - BUFFER_ATR * atr
-            target, target_kind = _nearest_target_above(pools, entry)
+            target, target_kind = _nearest_target_above(pools, entry, atr)
             if target is None:
                 target = entry + SYNTHETIC_TARGET_ATR * atr
                 target_kind = "synthetic"
@@ -283,7 +309,7 @@ def detect_continuation_signals(h1_candles, d1_candles, debug=False):
             rr = (target - entry) / (entry - stop)
         else:
             stop = ob_high + BUFFER_ATR * atr
-            target, target_kind = _nearest_target_below(pools, entry)
+            target, target_kind = _nearest_target_below(pools, entry, atr)
             if target is None:
                 target = entry - SYNTHETIC_TARGET_ATR * atr
                 target_kind = "synthetic"
