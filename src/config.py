@@ -1,17 +1,12 @@
 """Configuration for the SMC signal bot."""
 
 SYMBOLS = [
-    # Forex majors (7)
     "frxEURUSD", "frxGBPUSD", "frxAUDUSD", "frxUSDCAD", "frxUSDCHF",
     "frxUSDJPY", "frxNZDUSD",
-    # Forex crosses (10)
     "frxEURGBP", "frxEURJPY", "frxGBPJPY", "frxAUDJPY", "frxEURAUD",
     "frxGBPAUD", "frxCADJPY", "frxNZDJPY", "frxGBPCHF", "frxEURNZD",
-    # Metals (2)
     "frxXAUUSD", "frxXAGUSD",
-    # Crypto (5)
     "cryBTCUSD", "cryETHUSD", "cryLTCUSD", "cryXRPUSD", "crySOLUSD",
-    # Volatility indices (1)
     "R_100",
 ]
 
@@ -31,7 +26,7 @@ MIN_RR = 1.5
 PATTERN_LOOKBACK_BARS = 30
 
 MIN_OB_WIDTH_ATR = 0.30
-MIN_TARGET_ATR = 0.50
+MIN_TARGET_ATR = 1.00          # restored to 1.00 — force meaningful targets
 
 MIN_FVG_ATR = 0.0
 
@@ -42,7 +37,12 @@ CONT_MAX_OB_AGE = 800
 CONT_MAX_BARS_BOS_TO_TOUCH = 150
 CONT_CONFIRMATION_WAIT_BARS = 5
 
-# ----- Time-based liquidity (PDH/PDL, sessions, weekly) -----
+# ----- Target selection priority -----
+# Prefer time-based (major) liquidity pools if they exist within this many
+# ATR of the entry. Otherwise fall back to nearest swing high/low.
+PREFER_MAJOR_LIQ_ATR = 5.0
+
+# ----- Time-based liquidity -----
 USE_TIME_BASED_LIQUIDITY = True
 
 # ----- Backtest performance -----
