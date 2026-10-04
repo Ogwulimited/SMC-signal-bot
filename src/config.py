@@ -1,13 +1,22 @@
 """Configuration for the SMC signal bot."""
 
 SYMBOLS = [
+    # ---- Forex majors (7) ----
     "frxEURUSD", "frxGBPUSD", "frxAUDUSD", "frxUSDCAD", "frxUSDCHF",
     "frxUSDJPY", "frxNZDUSD",
+
+    # ---- Forex crosses (21) ----
     "frxEURGBP", "frxEURJPY", "frxGBPJPY", "frxAUDJPY", "frxEURAUD",
     "frxGBPAUD", "frxCADJPY", "frxNZDJPY", "frxGBPCHF", "frxEURNZD",
-    "frxXAUUSD", "frxXAGUSD",
-    "cryBTCUSD", "cryETHUSD", "cryLTCUSD", "cryXRPUSD", "crySOLUSD",
-    "R_100",
+    "frxAUDCAD", "frxAUDCHF", "frxAUDNZD", "frxEURCAD", "frxEURCHF",
+    "frxGBPCAD", "frxGBPNZD", "frxNZDCAD", "frxNZDCHF", "frxCADCHF",
+    "frxCHFJPY",
+
+    # ---- Commodities (1) ----
+    "frxXAUUSD",
+
+    # ---- Crypto (2) ----
+    "cryBTCUSD", "cryETHUSD",
 ]
 
 GRANULARITY = 3600
@@ -26,7 +35,7 @@ MIN_RR = 1.5
 PATTERN_LOOKBACK_BARS = 30
 
 MIN_OB_WIDTH_ATR = 0.30
-MIN_TARGET_ATR = 1.00          # restored to 1.00 — force meaningful targets
+MIN_TARGET_ATR = 1.00
 
 MIN_FVG_ATR = 0.0
 
@@ -37,9 +46,7 @@ CONT_MAX_OB_AGE = 800
 CONT_MAX_BARS_BOS_TO_TOUCH = 150
 CONT_CONFIRMATION_WAIT_BARS = 5
 
-# ----- Target selection priority -----
-# Prefer time-based (major) liquidity pools if they exist within this many
-# ATR of the entry. Otherwise fall back to nearest swing high/low.
+# ----- Target selection -----
 PREFER_MAJOR_LIQ_ATR = 5.0
 
 # ----- Time-based liquidity -----
