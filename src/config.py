@@ -1,23 +1,31 @@
-"""Configuration for the SMC signal bot."""
+"""Configuration for the SMC signal bot — LIVE (v1)."""
 
-SYMBOLS = [
-    # ---- Forex majors (7) ----
-    "frxEURUSD", "frxGBPUSD", "frxAUDUSD", "frxUSDCAD", "frxUSDCHF",
-    "frxUSDJPY", "frxNZDUSD",
-
-    # ---- Forex crosses (21) ----
-    "frxEURGBP", "frxEURJPY", "frxGBPJPY", "frxAUDJPY", "frxEURAUD",
-    "frxGBPAUD", "frxCADJPY", "frxNZDJPY", "frxGBPCHF", "frxEURNZD",
-    "frxAUDCAD", "frxAUDCHF", "frxAUDNZD", "frxEURCAD", "frxEURCHF",
-    "frxGBPCAD", "frxGBPNZD", "frxNZDCAD", "frxNZDCHF", "frxCADCHF",
-    "frxCHFJPY",
-
-    # ---- Commodities (1) ----
-    "frxXAUUSD",
-
-    # ---- Crypto (2) ----
-    "cryBTCUSD", "cryETHUSD",
+# Frozen model: only the 19 recommended pairs from the per-symbol backtest.
+RECOMMENDED_PAIRS = [
+    # Top performers (sorted by expectancy)
+    "frxAUDNZD",
+    "frxNZDCHF",
+    "frxEURAUD",
+    "frxGBPAUD",
+    "frxEURNZD",
+    "frxNZDCAD",
+    "frxAUDJPY",
+    "frxGBPUSD",
+    "cryETHUSD",
+    "frxNZDJPY",
+    "cryBTCUSD",
+    "frxGBPCHF",
+    "frxEURCHF",
+    "frxEURUSD",
+    "frxGBPNZD",
+    "frxUSDCHF",
+    "frxAUDCAD",
+    "frxUSDJPY",
+    "frxCADJPY",
 ]
+
+# Backwards-compat alias (backtests use SYMBOLS)
+SYMBOLS = RECOMMENDED_PAIRS
 
 GRANULARITY = 3600
 TIMEFRAME_LABEL = "H1"
@@ -71,6 +79,8 @@ TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
 
 STATE_FILE = "state.json"
-SIGNAL_COOLDOWN_SECONDS = 4 * 3600
+
+# Cooldown between signals for the same symbol+direction (safety net).
+SIGNAL_COOLDOWN_SECONDS = 3600  # 1 hour
 
 REPORTS_DIR = "reports"
