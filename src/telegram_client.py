@@ -1,4 +1,4 @@
-"""Formats and sends continuation signals to a Telegram channel."""
+"""Formats and sends signals + trade outcomes to a Telegram channel."""
 
 import os
 import requests
@@ -41,6 +41,31 @@ def _asset_tag(symbol_display):
     return "Forex"
 
 
+def _format_duration(seconds):
+    if seconds < 0:
+        seconds = 0
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    return f"{int(h)}h {int(m)}m"
+
+
+def _post_to_telegram(text):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    resp = requests.post(url, json={
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ---------------- signal message ----------------
+
 def _format_signal(symbol_display, direction, entry, stop, target, rr,
                    target_kind, bias):
     arrow = "🟢" if direction == "bullish" else "🔴"
@@ -64,20 +89,42 @@ def _format_signal(symbol_display, direction, entry, stop, target, rr,
 
 
 def send_signal(symbol, direction, entry, stop, target, rr, target_kind, bias):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
-
     text = _format_signal(
         _pretty_symbol(symbol), direction, entry, stop, target, rr,
         target_kind, bias,
     )
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    resp = requests.post(url, json={
-        "chat_id": chat_id,
-        "text": text,
-        "disable_web_page_preview": True,
-    }, timeout=15)
-    resp.raise_for_status()
-    return resp.json()
+    return _post_to_telegram(text)
+
+
+# ---------------- trade outcome message ----------------
+
+def _format_outcome(symbol_display, direction, outcome, exit_price,
+                    rr_actual, duration_seconds, note=""):
+    dir_label = "BUY" if direction == "bullish" else "SELL"
+
+    if outcome == "win":
+        header = f"✅ {symbol_display} {dir_label} WIN"
+    elif outcome == "loss":
+        header = f"❌ {symbol_display} {dir_label} LOSS"
+    else:
+        header = f"⏱️ {symbol_display} {dir_label} TIMEOUT"
+
+    r_str = f"{rr_actual:+.2f}R" if rr_actual is not None else "n/a"
+    dur = _format_duration(duration_seconds)
+
+    body = (
+        f"{header}\n\n"
+        f"Exit: {exit_price:.5f}{(' (' + note + ')') if note else ''}\n"
+        f"R-multiple: {r_str}\n"
+        f"Duration: {dur}"
+    )
+    return body
+
+
+def send_trade_outcome(symbol, direction, outcome, exit_price,
+                       rr_actual, duration_seconds, note=""):
+    text = _format_outcome(
+        _pretty_symbol(symbol), direction, outcome, exit_price,
+        rr_actual, duration_seconds, note,
+    )
+    return _post_to_telegram(text)
