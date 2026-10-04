@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-03T22:24:09Z",
+  "generated": "2026-10-04T06:30:46Z",
   "config": {
     "symbols_count": 25,
     "failed_symbols": 0,
@@ -11,113 +11,183 @@
   "per_window": [
     {
       "window": 1,
-      "n": 6,
-      "wins": 4,
-      "losses": 2,
-      "timeouts": 0,
-      "wr": 66.66666666666666,
-      "expectancy": 0.9284291388922693,
-      "net_r": 5.570574833353616
+      "n": 87,
+      "wins": 29,
+      "losses": 57,
+      "timeouts": 1,
+      "wr": 33.72093023255814,
+      "expectancy": 0.32735141776353394,
+      "net_r": 28.479573345427454
     },
     {
       "window": 2,
-      "n": 10,
-      "wins": 4,
-      "losses": 6,
+      "n": 112,
+      "wins": 34,
+      "losses": 78,
       "timeouts": 0,
-      "wr": 40.0,
-      "expectancy": 0.08174543318507652,
-      "net_r": 0.8174543318507652
+      "wr": 30.357142857142854,
+      "expectancy": 0.17553124643585072,
+      "net_r": 19.65949960081528
     },
     {
       "window": 3,
-      "n": 6,
-      "wins": 4,
-      "losses": 2,
-      "timeouts": 0,
-      "wr": 66.66666666666666,
-      "expectancy": 0.9982718821981621,
-      "net_r": 5.989631293188973
+      "n": 78,
+      "wins": 23,
+      "losses": 54,
+      "timeouts": 1,
+      "wr": 29.87012987012987,
+      "expectancy": 0.03634313486554629,
+      "net_r": 2.8347645195126105
     },
     {
       "window": 4,
-      "n": 14,
-      "wins": 4,
-      "losses": 10,
+      "n": 67,
+      "wins": 19,
+      "losses": 48,
       "timeouts": 0,
-      "wr": 28.57142857142857,
-      "expectancy": -0.10095540680389156,
-      "net_r": -1.4133756952544818
+      "wr": 28.35820895522388,
+      "expectancy": 0.13397250197180072,
+      "net_r": 8.976157632110649
     }
   ],
   "aggregate": {
-    "n": 36,
-    "wins": 16,
-    "losses": 20,
-    "timeouts": 0,
-    "wr": 44.44444444444444,
-    "expectancy": 0.30456346564274644,
-    "net_r": 10.964284763138872
+    "n": 344,
+    "wins": 105,
+    "losses": 237,
+    "timeouts": 2,
+    "wr": 30.701754385964914,
+    "expectancy": 0.17427324156356394,
+    "net_r": 59.949995097865994
   },
   "rr_stats": {
-    "n": 36,
-    "min_rr": 1.4,
-    "p25_rr": 1.54,
-    "median_rr": 1.755,
-    "p75_rr": 2.21,
-    "max_rr": 3.26,
-    "mean_rr": 1.9402777777777784,
-    "full_tp_hits": 16,
-    "avg_rr_won": 1.9337499999999994,
-    "best_rr_won": 3.26,
-    "worst_rr_won": 1.42,
-    "n_wins": 16,
-    "n_losses": 20,
-    "n_timeouts": 0,
+    "n": 344,
+    "min_rr": 1.42,
+    "p25_rr": 2.14,
+    "median_rr": 2.91,
+    "p75_rr": 4.39,
+    "max_rr": 10.04,
+    "mean_rr": 3.572063953488373,
+    "full_tp_hits": 105,
+    "avg_rr_won": 2.827619047619048,
+    "best_rr_won": 7.69,
+    "worst_rr_won": 1.45,
+    "n_wins": 105,
+    "n_losses": 237,
+    "n_timeouts": 2,
     "buckets": [
       {
         "bucket": "1.5-2.0",
-        "n": 21,
-        "wins": 10,
-        "losses": 11,
-        "wr": 47.61904761904761
+        "n": 58,
+        "wins": 27,
+        "losses": 31,
+        "wr": 46.55172413793103
       },
       {
         "bucket": "2.0-3.0",
-        "n": 9,
-        "wins": 3,
-        "losses": 6,
-        "wr": 33.33333333333333
+        "n": 116,
+        "wins": 40,
+        "losses": 76,
+        "wr": 34.48275862068966
       },
       {
         "bucket": "3.0-5.0",
+        "n": 101,
+        "wins": 26,
+        "losses": 75,
+        "wr": 25.742574257425744
+      },
+      {
+        "bucket": "5.0+",
+        "n": 63,
+        "wins": 9,
+        "losses": 52,
+        "wr": 14.754098360655737
+      }
+    ],
+    "target_kinds": [
+      {
+        "kind": "weekly_high",
+        "n": 53,
+        "wins": 5,
+        "losses": 48,
+        "wr": 9.433962264150944
+      },
+      {
+        "kind": "ny_high",
+        "n": 44,
+        "wins": 11,
+        "losses": 32,
+        "wr": 25.581395348837212
+      },
+      {
+        "kind": "ny_low",
+        "n": 42,
+        "wins": 14,
+        "losses": 28,
+        "wr": 33.33333333333333
+      },
+      {
+        "kind": "asia_low",
+        "n": 38,
+        "wins": 13,
+        "losses": 25,
+        "wr": 34.21052631578947
+      },
+      {
+        "kind": "weekly_low",
+        "n": 34,
+        "wins": 11,
+        "losses": 22,
+        "wr": 33.33333333333333
+      },
+      {
+        "kind": "PDL",
+        "n": 32,
+        "wins": 13,
+        "losses": 19,
+        "wr": 40.625
+      },
+      {
+        "kind": "london_low",
+        "n": 26,
+        "wins": 8,
+        "losses": 18,
+        "wr": 30.76923076923077
+      },
+      {
+        "kind": "PDH",
+        "n": 25,
+        "wins": 8,
+        "losses": 17,
+        "wr": 32.0
+      },
+      {
+        "kind": "london_high",
+        "n": 24,
+        "wins": 11,
+        "losses": 13,
+        "wr": 45.83333333333333
+      },
+      {
+        "kind": "asia_high",
+        "n": 22,
+        "wins": 8,
+        "losses": 14,
+        "wr": 36.36363636363637
+      },
+      {
+        "kind": "swing_low",
         "n": 2,
         "wins": 1,
         "losses": 1,
         "wr": 50.0
       },
       {
-        "bucket": "5.0+",
-        "n": 0,
-        "wins": 0,
-        "losses": 0,
-        "wr": 0
-      }
-    ],
-    "target_kinds": [
-      {
-        "kind": "swing_low",
-        "n": 20,
-        "wins": 10,
-        "losses": 10,
-        "wr": 50.0
-      },
-      {
         "kind": "swing_high",
-        "n": 15,
-        "wins": 5,
-        "losses": 10,
-        "wr": 33.33333333333333
+        "n": 1,
+        "wins": 1,
+        "losses": 0,
+        "wr": 100.0
       },
       {
         "kind": "synthetic",
@@ -130,11 +200,11 @@
   },
   "random_baseline": {
     "n": 12500,
-    "wins": 2458,
-    "losses": 10036,
-    "timeouts": 6,
-    "wr": 19.673443252761324,
-    "expectancy": -0.01632,
-    "net_r": -204.0
+    "wins": 2437,
+    "losses": 10053,
+    "timeouts": 10,
+    "wr": 19.51160928742994,
+    "expectancy": -0.0244,
+    "net_r": -305.0
   }
 }
