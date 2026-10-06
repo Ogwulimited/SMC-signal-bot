@@ -1,0 +1,21 @@
+{
+  "trades": [
+    {
+      "id": "frxCADJPY|bearish|1791263556|110.889",
+      "symbol": "frxCADJPY",
+      "direction": "bearish",
+      "entry": 110.889,
+      "stop": 110.93334285714286,
+      "target": 110.734,
+      "rr_planned": 3.49548969072102,
+      "target_kind": "ny_low",
+      "sent_epoch": 1791263556,
+      "exit_epoch": 1791266400,
+      "exit_price": 110.734,
+      "outcome": "win",
+      "rr_actual": 3.49548969072102,
+      "duration_seconds": 2844,
+      "note": "TP reached (extreme 110.71800)"
+    }
+  ]
+}

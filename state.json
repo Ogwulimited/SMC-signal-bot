@@ -24,17 +24,6 @@
       "rr": 3.8310624918121197,
       "target_kind": "weekly_high",
       "sent_epoch": 1791188904
-    },
-    {
-      "id": "frxCADJPY|bearish|1791263556|110.889",
-      "symbol": "frxCADJPY",
-      "direction": "bearish",
-      "entry": 110.889,
-      "stop": 110.93334285714286,
-      "target": 110.734,
-      "rr": 3.49548969072102,
-      "target_kind": "ny_low",
-      "sent_epoch": 1791263556
     }
   ]
 }
