@@ -5,11 +5,13 @@
     "frxEURUSD|M15|bearish|54|72",
     "frxEURUSD|M15|bearish|51|72",
     "frxEURUSD|M15|bearish|15|71",
-    "frxUSDJPY|bullish|157.6185"
+    "frxUSDJPY|bullish|157.6185",
+    "frxCADJPY|bearish|110.889"
   ],
   "last_sent": {
     "frxEURUSD|sell": 1790814169,
-    "frxUSDJPY|bullish": 1791188904
+    "frxUSDJPY|bullish": 1791188904,
+    "frxCADJPY|bearish": 1791263556
   },
   "pending_trades": [
     {
@@ -22,6 +24,17 @@
       "rr": 3.8310624918121197,
       "target_kind": "weekly_high",
       "sent_epoch": 1791188904
+    },
+    {
+      "id": "frxCADJPY|bearish|1791263556|110.889",
+      "symbol": "frxCADJPY",
+      "direction": "bearish",
+      "entry": 110.889,
+      "stop": 110.93334285714286,
+      "target": 110.734,
+      "rr": 3.49548969072102,
+      "target_kind": "ny_low",
+      "sent_epoch": 1791263556
     }
   ]
 }
