@@ -26,17 +26,6 @@
       "rr": 3.8310624918121197,
       "target_kind": "weekly_high",
       "sent_epoch": 1791188904
-    },
-    {
-      "id": "frxEURUSD|bearish|1791291174|1.12548",
-      "symbol": "frxEURUSD",
-      "direction": "bearish",
-      "entry": 1.1254849999999998,
-      "stop": 1.1262894285714287,
-      "target": 1.12152,
-      "rr": 4.928964659916525,
-      "target_kind": "weekly_low",
-      "sent_epoch": 1791291174
     }
   ]
 }

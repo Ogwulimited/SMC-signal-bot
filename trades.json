@@ -16,6 +16,23 @@
       "rr_actual": 3.49548969072102,
       "duration_seconds": 2844,
       "note": "TP reached (extreme 110.71800)"
+    },
+    {
+      "id": "frxEURUSD|bearish|1791291174|1.12548",
+      "symbol": "frxEURUSD",
+      "direction": "bearish",
+      "entry": 1.1254849999999998,
+      "stop": 1.1262894285714287,
+      "target": 1.12152,
+      "rr_planned": 4.928964659916525,
+      "target_kind": "weekly_low",
+      "sent_epoch": 1791291174,
+      "exit_epoch": 1791291600,
+      "exit_price": 1.1262894285714287,
+      "outcome": "loss",
+      "rr_actual": -1.0,
+      "duration_seconds": 426,
+      "note": "SL hit (extreme 1.12661)"
     }
   ]
 }
