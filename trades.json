@@ -33,6 +33,23 @@
       "rr_actual": -1.0,
       "duration_seconds": 426,
       "note": "SL hit (extreme 1.12661)"
+    },
+    {
+      "id": "frxUSDJPY|bullish|1791188904|157.6185",
+      "symbol": "frxUSDJPY",
+      "direction": "bullish",
+      "entry": 157.61849999999998,
+      "stop": 157.40041428571428,
+      "target": 158.454,
+      "rr_planned": 3.8310624918121197,
+      "target_kind": "weekly_high",
+      "sent_epoch": 1791188904,
+      "exit_epoch": 1791331200,
+      "exit_price": 158.454,
+      "outcome": "win",
+      "rr_actual": 3.8310624918121197,
+      "duration_seconds": 142296,
+      "note": "TP reached (extreme 158.45500)"
     }
   ]
 }

@@ -15,17 +15,5 @@
     "frxCADJPY|bearish": 1791263556,
     "frxEURUSD|bearish": 1791291174
   },
-  "pending_trades": [
-    {
-      "id": "frxUSDJPY|bullish|1791188904|157.6185",
-      "symbol": "frxUSDJPY",
-      "direction": "bullish",
-      "entry": 157.61849999999998,
-      "stop": 157.40041428571428,
-      "target": 158.454,
-      "rr": 3.8310624918121197,
-      "target_kind": "weekly_high",
-      "sent_epoch": 1791188904
-    }
-  ]
+  "pending_trades": []
 }
