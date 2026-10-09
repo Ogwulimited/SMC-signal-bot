@@ -1,0 +1,98 @@
+{
+  "generated": "2026-10-09T12:56:25Z",
+  "config": {
+    "pairs": 19,
+    "h1_candles_requested": 6000,
+    "m15_candles_requested": 24000,
+    "m15_displacement_mult": 1.5,
+    "m15_ob_tolerance_atr": 0.2,
+    "buffer_atr": 0.2
+  },
+  "baseline_agg": {
+    "n": 271,
+    "wins": 97,
+    "losses": 172,
+    "timeouts": 2,
+    "wr": 36.059479553903344,
+    "expectancy": 0.5089667896678967,
+    "net_r": 137.93,
+    "avg_rr_won": 3.1951546391752577,
+    "avg_rr_all": 3.830258302583025
+  },
+  "refined_agg": {
+    "n": 271,
+    "wins": 89,
+    "losses": 180,
+    "timeouts": 2,
+    "wr": 33.08550185873606,
+    "expectancy": 0.5039114391143912,
+    "net_r": 136.56,
+    "avg_rr_won": 3.5568539325842696,
+    "avg_rr_all": 4.203284132841327
+  },
+  "refined_only_agg": {
+    "n": 35,
+    "wins": 10,
+    "losses": 25,
+    "timeouts": 0,
+    "wr": 28.57142857142857,
+    "expectancy": 1.0162857142857145,
+    "net_r": 35.57000000000001,
+    "avg_rr_won": 6.057,
+    "avg_rr_all": 6.309142857142857
+  },
+  "baseline_rr": {
+    "n": 271,
+    "min": 1.42,
+    "p25": 2.34,
+    "median": 3.28,
+    "p75": 4.86,
+    "max": 11.51,
+    "mean": 3.830258302583026
+  },
+  "refined_rr": {
+    "n": 271,
+    "min": 1.42,
+    "p25": 2.52,
+    "median": 3.52,
+    "p75": 5.45,
+    "max": 16.36,
+    "mean": 4.203284132841329
+  },
+  "fallback_count": 236,
+  "refined_count": 35,
+  "per_window": [
+    {
+      "window": 1,
+      "n": 58,
+      "base_wr": 32.758620689655174,
+      "base_exp": 0.2236206896551724,
+      "ref_wr": 25.862068965517242,
+      "ref_exp": 0.1362068965517241
+    },
+    {
+      "window": 2,
+      "n": 101,
+      "base_wr": 36.0,
+      "base_exp": 0.49069306930693074,
+      "ref_wr": 34.0,
+      "ref_exp": 0.4796039603960394
+    },
+    {
+      "window": 3,
+      "n": 52,
+      "base_wr": 40.38461538461539,
+      "base_exp": 0.6151923076923077,
+      "ref_wr": 38.46153846153847,
+      "ref_exp": 0.6875
+    },
+    {
+      "window": 4,
+      "n": 60,
+      "base_wr": 35.59322033898305,
+      "base_exp": 0.7235000000000001,
+      "ref_wr": 33.89830508474576,
+      "ref_exp": 0.7411666666666666
+    }
+  ]
+}
