@@ -6,7 +6,7 @@ on:
       experiment:
         description: "Experiment module to run (e.g. src.experiments.backtest_m15_refinement)"
         required: true
-        default: "src.experiments.backtest_m15_refinement"
+        default: "src.experiment.backtest_m15_refinement"
 
 concurrency:
   group: experiment
