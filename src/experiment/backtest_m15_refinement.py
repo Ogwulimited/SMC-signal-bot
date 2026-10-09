@@ -227,7 +227,7 @@ def _write_report(baseline_agg, refined_agg, refined_only_agg,
     os.makedirs(out_dir, exist_ok=True)
     gen = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    with open(os.path.join(out_dir, "m15_refinement_latest.json"), "w") as f:
+    with open(os.path.join(out_dir, "m15_refinement_v2_latest.json"), "w") as f:
         json.dump({
             "generated": gen,
             "config": config_snap,
@@ -315,7 +315,7 @@ def _write_report(baseline_agg, refined_agg, refined_only_agg,
         md.append(f"❌ Refinement hurts expectancy ({delta:+.3f} R). Do not promote.")
     md.append("")
 
-    with open(os.path.join(out_dir, "m15_refinement_latest.md"), "w") as f:
+    with open(os.path.join(out_dir, "m15_refinement_v2_latest.md"), "w") as f:
         f.write("\n".join(md))
 
     log(f"\nReport written to {out_dir}/m15_refinement_latest.md")
