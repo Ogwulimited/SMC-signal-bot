@@ -1,0 +1,36 @@
+name: Experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      experiment:
+        description: "Experiment module to run (e.g. src.experiments.backtest_m15_refinement)"
+        required: true
+        default: "src.experiments.backtest_m15_refinement"
+
+concurrency:
+  group: experiment
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Run experiment
+        run: python -m ${{ github.event.inputs.experiment }}
+      - name: Commit experiment report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/experiments/ || true
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: update experiment report [skip ci]"
+          git push
