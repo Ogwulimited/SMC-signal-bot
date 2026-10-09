@@ -4,15 +4,15 @@ Given an H1 continuation pattern, look for an M15 OB inside the H1 OB zone.
 If found, use the M15 OB for entry/stop (tighter). Otherwise return None
 so the caller falls back to H1 entry/stop.
 
-The H1 detector logic is NOT changed. This module only reads H1 patterns
-and produces alternative entry/stop levels.
+v2: loosened displacement threshold (1.5 → 1.0) and zone tolerance (0.20 → 0.50)
+to increase refinement coverage.
 """
 
 from ..config import BUFFER_ATR
 
 
-M15_DISPLACEMENT_MULT = 1.5      # M15 displacement candle vs M15 ATR
-M15_OB_TOLERANCE_ATR = 0.20      # allow OB candle to slightly poke out of H1 zone
+M15_DISPLACEMENT_MULT = 1.0      # was 1.5 — weaker M15 displacement now qualifies
+M15_OB_TOLERANCE_ATR = 0.50      # was 0.20 — allow M15 OB to poke out of H1 zone more
 
 
 def _find_m15_ob_in_zone(m15_window, h1_ob_high, h1_ob_low, direction, m15_atr):
