@@ -1,6 +1,5 @@
-"""Configuration for the SMC signal bot — LIVE (v1)."""
+"""Configuration for the SMC signal bot — LIVE (v2, EQ-gated)."""
 
-# Frozen model: only the 19 recommended pairs from the per-symbol backtest.
 RECOMMENDED_PAIRS = [
     "frxAUDNZD",
     "frxNZDCHF",
@@ -23,7 +22,6 @@ RECOMMENDED_PAIRS = [
     "frxCADJPY",
 ]
 
-# Backwards-compat alias (backtests use SYMBOLS)
 SYMBOLS = RECOMMENDED_PAIRS
 
 GRANULARITY = 3600
@@ -44,6 +42,7 @@ PATTERN_LOOKBACK_BARS = 30
 MIN_OB_WIDTH_ATR = 0.30
 MIN_TARGET_ATR = 1.00
 
+# Legacy — kept for backwards compatibility with fvg.py import.
 MIN_FVG_ATR = 0.0
 
 # ----- Continuation model -----
@@ -80,13 +79,13 @@ TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
 
 # ----- State -----
 STATE_FILE = "state.json"
-SIGNAL_COOLDOWN_SECONDS = 3600  # 1 hour between same symbol+direction
+SIGNAL_COOLDOWN_SECONDS = 3600
 
 # ----- Trade monitor -----
 TRADES_FILE = "trades.json"
-MONITOR_GRANULARITY = 900                    # M15 bars for outcome checks
-MAX_TRADE_DURATION_SECONDS = 48 * 3600       # 48h timeout → 0R
-MONITOR_CANDLE_COUNT = 300                   # ~3 days of M15 candles per check
+MONITOR_GRANULARITY = 900
+MAX_TRADE_DURATION_SECONDS = 48 * 3600
+MONITOR_CANDLE_COUNT = 300
 
 # ----- Reports -----
 REPORTS_DIR = "reports"
