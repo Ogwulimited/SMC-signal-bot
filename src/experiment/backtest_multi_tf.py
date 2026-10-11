@@ -1,9 +1,9 @@
 """Backtest: v3 (multi-TF + flexible confluence) vs v1 baseline.
 
-PERFORMANCE:
+PERFORMANCE (v2 of this script):
   - Uses bisect for M15 epoch lookups (O(log n) instead of O(n))
-  - Runs v3 ONLY on bars where v1 has no signal (that's the point of cascade)
-  - Reduces H1 sample to 3000 bars (enough for 4 windows, ~2× faster)
+  - Runs v3 ONLY on bars where v1 has no signal (cascade logic)
+  - Reduced H1 sample to 3500 bars
 """
 
 import bisect
@@ -277,7 +277,6 @@ def main():
             continue
         log(f"  H1: {len(h1)}  D1: {len(d1)}  M15: {len(m15)}")
 
-        # Pre-build epoch lists for bisect lookups
         d1_epochs = [c["epoch"] for c in d1]
         m15_epochs = [c["epoch"] for c in m15]
 
@@ -306,7 +305,6 @@ def main():
 
                 last_h1_epoch = h1_window[-1]["epoch"]
 
-                # ---- D1 bias via bisect ----
                 d1_end_idx = bisect.bisect_right(d1_epochs, last_h1_epoch)
                 if d1_end_idx < 20:
                     continue
@@ -323,7 +321,7 @@ def main():
                     continue
                 spread = SPREAD_ATR_FRAC * atr_h1
 
-                # ---- Baseline v1 ----
+                # ---- v1 baseline ----
                 try:
                     base_pats = detect_continuation_signals(h1_window, d1_window)
                 except Exception:
@@ -340,8 +338,7 @@ def main():
                     base_trades.append(trade)
                     per_window_raw[w + 1]["base"].append(trade)
 
-                # ---- v3: only run on bars where v1 didn't fire ----
-                # (Cascade logic: H1 first; if H1 has a fresh touch, skip M15.)
+                # ---- v3: only runs when v1 has no fresh touch ----
                 if base_touches:
                     continue
 
