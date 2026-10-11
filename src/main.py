@@ -1,8 +1,7 @@
 """Live orchestrator — runs hourly on the GitHub Actions schedule.
 
-Fetches H1 + D1 for each recommended pair, runs the continuation detector,
-sends signals to Telegram when a fresh OB touch fires on the last completed
-H1 candle, and records each sent signal as a pending trade for the monitor.
+Uses the EQ-gated continuation detector. Sends every EQ signal that fires
+(no daily cap). Records each signal as a pending trade for the monitor.
 """
 
 import time
@@ -13,7 +12,7 @@ from .config import (
     CANDLE_COUNT, HTF_CANDLE_COUNT,
 )
 from .deriv_client import fetch_candles
-from .continuation import detect_continuation_signals
+from .continuation_eq import detect_continuation_signals_eq, compute_score
 from .telegram_client import send_signal
 from .state_store import (
     load_state, save_state, already_sent, in_cooldown, record_sent,
@@ -39,7 +38,6 @@ def main():
             print(f"[{symbol}] fetch failed: {e}")
             continue
 
-        # Use only fully-closed candles
         h1 = _drop_in_progress(h1, GRANULARITY, now)
         d1 = _drop_in_progress(d1, HTF_GRANULARITY, now)
 
@@ -48,7 +46,7 @@ def main():
             continue
 
         try:
-            pats = detect_continuation_signals(h1, d1)
+            pats = detect_continuation_signals_eq(h1, d1)
         except Exception:
             print(f"[{symbol}] detect failed:\n{traceback.format_exc()}")
             continue
@@ -68,6 +66,8 @@ def main():
                 print(f"[{symbol}] skip (cooldown active for {direction_label})")
                 continue
 
+            score = compute_score(p)
+
             try:
                 send_signal(
                     symbol=symbol,
@@ -78,6 +78,7 @@ def main():
                     rr=p.rr,
                     target_kind=p.target_kind,
                     bias=p.direction,
+                    score=score,
                 )
                 record_sent(state, symbol, direction_label, sig, now)
                 add_pending_trade(
@@ -96,13 +97,15 @@ def main():
                     f"[{symbol}] SENT {p.direction} "
                     f"entry={p.entry:.5f} sl={p.stop:.5f} "
                     f"tp={p.target:.5f} rr=1:{p.rr:.2f} "
+                    f"score={score:.1f} "
+                    f"confluences={','.join(p.confluences)} "
                     f"target_kind={p.target_kind}"
                 )
             except Exception as e:
                 print(f"[{symbol}] telegram send failed: {e}")
 
         if len(pats) > 0:
-            print(f"[{symbol}] checked: {len(pats)} patterns, "
+            print(f"[{symbol}] detected: {len(pats)} patterns, "
                   f"{len(fresh_touches)} fresh touches")
 
     save_state(state)
