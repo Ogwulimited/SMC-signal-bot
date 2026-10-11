@@ -1,6 +1,6 @@
 # Experiment: M15 OB Refinement
 
-**Generated:** 2026-10-09T20:46:25Z
+**Generated:** 2026-10-11T07:02:58Z
 
 ## Hypothesis
 
@@ -21,20 +21,20 @@ Refining H1 OBs to a tighter M15 OB inside the same zone will improve R:R (tight
 
 | Metric | Baseline (H1 entry) | Refined (M15 or fallback) | M15-only (refined cases) |
 |--------|---------------------|---------------------------|---------------------------|
-| Signals | 272 | 272 | 102 |
+| Signals | 275 | 275 | 103 |
 | Wins | 97 | 84 | 24 |
-| Losses | 173 | 186 | 78 |
+| Losses | 176 | 189 | 79 |
 | Timeouts | 2 | 2 | 0 |
-| **Win rate** | **35.9%** | **31.1%** | **23.5%** |
-| Avg R:R (all) | 3.83 | 4.93 | 6.80 |
-| Avg R:R (wins) | 3.19 | 3.96 | 5.62 |
-| **Expectancy** | **+0.503 R** | **+0.538 R** | **+0.558 R** |
-| Net R | +136.9 | +146.2 | +56.9 |
+| **Win rate** | **35.5%** | **30.8%** | **23.3%** |
+| Avg R:R (all) | 3.82 | 4.93 | 6.81 |
+| Avg R:R (wins) | 3.19 | 3.95 | 5.62 |
+| **Expectancy** | **+0.487 R** | **+0.521 R** | **+0.543 R** |
+| Net R | +133.8 | +143.2 | +55.9 |
 
 ## Refinement Coverage
 
-- Signals where M15 OB found (refined): **102**
-- Signals with no M15 OB (fallback to H1): **170**
+- Signals where M15 OB found (refined): **103**
+- Signals with no M15 OB (fallback to H1): **172**
 - Refinement rate: **37.5%**
 
 ## R:R Distribution
@@ -43,18 +43,18 @@ Refining H1 OBs to a tighter M15 OB inside the same zone will improve R:R (tight
 |--------|----------|---------------|
 | min | 1.42 | 1.42 |
 | p25 | 2.34 | 2.67 |
-| median | 3.27 | 3.78 |
-| p75 | 4.88 | 6.29 |
+| median | 3.28 | 3.78 |
+| p75 | 4.86 | 6.29 |
 | max | 11.51 | 22.84 |
-| mean | 3.83 | 4.93 |
+| mean | 3.82 | 4.93 |
 
 ## Per-Window Breakdown
 
 | Window | Signals | Base WR | Base Exp | Refined WR | Refined Exp |
 |--------|---------|---------|----------|------------|-------------|
-| W1 | 59 | 32.2% | +0.203 | 25.4% | +0.184 |
-| W2 | 102 | 35.6% | +0.476 | 32.7% | +0.558 |
-| W3 | 51 | 43.1% | +0.725 | 37.3% | +0.941 |
+| W1 | 60 | 33.3% | +0.232 | 26.7% | +0.245 |
+| W2 | 103 | 34.3% | +0.433 | 31.4% | +0.496 |
+| W3 | 52 | 42.3% | +0.692 | 36.5% | +0.903 |
 | W4 | 60 | 33.9% | +0.656 | 28.8% | +0.507 |
 
 ## Verdict
