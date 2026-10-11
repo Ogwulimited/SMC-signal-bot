@@ -1,9 +1,7 @@
-"""Backtest: v3 (multi-TF + flexible confluence) vs v1 baseline.
+"""Backtest v3 vs v1 baseline. MASSIVELY reduced sample for speed.
 
-PERFORMANCE (v2 of this script):
-  - Uses bisect for M15 epoch lookups (O(log n) instead of O(n))
-  - Runs v3 ONLY on bars where v1 has no signal (cascade logic)
-  - Reduced H1 sample to 3500 bars
+Runtime target: <20 min. If this still hangs, the detector itself
+needs restructuring, which is a separate project.
 """
 
 import bisect
@@ -25,10 +23,11 @@ from .multi_tf_liquidity import detect_continuation_signals_v3
 
 
 M15_GRANULARITY = 900
-BACKTEST_H1_CANDLES = 3500
-BACKTEST_M15_CANDLES = 15000
-WARMUP_BARS = 500
-N_WINDOWS = 4
+BACKTEST_H1_CANDLES = 1200       # small sample, ~15 min runtime
+BACKTEST_M15_CANDLES = 5000
+WARMUP_BARS = 300
+N_WINDOWS = 3                    # 3 windows for smaller sample
+V3_SAMPLE_EVERY = 2              # run v3 on every 2nd bar only
 
 
 def log(m):
@@ -101,20 +100,6 @@ def _agg(trades):
             "net_r": net_r, "avg_rr_won": avg_rr_won, "avg_rr_all": avg_rr_all}
 
 
-def _rr_stats(trades):
-    if not trades:
-        return {}
-    rrs = sorted(t["rr_eff"] for t in trades)
-    n = len(rrs)
-
-    def pct(p):
-        idx = max(0, min(n - 1, int(p * (n - 1))))
-        return rrs[idx]
-    return {"n": n, "min": rrs[0], "p25": pct(0.25),
-            "median": statistics.median(rrs), "p75": pct(0.75),
-            "max": rrs[-1], "mean": sum(rrs) / n}
-
-
 def _confluence_breakdown(trades):
     kinds = {}
     for t in trades:
@@ -151,30 +136,17 @@ def _tf_breakdown(trades):
     return rows
 
 
-def _write_report(base_agg, v3_agg, base_rr, v3_rr,
-                   v3_confluences, v3_tfs, per_window_rows, config_snap):
+def _write_report(base_agg, v3_agg, v3_confluences, v3_tfs,
+                   per_window_rows, config_snap):
     out_dir = os.path.join(REPORTS_DIR, "experiments")
     os.makedirs(out_dir, exist_ok=True)
     gen = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    with open(os.path.join(out_dir, "multi_tf_latest.json"), "w") as f:
-        json.dump({
-            "generated": gen, "config": config_snap,
-            "baseline_agg": base_agg, "v3_agg": v3_agg,
-            "baseline_rr": base_rr, "v3_rr": v3_rr,
-            "v3_confluences": v3_confluences,
-            "v3_tf_breakdown": v3_tfs,
-            "per_window": per_window_rows,
-        }, f, indent=2)
-
     md = []
-    md.append("# Experiment: Multi-TF OB Cascade + Flexible Confluence (v3)\n")
+    md.append("# Experiment: Multi-TF Cascade + Flexible Confluence (v3, small sample)\n")
     md.append(f"**Generated:** {gen}\n")
-    md.append("## Hypothesis\n")
-    md.append("Cascading H1 → M15 OB detection, combined with 'any one of "
-              "{FVG, EQH/EQL, IDM, time-based liq} is sufficient' for "
-              "confluence, will increase signal count while maintaining "
-              "expectancy.\n")
+    md.append("> **Note:** reduced sample (1200 H1 bars, 3 windows, sampled v3). "
+              "Directional signal only — not a full statistical result.\n")
 
     md.append("## Configuration\n")
     md.append("| Parameter | Value |")
@@ -197,15 +169,7 @@ def _write_report(base_agg, v3_agg, base_rr, v3_rr,
     md.append(f"| Net R | {base_agg['net_r']:+.1f} | {v3_agg['net_r']:+.1f} |")
     md.append("")
 
-    md.append("## R:R Distribution\n")
-    md.append("| Metric | Baseline | v3 |")
-    md.append("|--------|----------|-----|")
-    for key in ["min", "p25", "median", "p75", "max", "mean"]:
-        md.append(f"| {key} | {base_rr.get(key, 0):.2f} | {v3_rr.get(key, 0):.2f} |")
-    md.append("")
-
     md.append("## v3 — Confluence-Type Breakdown\n")
-    md.append("(A trade can have multiple confluences; counts can exceed signal count.)\n")
     md.append("| Confluence | Trades | Wins | Losses | WR |")
     md.append("|------------|--------|------|--------|-----|")
     for k in v3_confluences:
@@ -220,8 +184,8 @@ def _write_report(base_agg, v3_agg, base_rr, v3_rr,
     md.append("")
 
     md.append("## Per-Window Breakdown\n")
-    md.append("| Window | Base signals | Base WR | Base Exp | v3 signals | v3 WR | v3 Exp |")
-    md.append("|--------|--------------|---------|----------|------------|-------|--------|")
+    md.append("| Window | Base n | Base WR | Base Exp | v3 n | v3 WR | v3 Exp |")
+    md.append("|--------|--------|---------|----------|------|-------|--------|")
     for row in per_window_rows:
         md.append(
             f"| W{row['window']} | {row['base_n']} | "
@@ -233,17 +197,17 @@ def _write_report(base_agg, v3_agg, base_rr, v3_rr,
     md.append("## Verdict\n")
     delta = v3_agg["expectancy"] - base_agg["expectancy"]
     sig_gain = v3_agg["n"] - base_agg["n"]
-    if delta > 0.05 and sig_gain > 0:
+    if base_agg["n"] < 15:
+        md.append("⚠️ Sample too small for a verdict. Rerun with larger sample if needed.")
+    elif delta > 0.05 and sig_gain > 0:
         md.append(f"✅ v3 improves expectancy by {delta:+.3f} R while adding "
-                  f"{sig_gain} signals. Promote candidate.")
-    elif delta > -0.05 and sig_gain > 20:
-        md.append(f"⚖️ Expectancy roughly flat ({delta:+.3f} R), but v3 delivers "
-                  f"{sig_gain} more signals. Trade-off — decide based on signal "
-                  "frequency needs.")
+                  f"{sig_gain} signals.")
+    elif delta > -0.05 and sig_gain > 10:
+        md.append(f"⚖️ Expectancy roughly flat ({delta:+.3f} R), v3 adds {sig_gain} signals.")
     elif delta > 0:
-        md.append(f"⚖️ Marginal expectancy gain ({delta:+.3f} R).")
+        md.append(f"⚖️ Marginal gain ({delta:+.3f} R).")
     else:
-        md.append(f"❌ v3 hurts expectancy ({delta:+.3f} R). Reject.")
+        md.append(f"❌ v3 hurts expectancy ({delta:+.3f} R).")
     md.append("")
 
     with open(os.path.join(out_dir, "multi_tf_latest.md"), "w") as f:
@@ -254,7 +218,7 @@ def _write_report(base_agg, v3_agg, base_rr, v3_rr,
 
 def main():
     random.seed(42)
-    log(f"Multi-TF experiment — {len(RECOMMENDED_PAIRS)} pairs (optimized)")
+    log(f"Multi-TF experiment v3 (small sample) — {len(RECOMMENDED_PAIRS)} pairs")
 
     base_trades = []
     v3_trades = []
@@ -321,7 +285,6 @@ def main():
                     continue
                 spread = SPREAD_ATR_FRAC * atr_h1
 
-                # ---- v1 baseline ----
                 try:
                     base_pats = detect_continuation_signals(h1_window, d1_window)
                 except Exception:
@@ -338,8 +301,10 @@ def main():
                     base_trades.append(trade)
                     per_window_raw[w + 1]["base"].append(trade)
 
-                # ---- v3: only runs when v1 has no fresh touch ----
+                # Skip v3 on most bars — cascade + sampling
                 if base_touches:
+                    continue
+                if (i - s) % V3_SAMPLE_EVERY != 0:
                     continue
 
                 m15_end_idx = bisect.bisect_right(m15_epochs, last_h1_epoch)
@@ -373,8 +338,6 @@ def main():
 
     base_agg = _agg(base_trades)
     v3_agg = _agg(v3_trades)
-    base_rr = _rr_stats(base_trades)
-    v3_rr = _rr_stats(v3_trades)
     v3_confluences = _confluence_breakdown(v3_trades)
     v3_tfs = _tf_breakdown(v3_trades)
 
@@ -395,8 +358,7 @@ def main():
             "base_n": b["n"], "base_wr": b["wr"], "base_exp": b["expectancy"],
             "v3_n": v["n"], "v3_wr": v["wr"], "v3_exp": v["expectancy"],
         })
-        log(f"  W{w}: base n={b['n']} WR={b['wr']:.1f}% exp={b['expectancy']:+.3f} | "
-            f"v3 n={v['n']} WR={v['wr']:.1f}% exp={v['expectancy']:+.3f}")
+        log(f"  W{w}: base n={b['n']} WR={b['wr']:.1f}% | v3 n={v['n']} WR={v['wr']:.1f}%")
 
     if failed:
         log(f"\n  FAILED SYMBOLS ({len(failed)}): {', '.join(failed)}")
@@ -405,13 +367,12 @@ def main():
         "pairs": len(RECOMMENDED_PAIRS),
         "h1_candles": BACKTEST_H1_CANDLES,
         "m15_candles": BACKTEST_M15_CANDLES,
-        "min_rr": 1.5,
-        "min_ob_width_atr": 0.30,
-        "buffer_atr": 0.20,
-        "note": "v3 runs only on bars without v1 signal",
+        "warmup_bars": WARMUP_BARS,
+        "n_windows": N_WINDOWS,
+        "v3_sample_every": V3_SAMPLE_EVERY,
     }
-    _write_report(base_agg, v3_agg, base_rr, v3_rr,
-                   v3_confluences, v3_tfs, per_window_rows, config_snap)
+    _write_report(base_agg, v3_agg, v3_confluences, v3_tfs,
+                   per_window_rows, config_snap)
 
 
 if __name__ == "__main__":
