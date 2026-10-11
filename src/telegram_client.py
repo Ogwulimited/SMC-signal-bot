@@ -67,7 +67,7 @@ def _post_to_telegram(text):
 # ---------------- signal message ----------------
 
 def _format_signal(symbol_display, direction, entry, stop, target, rr,
-                   target_kind, bias):
+                   target_kind, bias, score):
     arrow = "🟢" if direction == "bullish" else "🔴"
     dir_label = "BUY" if direction == "bullish" else "SELL"
     bias_label = "Bullish" if bias == "bullish" else "Bearish"
@@ -83,15 +83,17 @@ def _format_signal(symbol_display, direction, entry, stop, target, rr,
         f"Stop Loss: {stop:.5f}\n"
         f"Take Profit: {target:.5f}\n"
         f"R:R 1:{rr:.2f}\n"
-        f"Target: {_pretty_target_kind(target_kind)}\n\n"
+        f"Target: {_pretty_target_kind(target_kind)}\n"
+        f"Score: {score:.1f}\n\n"
         f"#{asset} #{symbol_display} #{dir_label} #SMC"
     )
 
 
-def send_signal(symbol, direction, entry, stop, target, rr, target_kind, bias):
+def send_signal(symbol, direction, entry, stop, target, rr,
+                target_kind, bias, score=0.0):
     text = _format_signal(
         _pretty_symbol(symbol), direction, entry, stop, target, rr,
-        target_kind, bias,
+        target_kind, bias, score,
     )
     return _post_to_telegram(text)
 
@@ -112,13 +114,12 @@ def _format_outcome(symbol_display, direction, outcome, exit_price,
     r_str = f"{rr_actual:+.2f}R" if rr_actual is not None else "n/a"
     dur = _format_duration(duration_seconds)
 
-    body = (
+    return (
         f"{header}\n\n"
         f"Exit: {exit_price:.5f}{(' (' + note + ')') if note else ''}\n"
         f"R-multiple: {r_str}\n"
         f"Duration: {dur}"
     )
-    return body
 
 
 def send_trade_outcome(symbol, direction, outcome, exit_price,
