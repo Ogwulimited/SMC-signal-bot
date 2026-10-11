@@ -1,7 +1,7 @@
-"""Backtest: compare confluence rules A-F under identical conditions.
+"""Backtest: compare confluence rules A–G (AND logic) under identical conditions.
 
 Same pairs, same period, same entry/stop/target logic.
-Detection runs ONCE at the most permissive rule (any-of-four).
+Detection runs ONCE at the most permissive rule.
 Signals are then filtered post-hoc into each rule.
 
 Also includes a look-ahead audit section documenting that signal
@@ -24,7 +24,7 @@ from ..deriv_client import fetch_candles_paginated
 from ..smc import compute_atr
 from ..continuation import detect_htf_bias
 from .h1_cascade import detect_h1_cascade_signals
-from .confluence_rules import RULES, flags_from_confluences
+from .confluence_rules import RULES, RULE_DESCRIPTIONS, flags_from_confluences
 
 
 BACKTEST_H1_CANDLES = 2500
@@ -110,13 +110,14 @@ def _write_report(rule_aggs, per_window_by_rule, base_confluence_stats, config_s
     gen = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     md = []
-    md.append("# Experiment: Confluence Rule Comparison (A–F)\n")
+    md.append("# Experiment: Confluence Rule Comparison (A–G, AND logic)\n")
     md.append(f"**Generated:** {gen}\n")
 
     md.append("## Hypothesis\n")
-    md.append("Compare OB quality gates under identical conditions to answer: "
-              "is the flexible rule profitable because the extra confluences "
-              "identify better setups, or simply because it generates more trades?\n")
+    md.append("Compare OB quality gates using AND logic (requiring combinations "
+              "of confluences) under identical conditions. Determine whether "
+              "requiring additional confluences on top of FVG improves quality, "
+              "and whether FVG itself adds value (Rule G control).\n")
 
     md.append("## Configuration\n")
     md.append("| Parameter | Value |")
@@ -125,17 +126,11 @@ def _write_report(rule_aggs, per_window_by_rule, base_confluence_stats, config_s
         md.append(f"| {k} | {v} |")
     md.append("")
 
-    md.append("## Rule Definitions\n")
+    md.append("## Rule Definitions (AND logic)\n")
     md.append("| Rule | Logic |")
     md.append("|------|-------|")
-    md.append("| A | FVG required only |")
-    md.append("| B | FVG OR EQH/EQL |")
-    md.append("| C | FVG OR inducement sweep |")
-    md.append("| D | FVG OR time-based liquidity |")
-    md.append("| E | Any of the four (current flexible rule) |")
-    md.append("| F2 | At least 2 of the four |")
-    md.append("| F3 | At least 3 of the four |")
-    md.append("| F4 | All 4 present |")
+    for rule_name, desc in RULE_DESCRIPTIONS.items():
+        md.append(f"| {rule_name} | {desc} |")
     md.append("")
 
     md.append("## Results by Rule\n")
@@ -153,7 +148,7 @@ def _write_report(rule_aggs, per_window_by_rule, base_confluence_stats, config_s
         )
     md.append("")
 
-    md.append("## Confluence Coverage in the Full Flexible Set (Rule E)\n")
+    md.append("## Confluence Coverage in the Full Set (any signal, regardless of rule)\n")
     md.append("| Confluence | Signals | % of Total | WR | Expectancy |")
     md.append("|------------|---------|------------|-----|------------|")
     for name, stats in base_confluence_stats.items():
@@ -163,10 +158,17 @@ def _write_report(rule_aggs, per_window_by_rule, base_confluence_stats, config_s
         )
     md.append("")
 
-    md.append("## Per-Window — Rule E (any of four)\n")
+    md.append("## Per-Window — Rule A (FVG only, current live)\n")
     md.append("| Window | Signals | WR | Expectancy |")
     md.append("|--------|---------|-----|------------|")
-    for row in per_window_by_rule.get("E_any_of_four", []):
+    for row in per_window_by_rule.get("A_FVG_only", []):
+        md.append(f"| W{row['window']} | {row['n']} | {row['wr']:.1f}% | {row['expectancy']:+.3f} |")
+    md.append("")
+
+    md.append("## Per-Window — Rule G (EQH/EQL only)\n")
+    md.append("| Window | Signals | WR | Expectancy |")
+    md.append("|--------|---------|-----|------------|")
+    for row in per_window_by_rule.get("G_EQ_only", []):
         md.append(f"| W{row['window']} | {row['n']} | {row['wr']:.1f}% | {row['expectancy']:+.3f} |")
     md.append("")
 
@@ -190,20 +192,39 @@ def _write_report(rule_aggs, per_window_by_rule, base_confluence_stats, config_s
               "to measure outcomes — this is correct.\n")
 
     md.append("## Verdict\n")
-    e_a = rule_aggs.get("E_any_of_four", {})
-    a_a = rule_aggs.get("A_FVG_only", {})
-    if a_a.get("n", 0) > 0 and e_a.get("n", 0) > 0:
-        sig_ratio = e_a["n"] / a_a["n"] if a_a["n"] else 0
-        wr_delta = e_a["wr"] - a_a["wr"]
-        net_ratio = e_a["net_r"] / a_a["net_r"] if a_a["net_r"] else 0
-        md.append(f"- Rule E vs Rule A: **{sig_ratio:.1f}× more signals**, "
-                  f"WR {wr_delta:+.1f} pp, **{net_ratio:.1f}× net R**")
-        if e_a["wr"] > a_a["wr"]:
-            md.append("- Flexible rule is NOT just more trades — its WR is higher than FVG-only.")
-        else:
-            md.append("- Flexible rule gains are mostly from trade count, not quality.")
-    md.append("")
 
+    a_a = rule_aggs.get("A_FVG_only", {})
+    g_a = rule_aggs.get("G_EQ_only", {})
+    b_a = rule_aggs.get("B_FVG_AND_EQ", {})
+
+    if g_a.get("n", 0) > 0 and a_a.get("n", 0) > 0:
+        wr_delta = g_a["wr"] - a_a["wr"]
+        exp_delta = g_a["expectancy"] - a_a["expectancy"]
+        md.append(f"- **Rule A (FVG only):** {a_a['n']} signals, "
+                  f"{a_a['wr']:.1f}% WR, {a_a['expectancy']:+.3f} R expectancy")
+        md.append(f"- **Rule G (EQ only):** {g_a['n']} signals, "
+                  f"{g_a['wr']:.1f}% WR, {g_a['expectancy']:+.3f} R expectancy")
+        md.append(f"- Delta G vs A: WR {wr_delta:+.1f} pp, expectancy {exp_delta:+.3f} R")
+        if exp_delta > 0.05:
+            md.append("- **EQ-only beats FVG-only.** FVG is not the strongest confluence.")
+        elif exp_delta < -0.05:
+            md.append("- **FVG-only beats EQ-only.** FVG adds real value.")
+        else:
+            md.append("- FVG-only and EQ-only are similar in quality.")
+
+    if b_a.get("n", 0) > 0 and a_a.get("n", 0) > 0:
+        md.append("")
+        md.append(f"- **Rule B (FVG AND EQ):** {b_a['n']} signals, "
+                  f"{b_a['wr']:.1f}% WR, {b_a['expectancy']:+.3f} R expectancy")
+        delta_b = b_a["expectancy"] - a_a["expectancy"]
+        if delta_b > 0.05:
+            md.append("- Requiring EQ on top of FVG **improves** expectancy.")
+        elif delta_b < -0.05:
+            md.append("- Requiring EQ on top of FVG **hurts** expectancy.")
+        else:
+            md.append("- Adding EQ to FVG is roughly neutral.")
+
+    md.append("")
     md.append("**Best rule by net R:** see the Results table above.\n")
 
     with open(os.path.join(out_dir, "confluence_rules_latest.md"), "w") as f:
@@ -214,9 +235,9 @@ def _write_report(rule_aggs, per_window_by_rule, base_confluence_stats, config_s
 
 def main():
     random.seed(42)
-    log(f"Confluence rule comparison — {len(RECOMMENDED_PAIRS)} pairs")
+    log(f"Confluence rule comparison (AND logic) — {len(RECOMMENDED_PAIRS)} pairs")
 
-    all_records = []  # each: {"rule_flags": {...}, "outcome": ..., "rr_eff": ..., "window": ...}
+    all_records = []
     failed = []
 
     for sym_idx, sym in enumerate(RECOMMENDED_PAIRS, 1):
@@ -297,9 +318,8 @@ def main():
                         "rr_eff": round(r["rr"], 2),
                     })
 
-    log(f"\nTotal flexible signals: {len(all_records)}")
+    log(f"\nTotal signals detected (permissive): {len(all_records)}")
 
-    # Apply each rule
     rule_aggs = {}
     per_window_by_rule = {}
     for rule_name, rule_fn in RULES.items():
@@ -313,22 +333,20 @@ def main():
             pw.append({"window": w, "n": a["n"], "wr": a["wr"], "expectancy": a["expectancy"]})
         per_window_by_rule[rule_name] = pw
 
-    # Confluence coverage breakdown for rule E
-    total_e = len(all_records)
+    total = len(all_records)
     coverage = {}
     for flag_name in ["fvg", "eq", "idm", "time"]:
         subset = [r for r in all_records if r["flags"][flag_name]]
         a = _agg(subset)
         coverage[flag_name.upper()] = {
             "n": a["n"],
-            "pct": (a["n"] / total_e * 100) if total_e else 0,
+            "pct": (a["n"] / total * 100) if total else 0,
             "wr": a["wr"],
             "expectancy": a["expectancy"],
         }
 
-    # Log
     log("\n" + "=" * 70)
-    log("RESULTS BY RULE")
+    log("RESULTS BY RULE (AND logic)")
     log("=" * 70)
     log(f"{'Rule':22s} {'Signals':>8s} {'WR':>6s} {'AvgRR':>6s} {'ExpR':>8s} {'NetR':>8s}")
     for rule_name in RULES:
@@ -340,7 +358,7 @@ def main():
             f"{a['expectancy']:+8.3f} {a['net_r']:+8.1f}")
 
     log("\n" + "=" * 70)
-    log("CONFLUENCE COVERAGE (in flexible set)")
+    log("CONFLUENCE COVERAGE (in full permissive set)")
     log("=" * 70)
     for name, stats in coverage.items():
         log(f"  {name:10s} n={stats['n']:5d}  ({stats['pct']:5.1f}%)  "
@@ -354,7 +372,7 @@ def main():
         "h1_candles": BACKTEST_H1_CANDLES,
         "warmup_bars": WARMUP_BARS,
         "n_windows": N_WINDOWS,
-        "note": "Detection once at rule E; filtering applied post-hoc for each rule.",
+        "note": "Detection once at permissive level; AND filters applied post-hoc for each rule.",
     }
     _write_report(rule_aggs, per_window_by_rule, coverage, config_snap)
 
