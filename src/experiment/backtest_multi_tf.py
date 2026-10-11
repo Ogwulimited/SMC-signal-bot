@@ -1,11 +1,12 @@
-"""Backtest: v3 (multi-TF OB + flexible confluence) vs v1 baseline.
+"""Backtest: v3 (multi-TF + flexible confluence) vs v1 baseline.
 
-Simulates both detectors on the same bars. Compares signal count,
-WR, R:R, expectancy, and confluence-type coverage.
-
-Writes reports/experiments/multi_tf_latest.md
+PERFORMANCE:
+  - Uses bisect for M15 epoch lookups (O(log n) instead of O(n))
+  - Runs v3 ONLY on bars where v1 has no signal (that's the point of cascade)
+  - Reduces H1 sample to 3000 bars (enough for 4 windows, ~2× faster)
 """
 
+import bisect
 import json
 import os
 import random
@@ -24,8 +25,8 @@ from .multi_tf_liquidity import detect_continuation_signals_v3
 
 
 M15_GRANULARITY = 900
-BACKTEST_H1_CANDLES = 6000
-BACKTEST_M15_CANDLES = 24000
+BACKTEST_H1_CANDLES = 3500
+BACKTEST_M15_CANDLES = 15000
 WARMUP_BARS = 500
 N_WINDOWS = 4
 
@@ -171,7 +172,7 @@ def _write_report(base_agg, v3_agg, base_rr, v3_rr,
     md.append(f"**Generated:** {gen}\n")
     md.append("## Hypothesis\n")
     md.append("Cascading H1 → M15 OB detection, combined with 'any one of "
-              "{FVG, EQH/EQL, IDM, time-based liquidity} is sufficient' for "
+              "{FVG, EQH/EQL, IDM, time-based liq} is sufficient' for "
               "confluence, will increase signal count while maintaining "
               "expectancy.\n")
 
@@ -253,7 +254,7 @@ def _write_report(base_agg, v3_agg, base_rr, v3_rr,
 
 def main():
     random.seed(42)
-    log(f"Multi-TF experiment — {len(RECOMMENDED_PAIRS)} pairs")
+    log(f"Multi-TF experiment — {len(RECOMMENDED_PAIRS)} pairs (optimized)")
 
     base_trades = []
     v3_trades = []
@@ -276,6 +277,10 @@ def main():
             continue
         log(f"  H1: {len(h1)}  D1: {len(d1)}  M15: {len(m15)}")
 
+        # Pre-build epoch lists for bisect lookups
+        d1_epochs = [c["epoch"] for c in d1]
+        m15_epochs = [c["epoch"] for c in m15]
+
         n = len(h1)
         usable_start = WARMUP_BARS
         usable_end = n - MAX_HORIZON_BARS - 3
@@ -288,9 +293,8 @@ def main():
         for w in range(N_WINDOWS):
             s = usable_start + w * win_size
             e = s + win_size if w < N_WINDOWS - 1 else usable_end
-            log(f"  W{w+1}: scanning bars {s}..{e}")
+            log(f"  W{w+1}: bars {s}..{e}")
 
-            # Cache D1 bias for the window
             cached_bias_epoch = None
             cached_bias = None
 
@@ -300,17 +304,24 @@ def main():
                 if len(h1_window) < 50:
                     continue
 
-                d1_window = [c for c in d1 if c["epoch"] <= h1_window[-1]["epoch"]]
-                if not d1_window:
+                last_h1_epoch = h1_window[-1]["epoch"]
+
+                # ---- D1 bias via bisect ----
+                d1_end_idx = bisect.bisect_right(d1_epochs, last_h1_epoch)
+                if d1_end_idx < 20:
                     continue
-                latest_d1_epoch = d1_window[-1]["epoch"]
+                d1_window = d1[:d1_end_idx]
+                latest_d1_epoch = d1_epochs[d1_end_idx - 1]
                 if latest_d1_epoch != cached_bias_epoch:
                     cached_bias = detect_htf_bias(d1_window)
                     cached_bias_epoch = latest_d1_epoch
                 if cached_bias is None:
                     continue
 
-                spread = SPREAD_ATR_FRAC * (compute_atr(h1_window, ATR_PERIOD) or 0)
+                atr_h1 = compute_atr(h1_window, ATR_PERIOD)
+                if atr_h1 is None:
+                    continue
+                spread = SPREAD_ATR_FRAC * atr_h1
 
                 # ---- Baseline v1 ----
                 try:
@@ -318,22 +329,27 @@ def main():
                 except Exception:
                     base_pats = []
                 base_touches = [p for p in base_pats if p.touch_index == len(h1_window) - 1]
+
                 for p in base_touches:
                     r = simulate(h1, p.entry, p.stop, p.target,
                                  p.direction, i, spread)
                     if r is None:
                         continue
-                    trade = {
-                        "window": w + 1, "symbol": sym,
-                        "outcome": r["outcome"],
-                        "rr_eff": round(r["rr"], 2),
-                    }
+                    trade = {"window": w + 1, "symbol": sym,
+                             "outcome": r["outcome"], "rr_eff": round(r["rr"], 2)}
                     base_trades.append(trade)
                     per_window_raw[w + 1]["base"].append(trade)
 
-                # ---- v3 ----
-                # M15 window up to the same epoch as last H1 bar
-                m15_window = [c for c in m15 if c["epoch"] <= h1_window[-1]["epoch"]]
+                # ---- v3: only run on bars where v1 didn't fire ----
+                # (Cascade logic: H1 first; if H1 has a fresh touch, skip M15.)
+                if base_touches:
+                    continue
+
+                m15_end_idx = bisect.bisect_right(m15_epochs, last_h1_epoch)
+                if m15_end_idx < 50:
+                    continue
+                m15_window = m15[:m15_end_idx]
+
                 try:
                     v3_pats = detect_continuation_signals_v3(
                         h1_window, m15_window, d1_window,
@@ -350,8 +366,7 @@ def main():
                         continue
                     trade = {
                         "window": w + 1, "symbol": sym,
-                        "outcome": r["outcome"],
-                        "rr_eff": round(r["rr"], 2),
+                        "outcome": r["outcome"], "rr_eff": round(r["rr"], 2),
                         "entry_tf": p.entry_tf,
                         "confluences": p.confluences,
                         "target_kind": p.target_kind,
@@ -369,10 +384,10 @@ def main():
     log("\n" + "=" * 70)
     log("RESULTS")
     log("=" * 70)
-    log(f"  Baseline v1: n={base_agg['n']}  WR={base_agg['wr']:.1f}%  "
-        f"exp={base_agg['expectancy']:+.3f}R  netR={base_agg['net_r']:+.1f}")
-    log(f"  v3:          n={v3_agg['n']}  WR={v3_agg['wr']:.1f}%  "
-        f"exp={v3_agg['expectancy']:+.3f}R  netR={v3_agg['net_r']:+.1f}")
+    log(f"  Baseline: n={base_agg['n']}  WR={base_agg['wr']:.1f}%  "
+        f"exp={base_agg['expectancy']:+.3f}R")
+    log(f"  v3:       n={v3_agg['n']}  WR={v3_agg['wr']:.1f}%  "
+        f"exp={v3_agg['expectancy']:+.3f}R")
 
     per_window_rows = []
     for w in range(1, N_WINDOWS + 1):
@@ -396,6 +411,7 @@ def main():
         "min_rr": 1.5,
         "min_ob_width_atr": 0.30,
         "buffer_atr": 0.20,
+        "note": "v3 runs only on bars without v1 signal",
     }
     _write_report(base_agg, v3_agg, base_rr, v3_rr,
                    v3_confluences, v3_tfs, per_window_rows, config_snap)
