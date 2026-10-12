@@ -17,17 +17,5 @@
     "frxEURUSD|bearish": 1791291174,
     "cryETHUSD|bearish": 1791824710
   },
-  "pending_trades": [
-    {
-      "id": "cryETHUSD|bearish|1791824710|2527.83",
-      "symbol": "cryETHUSD",
-      "direction": "bearish",
-      "entry": 2527.83,
-      "stop": 2536.9615285714285,
-      "target": 2499.535,
-      "rr": 3.0986049902457284,
-      "target_kind": "ny_low",
-      "sent_epoch": 1791824710
-    }
-  ]
+  "pending_trades": []
 }
