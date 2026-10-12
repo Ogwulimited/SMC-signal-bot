@@ -7,13 +7,27 @@
     "frxEURUSD|M15|bearish|15|71",
     "frxUSDJPY|bullish|157.6185",
     "frxCADJPY|bearish|110.889",
-    "frxEURUSD|bearish|1.12548"
+    "frxEURUSD|bearish|1.12548",
+    "cryETHUSD|bearish|2527.83"
   ],
   "last_sent": {
     "frxEURUSD|sell": 1790814169,
     "frxUSDJPY|bullish": 1791188904,
     "frxCADJPY|bearish": 1791263556,
-    "frxEURUSD|bearish": 1791291174
+    "frxEURUSD|bearish": 1791291174,
+    "cryETHUSD|bearish": 1791824710
   },
-  "pending_trades": []
+  "pending_trades": [
+    {
+      "id": "cryETHUSD|bearish|1791824710|2527.83",
+      "symbol": "cryETHUSD",
+      "direction": "bearish",
+      "entry": 2527.83,
+      "stop": 2536.9615285714285,
+      "target": 2499.535,
+      "rr": 3.0986049902457284,
+      "target_kind": "ny_low",
+      "sent_epoch": 1791824710
+    }
+  ]
 }
