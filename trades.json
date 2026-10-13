@@ -84,6 +84,23 @@
       "rr_actual": -1.0,
       "duration_seconds": 1491,
       "note": "SL hit (extreme 83562.89900)"
+    },
+    {
+      "id": "frxEURNZD|bullish|1791882315|1.99624",
+      "symbol": "frxEURNZD",
+      "direction": "bullish",
+      "entry": 1.99624,
+      "stop": 1.9948735714285715,
+      "target": 1.99851,
+      "rr_planned": 1.6612650287506798,
+      "target_kind": "ny_high",
+      "sent_epoch": 1791882315,
+      "exit_epoch": 1791882900,
+      "exit_price": 1.9948735714285715,
+      "outcome": "loss",
+      "rr_actual": -1.0,
+      "duration_seconds": 585,
+      "note": "SL hit (extreme 1.99435)"
     }
   ]
 }

@@ -21,17 +21,5 @@
     "cryBTCUSD|bearish": 1791860709,
     "frxEURNZD|bullish": 1791882315
   },
-  "pending_trades": [
-    {
-      "id": "frxEURNZD|bullish|1791882315|1.99624",
-      "symbol": "frxEURNZD",
-      "direction": "bullish",
-      "entry": 1.99624,
-      "stop": 1.9948735714285715,
-      "target": 1.99851,
-      "rr": 1.6612650287506798,
-      "target_kind": "ny_high",
-      "sent_epoch": 1791882315
-    }
-  ]
+  "pending_trades": []
 }
