@@ -9,7 +9,8 @@
     "frxCADJPY|bearish|110.889",
     "frxEURUSD|bearish|1.12548",
     "cryETHUSD|bearish|2527.83",
-    "cryBTCUSD|bearish|82974.178"
+    "cryBTCUSD|bearish|82974.178",
+    "frxEURNZD|bullish|1.99624"
   ],
   "last_sent": {
     "frxEURUSD|sell": 1790814169,
@@ -17,7 +18,20 @@
     "frxCADJPY|bearish": 1791263556,
     "frxEURUSD|bearish": 1791291174,
     "cryETHUSD|bearish": 1791824710,
-    "cryBTCUSD|bearish": 1791860709
+    "cryBTCUSD|bearish": 1791860709,
+    "frxEURNZD|bullish": 1791882315
   },
-  "pending_trades": []
+  "pending_trades": [
+    {
+      "id": "frxEURNZD|bullish|1791882315|1.99624",
+      "symbol": "frxEURNZD",
+      "direction": "bullish",
+      "entry": 1.99624,
+      "stop": 1.9948735714285715,
+      "target": 1.99851,
+      "rr": 1.6612650287506798,
+      "target_kind": "ny_high",
+      "sent_epoch": 1791882315
+    }
+  ]
 }
