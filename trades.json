@@ -101,6 +101,23 @@
       "rr_actual": -1.0,
       "duration_seconds": 585,
       "note": "SL hit (extreme 1.99435)"
+    },
+    {
+      "id": "frxAUDCAD|bearish|1791911110|0.99232",
+      "symbol": "frxAUDCAD",
+      "direction": "bearish",
+      "entry": 0.99232,
+      "stop": 0.9928928571428571,
+      "target": 0.9891,
+      "rr_planned": 5.620947630922598,
+      "target_kind": "weekly_low",
+      "sent_epoch": 1791911110,
+      "exit_epoch": 1791916200,
+      "exit_price": 0.9928928571428571,
+      "outcome": "loss",
+      "rr_actual": -1.0,
+      "duration_seconds": 5090,
+      "note": "SL hit (extreme 0.99298)"
     }
   ]
 }
