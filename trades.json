@@ -67,6 +67,23 @@
       "rr_actual": 3.0986049902457284,
       "duration_seconds": 15890,
       "note": "TP reached (extreme 2488.56500)"
+    },
+    {
+      "id": "cryBTCUSD|bearish|1791860709|82974.178",
+      "symbol": "cryBTCUSD",
+      "direction": "bearish",
+      "entry": 82974.178,
+      "stop": 83235.22835714286,
+      "target": 82367.91,
+      "rr_planned": 2.3224178148441474,
+      "target_kind": "london_low",
+      "sent_epoch": 1791860709,
+      "exit_epoch": 1791862200,
+      "exit_price": 83235.22835714286,
+      "outcome": "loss",
+      "rr_actual": -1.0,
+      "duration_seconds": 1491,
+      "note": "SL hit (extreme 83562.89900)"
     }
   ]
 }
