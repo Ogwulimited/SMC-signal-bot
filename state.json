@@ -24,17 +24,5 @@
     "frxEURNZD|bullish": 1791882315,
     "frxAUDCAD|bearish": 1791911110
   },
-  "pending_trades": [
-    {
-      "id": "frxUSDJPY|bullish|1791939913|158.3395",
-      "symbol": "frxUSDJPY",
-      "direction": "bullish",
-      "entry": 158.3395,
-      "stop": 158.28478571428573,
-      "target": 158.467,
-      "rr": 2.3302872062681206,
-      "target_kind": "london_high",
-      "sent_epoch": 1791939913
-    }
-  ]
+  "pending_trades": []
 }
