@@ -135,6 +135,23 @@
       "rr_actual": 2.3302872062681206,
       "duration_seconds": 587,
       "note": "TP reached (extreme 158.51700)"
+    },
+    {
+      "id": "frxCADJPY|bearish|1792011912|111.24",
+      "symbol": "frxCADJPY",
+      "direction": "bearish",
+      "entry": 111.24000000000001,
+      "stop": 111.32727142857142,
+      "target": 111.005,
+      "rr_planned": 2.6927484039947607,
+      "target_kind": "ny_low",
+      "sent_epoch": 1792011912,
+      "exit_epoch": 1792026900,
+      "exit_price": 111.005,
+      "outcome": "win",
+      "rr_actual": 2.6927484039947607,
+      "duration_seconds": 14988,
+      "note": "TP reached (extreme 110.99500)"
     }
   ]
 }

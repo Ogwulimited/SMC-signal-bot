@@ -29,17 +29,6 @@
   },
   "pending_trades": [
     {
-      "id": "frxCADJPY|bearish|1792011912|111.24",
-      "symbol": "frxCADJPY",
-      "direction": "bearish",
-      "entry": 111.24000000000001,
-      "stop": 111.32727142857142,
-      "target": 111.005,
-      "rr": 2.6927484039947607,
-      "target_kind": "ny_low",
-      "sent_epoch": 1792011912
-    },
-    {
       "id": "frxGBPNZD|bullish|1792026309|2.35904",
       "symbol": "frxGBPNZD",
       "direction": "bullish",
