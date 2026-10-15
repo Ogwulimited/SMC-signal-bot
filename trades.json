@@ -169,6 +169,23 @@
       "rr_actual": 2.3494894965370574,
       "duration_seconds": 1491,
       "note": "TP reached (extreme 2.36242)"
+    },
+    {
+      "id": "frxEURAUD|bullish|1792065908|1.62097",
+      "symbol": "frxEURAUD",
+      "direction": "bullish",
+      "entry": 1.62097,
+      "stop": 1.6190042857142857,
+      "target": 1.6274271428571427,
+      "rr_planned": 3.2848837209300568,
+      "target_kind": "synthetic",
+      "sent_epoch": 1792065908,
+      "exit_epoch": 1792075500,
+      "exit_price": 1.6190042857142857,
+      "outcome": "loss",
+      "rr_actual": -1.0,
+      "duration_seconds": 9592,
+      "note": "SL hit (extreme 1.61822)"
     }
   ]
 }

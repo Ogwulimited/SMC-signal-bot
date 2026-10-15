@@ -29,17 +29,5 @@
     "frxGBPNZD|bullish": 1792026309,
     "frxEURAUD|bullish": 1792065908
   },
-  "pending_trades": [
-    {
-      "id": "frxEURAUD|bullish|1792065908|1.62097",
-      "symbol": "frxEURAUD",
-      "direction": "bullish",
-      "entry": 1.62097,
-      "stop": 1.6190042857142857,
-      "target": 1.6274271428571427,
-      "rr": 3.2848837209300568,
-      "target_kind": "synthetic",
-      "sent_epoch": 1792065908
-    }
-  ]
+  "pending_trades": []
 }
