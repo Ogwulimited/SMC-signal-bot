@@ -27,17 +27,5 @@
     "frxAUDCAD|bearish": 1791911110,
     "frxGBPNZD|bullish": 1792026309
   },
-  "pending_trades": [
-    {
-      "id": "frxGBPNZD|bullish|1792026309|2.35904",
-      "symbol": "frxGBPNZD",
-      "direction": "bullish",
-      "entry": 2.3590400000000002,
-      "stop": 2.357822714285714,
-      "target": 2.3619,
-      "rr": 2.3494894965370574,
-      "target_kind": "asia_high",
-      "sent_epoch": 1792026309
-    }
-  ]
+  "pending_trades": []
 }

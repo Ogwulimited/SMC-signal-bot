@@ -152,6 +152,23 @@
       "rr_actual": 2.6927484039947607,
       "duration_seconds": 14988,
       "note": "TP reached (extreme 110.99500)"
+    },
+    {
+      "id": "frxGBPNZD|bullish|1792026309|2.35904",
+      "symbol": "frxGBPNZD",
+      "direction": "bullish",
+      "entry": 2.3590400000000002,
+      "stop": 2.357822714285714,
+      "target": 2.3619,
+      "rr_planned": 2.3494894965370574,
+      "target_kind": "asia_high",
+      "sent_epoch": 1792026309,
+      "exit_epoch": 1792027800,
+      "exit_price": 2.3619,
+      "outcome": "win",
+      "rr_actual": 2.3494894965370574,
+      "duration_seconds": 1491,
+      "note": "TP reached (extreme 2.36242)"
     }
   ]
 }
