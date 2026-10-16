@@ -186,6 +186,23 @@
       "rr_actual": -1.0,
       "duration_seconds": 9592,
       "note": "SL hit (extreme 1.61822)"
+    },
+    {
+      "id": "cryBTCUSD|bearish|1792173910|81424.8525",
+      "symbol": "cryBTCUSD",
+      "direction": "bearish",
+      "entry": 81424.85250000001,
+      "stop": 81730.50722857143,
+      "target": 80355.817,
+      "rr_planned": 3.4975264573740237,
+      "target_kind": "weekly_low",
+      "sent_epoch": 1792173910,
+      "exit_epoch": 1792183500,
+      "exit_price": 81730.50722857143,
+      "outcome": "loss",
+      "rr_actual": -1.0,
+      "duration_seconds": 9590,
+      "note": "SL hit (extreme 81756.01400)"
     }
   ]
 }

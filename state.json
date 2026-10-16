@@ -30,17 +30,5 @@
     "frxGBPNZD|bullish": 1792026309,
     "frxEURAUD|bullish": 1792065908
   },
-  "pending_trades": [
-    {
-      "id": "cryBTCUSD|bearish|1792173910|81424.8525",
-      "symbol": "cryBTCUSD",
-      "direction": "bearish",
-      "entry": 81424.85250000001,
-      "stop": 81730.50722857143,
-      "target": 80355.817,
-      "rr": 3.4975264573740237,
-      "target_kind": "weekly_low",
-      "sent_epoch": 1792173910
-    }
-  ]
+  "pending_trades": []
 }
