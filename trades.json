@@ -203,6 +203,23 @@
       "rr_actual": -1.0,
       "duration_seconds": 9590,
       "note": "SL hit (extreme 81756.01400)"
+    },
+    {
+      "id": "cryBTCUSD|bearish|1792361109|81114.8535",
+      "symbol": "cryBTCUSD",
+      "direction": "bearish",
+      "entry": 81114.8535,
+      "stop": 81251.69872857144,
+      "target": 80769.79,
+      "rr_planned": 2.521560332078744,
+      "target_kind": "PDL",
+      "sent_epoch": 1792361109,
+      "exit_epoch": 1792361700,
+      "exit_price": 81251.69872857144,
+      "outcome": "loss",
+      "rr_actual": -1.0,
+      "duration_seconds": 591,
+      "note": "SL hit (extreme 81674.15900)"
     }
   ]
 }
