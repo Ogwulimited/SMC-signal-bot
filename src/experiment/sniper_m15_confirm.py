@@ -74,19 +74,22 @@ def detect_sniper_signals(h1_window, m15_window, d1_candles):
     if last_h1["low"] <= ob_high and last_h1["high"] >= ob_low:
         
         # 6. M15 Confirmation: Look for a CHoCH in the last 5 M15 candles
-        if len(m15_window) < 20: return []
-        m15_swings = find_swings(m15_window[-20:], 2)
+        # FIX: Take a slice of 30 candles, so indices are 0-29
+        m15_recent = m15_window[-30:]
+        if len(m15_recent) < 30: return []
+        
+        m15_swings = find_swings(m15_recent, 2)
         if not m15_swings: return []
         
-        m15_bos, m15_choch, m15_trend = detect_bos_choch(m15_window[-20:], m15_swings)
+        m15_bos, m15_choch, m15_trend = detect_bos_choch(m15_recent, m15_swings)
         
         valid_confirmation = False
-        # We need an M15 CHoCH in the same direction, occurring in the last 4 candles
+        # Check if a CHoCH happened in the last 5 candles of the 30-candle slice
         if direction == "up" and m15_trend == "up":
-            if any(c.index > len(m15_window) - 5 for c in m15_choch):
+            if any(c.index >= 25 for c in m15_choch):
                 valid_confirmation = True
         elif direction == "down" and m15_trend == "down":
-            if any(c.index > len(m15_window) - 5 for c in m15_choch):
+            if any(c.index >= 25 for c in m15_choch):
                 valid_confirmation = True
         
         if valid_confirmation:
@@ -116,7 +119,7 @@ def detect_sniper_signals(h1_window, m15_window, d1_candles):
                     out.append(SniperPattern(
                         direction=direction,
                         h1_ob_high=ob_high, h1_ob_low=ob_low, h1_entry=entry,
-                        m15_choch_index=m15_choch[-1].index,
+                        m15_choch_index=25, # Just a dummy index for the report
                         stop=stop, target=target, rr=rr
                     ))
     return out
