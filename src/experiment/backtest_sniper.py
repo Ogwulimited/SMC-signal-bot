@@ -1,56 +1,149 @@
-"""Backtest: Sniper Model."""
+"""Backtest for the Sniper Model (HTF POI + LTF Confirmation).
 
-import bisect, os
-from ..config import RECOMMENDED_PAIRS, GRANULARITY, HTF_GRANULARITY, HTF_CANDLE_COUNT, REPORTS_DIR
+Simulates the H1 Sweep -> CHoCH -> OB -> M15 Confirmation -> DOL model.
+Writes a formatted report to reports/experiments/sniper_latest.md
+"""
+
+import bisect
+import os
+from datetime import datetime, timezone
+
+from ..config import (
+    GRANULARITY, HTF_GRANULARITY, HTF_CANDLE_COUNT, 
+    MAX_HORIZON_BARS, ATR_PERIOD, REPORTS_DIR
+)
 from ..deriv_client import fetch_candles_paginated
+from ..smc import compute_atr
 from .sniper_m15_confirm import detect_sniper_signals
 
-# Hardcoded core 11 for this test
-CORE_11 = ["frxNZDUSD", "frxAUDJPY", "frxAUDNZD", "frxGBPAUD", "frxEURCAD", "frxUSDJPY", "frxEURUSD", "frxUSDSEK", "frxGBPCHF", "frxCADJPY", "frxGBPJPY"]
+CORE_11 = [
+    "frxNZDUSD", "frxAUDJPY", "frxAUDNZD", "frxGBPAUD", "frxEURCAD",
+    "frxUSDJPY", "frxEURUSD", "frxUSDSEK", "frxGBPCHF", "frxCADJPY", "frxGBPJPY"
+]
+
 M15_GRANULARITY = 900
+BACKTEST_H1_CANDLES = 3000  # Keep H1 slightly smaller, M15 fetch takes time
+BACKTEST_M15_CANDLES = 12000
+WARMUP_BARS = 200
 
-def main():
-    trades = []
-    for sym in CORE_11:
-        h1 = fetch_candles_paginated(sym, GRANULARITY, 2500)
-        m15 = fetch_candles_paginated(sym, M15_GRANULARITY, 8000)
-        d1 = fetch_candles_paginated(sym, HTF_GRANULARITY, HTF_CANDLE_COUNT)
-        
-        if not h1 or not m15 or not d1: continue
+def log(m):
+    print(m, flush=True)
 
-        for i in range(200, len(h1)):
-            h1_window = h1[:i+1]
-            # Filter M15 to match H1 timestamp
-            current_epoch = h1_window[-1]["epoch"]
-            m15_window = [c for c in m15 if c["epoch"] <= current_epoch]
-            if len(m15_window) < 50: continue
+def simulate(candles, entry, stop, target, direction, start_idx):
+    """Simulate the trade forward on H1 candles."""
+    end = min(start_idx + MAX_HORIZON_BARS, len(candles))
+    for k in range(start_idx + 1, end):
+        c = candles[k]
+        if direction == "bullish" or direction == "up":
+            if c["low"] <= stop: return "loss", 1.0
+            if c["high"] >= target: return "win", (target - entry) / (entry - stop)
+        else:
+            if c["high"] >= stop: return "loss", 1.0
+            if c["low"] <= target: return "win", (entry - target) / (stop - entry)
+    return "timeout", 0.0
 
-            pats = detect_sniper_signals(h1_window, m15_window, d1)
-            for p in pats:
-                # Simulate outcome using H1 candles (since trade spans hours/days)
-                outcome = "timeout"
-                for k in range(i+1, min(i+50, len(h1))):
-                    if p.direction == "up":
-                        if h1[k]["low"] <= p.stop: outcome = "loss"; break
-                        if h1[k]["high"] >= p.target: outcome = "win"; break
-                    else:
-                        if h1[k]["high"] >= p.stop: outcome = "loss"; break
-                        if h1[k]["low"] <= p.target: outcome = "win"; break
-                
-                rr = 3.0 if outcome == "win" else (-1.0 if outcome == "loss" else 0.0)
-                trades.append({"outcome": outcome, "rr": rr})
+def _write_report(trades, config_snap):
+    out_dir = os.path.join(REPORTS_DIR, "experiments")
+    os.makedirs(out_dir, exist_ok=True)
+    gen = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    wins = [t for t in trades if t["outcome"] == "win"]
+    losses = [t for t in trades if t["outcome"] == "loss"]
+    timeouts = [t for t in trades if t["outcome"] == "timeout"]
     
-    wins = sum(1 for t in trades if t["outcome"] == "win")
-    losses = sum(1 for t in trades if t["outcome"] == "loss")
-    wr = (wins / (wins+losses) * 100) if (wins+losses) > 0 else 0
-    net_r = (wins * 3.0) - losses
+    resolved = len(wins) + len(losses)
+    wr = (len(wins) / resolved * 100) if resolved > 0 else 0
+    net_r = sum(t["rr"] for t in wins) - len(losses)
     exp = net_r / len(trades) if trades else 0
 
-    print(f"\n--- SNIPER MODEL RESULTS ---")
-    print(f"Signals: {len(trades)}")
-    print(f"Win Rate: {wr:.1f}%")
-    print(f"Expectancy: {exp:+.3f} R")
-    print(f"Net R: {net_r:+.1f}")
+    md = []
+    md.append("# Experiment: Sniper Model (Sweep -> CHoCH -> OB + LTF)\n")
+    md.append(f"**Generated:** {gen}\n")
+    md.append("## Hypothesis\n")
+    md.append("Integrating Liquidity Sweeps, CHoCH, Draw on Liquidity, and M15 confirmation "
+              "will drastically reduce signal count but massively increase Win Rate and Expectancy.\n")
+
+    md.append("## Configuration\n")
+    md.append("| Parameter | Value |")
+    md.append("|-----------|-------|")
+    for k, v in config_snap.items():
+        md.append(f"| {k} | {v} |")
+    md.append("")
+
+    md.append("## Results\n")
+    md.append(f"- **Signals:** {len(trades)}")
+    md.append(f"- **Wins:** {len(wins)}")
+    md.append(f"- **Losses:** {len(losses)}")
+    md.append(f"- **Timeouts:** {len(timeouts)}")
+    md.append(f"- **Win Rate:** **{wr:.1f}%**")
+    md.append(f"- **Expectancy:** **{exp:+.3f} R**")
+    md.append(f"- **Net R:** **{net_r:+.1f}**")
+    md.append("")
+
+    if wins:
+        md.append(f"- Avg Win R:R: {sum(t['rr'] for t in wins) / len(wins):.2f} R")
+
+    with open(os.path.join(out_dir, "sniper_latest.md"), "w") as f:
+        f.write("\n".join(md))
+    
+    log(f"\nReport written to {out_dir}/sniper_latest.md")
+
+
+def main():
+    log(f"Sniper Model Backtest — {len(CORE_11)} pairs")
+    all_trades = []
+
+    for sym_idx, sym in enumerate(CORE_11, 1):
+        log(f"[{sym_idx}/{len(CORE_11)}] Fetching {sym}...")
+        try:
+            h1 = fetch_candles_paginated(sym, GRANULARITY, BACKTEST_H1_CANDLES)
+            m15 = fetch_candles_paginated(sym, M15_GRANULARITY, BACKTEST_M15_CANDLES)
+            d1 = fetch_candles_paginated(sym, HTF_GRANULARITY, HTF_CANDLE_COUNT)
+        except Exception as e:
+            log(f"  Fetch failed: {e}")
+            continue
+
+        if not h1 or not m15 or not d1: 
+            log("  Insufficient data.")
+            continue
+
+        m15_epochs = [c["epoch"] for c in m15]
+        
+        # Loop through H1 historical data
+        for i in range(WARMUP_BARS, len(h1) - MAX_HORIZON_BARS - 1):
+            h1_window = h1[:i+1]
+            current_epoch = h1_window[-1]["epoch"]
+
+            # Get M15 candles up to the current H1 bar
+            m15_end_idx = bisect.bisect_right(m15_epochs, current_epoch)
+            if m15_end_idx < 50:
+                continue
+            m15_window = m15[:m15_end_idx]
+            d1_window = d1[:bisect.bisect_right([c["epoch"] for c in d1], current_epoch)]
+
+            # Detect setups
+            pats = detect_sniper_signals(h1_window, m15_window, d1_window)
+
+            for p in pats:
+                outcome, rr = simulate(h1, p.h1_entry, p.stop, p.target, p.direction, i)
+                all_trades.append({
+                    "outcome": outcome,
+                    "rr": round(rr, 2),
+                    "symbol": sym,
+                    "direction": p.direction
+                })
+
+    if not all_trades:
+        log("No signals found.")
+        return
+
+    config_snap = {
+        "pairs": len(CORE_11),
+        "h1_candles": BACKTEST_H1_CANDLES,
+        "m15_candles": BACKTEST_M15_CANDLES,
+        "min_rr": 2.0
+    }
+    _write_report(all_trades, config_snap)
 
 if __name__ == "__main__":
     main()
