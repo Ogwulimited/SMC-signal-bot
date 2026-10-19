@@ -1,8 +1,4 @@
-"""Backtest for the Sniper Model (HTF POI + LTF Confirmation).
-
-Simulates the H1 Sweep -> CHoCH -> OB -> M15 Confirmation -> DOL model.
-Writes a formatted report to reports/experiments/sniper_latest.md
-"""
+"""Backtest for the Sniper Model (HTF POI + LTF Confirmation)."""
 
 import bisect
 import os
@@ -22,7 +18,7 @@ CORE_11 = [
 ]
 
 M15_GRANULARITY = 900
-BACKTEST_H1_CANDLES = 3000  # Keep H1 slightly smaller, M15 fetch takes time
+BACKTEST_H1_CANDLES = 3000
 BACKTEST_M15_CANDLES = 12000
 WARMUP_BARS = 200
 
@@ -30,7 +26,6 @@ def log(m):
     print(m, flush=True)
 
 def simulate(candles, entry, stop, target, direction, start_idx):
-    """Simulate the trade forward on H1 candles."""
     end = min(start_idx + MAX_HORIZON_BARS, len(candles))
     for k in range(start_idx + 1, end):
         c = candles[k]
@@ -114,14 +109,12 @@ def main():
             h1_window = h1[:i+1]
             current_epoch = h1_window[-1]["epoch"]
 
-            # Get M15 candles up to the current H1 bar
             m15_end_idx = bisect.bisect_right(m15_epochs, current_epoch)
             if m15_end_idx < 50:
                 continue
             m15_window = m15[:m15_end_idx]
             d1_window = d1[:bisect.bisect_right([c["epoch"] for c in d1], current_epoch)]
 
-            # Detect setups
             pats = detect_sniper_signals(h1_window, m15_window, d1_window)
 
             for p in pats:
@@ -133,10 +126,7 @@ def main():
                     "direction": p.direction
                 })
 
-    if not all_trades:
-        log("No signals found.")
-        return
-
+    # REMOVED the early return so the report ALWAYS generates
     config_snap = {
         "pairs": len(CORE_11),
         "h1_candles": BACKTEST_H1_CANDLES,
