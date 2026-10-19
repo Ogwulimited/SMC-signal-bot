@@ -12,6 +12,7 @@ from typing import List, Optional
 
 from ..smc import (
     find_swings, find_liquidity_pools, find_time_based_liquidity, compute_atr,
+    detect_bos_choch,
 )
 from ..fvg import find_fvgs_in_range
 from ..config import (
@@ -20,7 +21,7 @@ from ..config import (
     CONT_MAX_OB_AGE, HTF_SWING_LOOKBACK, USE_TIME_BASED_LIQUIDITY,
     PREFER_MAJOR_LIQ_ATR,
 )
-from .continuation_eq import (
+from ..continuation_eq import (
     UPSIDE_KINDS, DOWNSIDE_KINDS, MAJOR_UPSIDE, MAJOR_DOWNSIDE,
     TIME_UPSIDE, TIME_DOWNSIDE, SYNTHETIC_TARGET_ATR
 )
@@ -47,10 +48,6 @@ def detect_htf_bias(d1_candles) -> Optional[str]:
     if not d1_candles or len(d1_candles) < HTF_SWING_LOOKBACK * 2 + 10: return None
     swings = find_swings(d1_candles, HTF_SWING_LOOKBACK)
     if not swings: return None
-    # Assuming detect_bos_choch is available or we just use a simple trend check
-    # For this isolated experiment, we'll infer bias from the last 20 days structure
-    # (Fallback if smc.detect_bos_choch isn't imported)
-    from ..smc import detect_bos_choch
     _, _, trend = detect_bos_choch(d1_candles, swings)
     return "bullish" if trend == "up" else ("bearish" if trend == "down" else None)
 
