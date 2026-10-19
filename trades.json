@@ -220,6 +220,23 @@
       "rr_actual": -1.0,
       "duration_seconds": 591,
       "note": "SL hit (extreme 81674.15900)"
+    },
+    {
+      "id": "cryETHUSD|bearish|1792375509|2418.895",
+      "symbol": "cryETHUSD",
+      "direction": "bearish",
+      "entry": 2418.895,
+      "stop": 2432.618678571429,
+      "target": 2397.005,
+      "rr_planned": 1.5950533879139488,
+      "target_kind": "asia_low",
+      "sent_epoch": 1792375509,
+      "exit_epoch": 1792377900,
+      "exit_price": 2432.618678571429,
+      "outcome": "loss",
+      "rr_actual": -1.0,
+      "duration_seconds": 2391,
+      "note": "SL hit (extreme 2437.50500)"
     }
   ]
 }
