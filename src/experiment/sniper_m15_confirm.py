@@ -1,7 +1,7 @@
 """Sniper Model: H1 Sweep -> CHoCH -> OB + M15 Confirmation -> DOL Target."""
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 from ..smc import find_swings, detect_bos_choch, compute_atr, find_liquidity_pools, detect_sweeps
 from ..config import ATR_PERIOD, SWING_LOOKBACK, BUFFER_ATR
 
@@ -39,7 +39,6 @@ def detect_sniper_signals(h1_window, m15_window, d1_candles):
     # We need a recent sweep and a recent CHoCH
     if not sweeps or not h1_choch: return []
     
-    # Look at the most recent sweep
     recent_sweep = sweeps[-1]
     sweep_idx = recent_sweep.index
     
@@ -52,8 +51,7 @@ def detect_sniper_signals(h1_window, m15_window, d1_candles):
 
     if not valid_choch: return []
     
-    # Direction of the trade is the direction of the CHoCH
-    direction = valid_choch.direction # "up" or "down"
+    direction = valid_choch.direction 
     
     # Check D1 alignment
     if (d1_trend == "up" and direction != "up") or (d1_trend == "down" and direction != "down"):
@@ -75,47 +73,46 @@ def detect_sniper_signals(h1_window, m15_window, d1_candles):
     # 5. Check if price is currently tapping the H1 OB
     if last_h1["low"] <= ob_high and last_h1["high"] >= ob_low:
         
-        # 6. M15 Confirmation: Look for a CHoCH in the last 3 M15 candles inside the OB
+        # 6. M15 Confirmation: Look for a CHoCH in the last 5 M15 candles
+        if len(m15_window) < 20: return []
         m15_swings = find_swings(m15_window[-20:], 2)
         if not m15_swings: return []
         
         m15_bos, m15_choch, m15_trend = detect_bos_choch(m15_window[-20:], m15_swings)
         
         valid_confirmation = False
+        # We need an M15 CHoCH in the same direction, occurring in the last 4 candles
         if direction == "up" and m15_trend == "up":
-            if any(c.index > len(m15_window) - 4 for c in m15_choch):
+            if any(c.index > len(m15_window) - 5 for c in m15_choch):
                 valid_confirmation = True
         elif direction == "down" and m15_trend == "down":
-            if any(c.index > len(m15_window) - 4 for c in m15_choch):
+            if any(c.index > len(m15_window) - 5 for c in m15_choch):
                 valid_confirmation = True
         
         if valid_confirmation:
             # 7. Find the Draw on Liquidity (Target)
             target = None
             if direction == "up":
-                # Target the nearest unswept high
                 for p in sorted([p for p in pools if p.price > entry and not p.swept], key=lambda x: x.price):
                     target = p.price
                     break
-                stop = recent_sweep.pool_price - (BUFFER_ATR * h1_atr) # Stop below the original sweep
+                stop = recent_sweep.pool_price - (BUFFER_ATR * h1_atr)
             else:
                 for p in sorted([p for p in pools if p.price < entry and not p.swept], key=lambda x: -x.price):
                     target = p.price
                     break
                 stop = recent_sweep.pool_price + (BUFFER_ATR * h1_atr)
                 
-            # If no major liquidity found, use a fixed 3R target
             if target is None:
                 risk = (entry - stop) if direction == "up" else (stop - entry)
                 target = entry + (risk * 3.0) if direction == "up" else entry - (risk * 3.0)
 
-            # Calculate RR
             risk = (entry - stop) if direction == "up" else (stop - entry)
             reward = (target - entry) if direction == "up" else (entry - target)
             
             if risk > 0 and reward > 0:
                 rr = reward / risk
-                if rr >= 2.0: # Minimum 2R for this sniper model
+                if rr >= 2.0:
                     out.append(SniperPattern(
                         direction=direction,
                         h1_ob_high=ob_high, h1_ob_low=ob_low, h1_entry=entry,
