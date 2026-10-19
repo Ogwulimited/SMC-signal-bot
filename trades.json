@@ -237,6 +237,23 @@
       "rr_actual": -1.0,
       "duration_seconds": 2391,
       "note": "SL hit (extreme 2437.50500)"
+    },
+    {
+      "id": "frxNZDCAD|bearish|1792415113|0.79892",
+      "symbol": "frxNZDCAD",
+      "direction": "bearish",
+      "entry": 0.798915,
+      "stop": 0.7996891428571429,
+      "target": 0.79478,
+      "rr_planned": 5.341391400627579,
+      "target_kind": "weekly_low",
+      "sent_epoch": 1792415113,
+      "exit_epoch": 1792417500,
+      "exit_price": 0.7996891428571429,
+      "outcome": "loss",
+      "rr_actual": -1.0,
+      "duration_seconds": 2387,
+      "note": "SL hit (extreme 0.80034)"
     }
   ]
 }

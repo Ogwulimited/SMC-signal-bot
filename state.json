@@ -34,17 +34,5 @@
     "frxEURAUD|bullish": 1792065908,
     "frxNZDCAD|bearish": 1792415113
   },
-  "pending_trades": [
-    {
-      "id": "frxNZDCAD|bearish|1792415113|0.79892",
-      "symbol": "frxNZDCAD",
-      "direction": "bearish",
-      "entry": 0.798915,
-      "stop": 0.7996891428571429,
-      "target": 0.79478,
-      "rr": 5.341391400627579,
-      "target_kind": "weekly_low",
-      "sent_epoch": 1792415113
-    }
-  ]
+  "pending_trades": []
 }
