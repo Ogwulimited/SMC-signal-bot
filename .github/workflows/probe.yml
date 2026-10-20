@@ -1,0 +1,19 @@
+name: Dukascopy Probe
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Raw feed check
+        run: |
+          for u in \
+            "https://datafeed.dukascopy.com/datafeed/EURUSD/2024/00/10/10h_ticks.bi5" \
+            "https://datafeed.dukascopy.com/datafeed/EURUSD/2019/00/10/10h_ticks.bi5"; do
+            echo "$u"
+            curl -s -o /tmp/f.bi5 -w "HTTP %{http_code} size=%{size_download} time=%{time_total}\n" -m 30 "$u"
+          done
+      - name: Tool check (recent week)
+        run: |
+          npm install dukascopy-node
+          npx dukascopy-node -i eurusd -from 2024-01-08 -to 2024-01-12 -t h1 -f csv --debug || true
+          find . -name "*.csv" -not -path "./node_modules/*" -exec ls -l {} \;
