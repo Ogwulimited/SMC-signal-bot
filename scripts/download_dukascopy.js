@@ -30,19 +30,14 @@ function getMonths(fromYear, fromMonth, toYear, toMonth) {
   return months;
 }
 
-function fileExists(pair, year, month, priceType) {
-  const dir = path.join(RAW_DIR, pair, TIMEFRAME, priceType);
-  const filename = `${pair}-${year}-${String(month).padStart(2, '0')}.csv`;
-  return fs.existsSync(path.join(dir, filename));
-}
-
 async function downloadMonth(pair, year, month, priceType, retries = 3) {
   const dir = path.join(RAW_DIR, pair, TIMEFRAME, priceType);
   fs.mkdirSync(dir, { recursive: true });
-  const filename = `${pair}-${year}-${String(month).padStart(2, '0')}.csv`;
-  const filepath = path.join(dir, filename);
-
-  if (fs.existsSync(filepath)) {
+  const filename = `${pair}-${TIMEFRAME}-${priceType}-${year}-${String(month).padStart(2, '0')}-01-${year}-${String(month).padStart(2, '0')}-28.csv`;
+  
+  // Find the actual file, as dukascopy-node names it slightly differently
+  const filesBefore = fs.readdirSync(dir);
+  if (filesBefore.length > 0) {
     console.log(`[SKIP] ${pair} ${year}-${month} ${priceType} (already exists)`);
     return;
   }
@@ -53,26 +48,36 @@ async function downloadMonth(pair, year, month, priceType, retries = 3) {
 
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const cmd = `npx dukascopy-node -i ${pair} -from ${from} -to ${to} -t ${TIMEFRAME} -p ${priceType} -f csv -dir ${dir} -v`;
+      // Use the locally installed package, not npx
+      const cmd = `./node_modules/.bin/dukascopy-node -i ${pair} -from ${from} -to ${to} -t ${TIMEFRAME} -p ${priceType} -f csv -dir ${dir} -v`;
       console.log(`[DL] ${pair} ${year}-${month} ${priceType} (attempt ${attempt})`);
       execSync(cmd, { stdio: 'pipe', timeout: 120000 });
-      if (fs.existsSync(filepath) || fs.existsSync(filepath.replace('.csv', '.csv'))) {
-        console.log(`[OK] ${pair} ${year}-${month} ${priceType}`);
-        return;
-      }
-      // dukascopy-node sometimes names the file differently; check directory
-      const files = fs.readdirSync(dir).filter(f => f.includes(`${year}`) && f.includes(`${String(month).padStart(2, '0')}`));
-      if (files.length > 0) {
-        console.log(`[OK] ${pair} ${year}-${month} ${priceType}`);
-        return;
+      
+      const filesAfter = fs.readdirSync(dir);
+      const newFiles = filesAfter.filter(f => !filesBefore.includes(f));
+
+      if (newFiles.length > 0) {
+        const newFilePath = path.join(dir, newFiles[0]);
+        const stats = fs.statSync(newFilePath);
+        if (stats.size > 100) {
+          console.log(`[OK] ${pair} ${year}-${month} ${priceType} (${stats.size} bytes)`);
+          return;
+        } else {
+          console.log(`[FAIL] ${pair} ${year}-${month} ${priceType} (Empty file created, size: ${stats.size})`);
+          fs.unlinkSync(newFilePath); // delete empty file
+        }
+      } else {
+        console.log(`[FAIL] ${pair} ${year}-${month} ${priceType} (No file created)`);
       }
     } catch (err) {
-      console.error(`[FAIL] ${pair} ${year}-${month} ${priceType} (attempt ${attempt}): ${err.message}`);
-      if (attempt < retries) {
-        const backoff = Math.pow(2, attempt) * 1000;
-        console.log(`  Retrying in ${backoff}ms...`);
-        await sleep(backoff);
-      }
+      console.error(`[ERROR] ${pair} ${year}-${month} ${priceType} (attempt ${attempt}): ${err.message}`);
+      if (err.stdout) console.error(err.stdout.toString());
+    }
+    
+    if (attempt < retries) {
+      const backoff = Math.pow(2, attempt) * 1000;
+      console.log(`  Retrying in ${backoff}ms...`);
+      await sleep(backoff);
     }
   }
   console.error(`[GIVE UP] ${pair} ${year}-${month} ${priceType}`);
@@ -81,7 +86,6 @@ async function downloadMonth(pair, year, month, priceType, retries = 3) {
 async function main() {
   console.log('=== Dukascopy Download Script ===');
   console.log(`Test mode: ${TEST_MODE}`);
-  console.log(`RAW_DIR: ${RAW_DIR}`);
 
   if (TEST_MODE) {
     const [year, month] = TEST_MONTH.split('-').map(Number);
@@ -89,7 +93,6 @@ async function main() {
     for (const pt of PRICE_TYPES) {
       await downloadMonth(TEST_PAIR, year, month, pt);
     }
-    console.log('Test download complete.');
     return;
   }
 
@@ -104,7 +107,6 @@ async function main() {
       }
     }
   }
-  console.log('\n=== All downloads complete ===');
 }
 
 main().catch(err => {
