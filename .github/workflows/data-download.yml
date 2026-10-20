@@ -1,0 +1,92 @@
+name: Data Download
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: "Test mode (only download one pair for one month)"
+        type: boolean
+        default: true
+      test_pair:
+        description: "Pair for test mode (e.g., eurusd)"
+        type: string
+        default: "eurusd"
+      test_month:
+        description: "Month for test mode (e.g., 2019-01)"
+        type: string
+        default: "2019-01"
+
+concurrency:
+  group: data-download
+  cancel-in-progress: false
+
+jobs:
+  download-and-process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          pip install pandas pyarrow
+
+      - name: Restore raw data cache
+        id: cache-raw
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: dukascopy-raw-v1
+          restore-keys: |
+            dukascopy-raw-
+
+      - name: Run download script
+        env:
+          TEST_MODE: ${{ github.event.inputs.test_mode }}
+          TEST_PAIR: ${{ github.event.inputs.test_pair }}
+          TEST_MONTH: ${{ github.event.inputs.test_month }}
+        run: node scripts/download_dukascopy.js
+
+      - name: Print test sample (if test mode)
+        if: github.event.inputs.test_mode == 'true'
+        run: |
+          echo "=== Test sample ==="
+          find data/raw -name "*.csv" | head -5
+          echo "Row count:"
+          wc -l data/raw/eurusd/m15/bid/*.csv 2>/dev/null || true
+          echo "First and last timestamps:"
+          head -2 data/raw/eurusd/m15/bid/*.csv 2>/dev/null || true
+          tail -1 data/raw/eurusd/m15/bid/*.csv 2>/dev/null || true
+
+      - name: Run Python resampling and validation
+        run: python -m src.data.load_history
+
+      - name: Save raw data cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/raw
+          key: dukascopy-raw-v1-${{ github.run_id }}
+
+      - name: Commit validation report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/data/ || true
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: update data validation report [skip ci]"
+          git push
