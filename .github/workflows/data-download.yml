@@ -42,8 +42,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python dependencies
-        run: |
-          pip install pandas pyarrow
+        run: pip install pandas pyarrow
+
+      - name: Install Node dependencies
+        run: npm install dukascopy-node
 
       - name: Restore raw data cache
         id: cache-raw
@@ -64,13 +66,10 @@ jobs:
       - name: Print test sample (if test mode)
         if: github.event.inputs.test_mode == 'true'
         run: |
-          echo "=== Test sample ==="
-          find data/raw -name "*.csv" | head -5
-          echo "Row count:"
-          wc -l data/raw/eurusd/m15/bid/*.csv 2>/dev/null || true
-          echo "First and last timestamps:"
-          head -2 data/raw/eurusd/m15/bid/*.csv 2>/dev/null || true
-          tail -1 data/raw/eurusd/m15/bid/*.csv 2>/dev/null || true
+          echo "=== Test sample files ==="
+          find data/raw -name "*.csv" -exec ls -lh {} \;
+          echo "=== First 3 lines of file ==="
+          head -3 data/raw/eurusd/m15/bid/*.csv 2>/dev/null || echo "No file found"
 
       - name: Run Python resampling and validation
         run: python -m src.data.load_history
