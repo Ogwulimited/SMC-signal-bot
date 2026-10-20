@@ -6,43 +6,55 @@ const PAIR = process.env.PAIR;
 const TEST_MODE = process.env.TEST_MODE === 'true';
 const START_YEAR = 2019;
 const TIMEFRAME = 'm15';
-const PRICE_TYPE = 'bid'; // Only bid as requested
+const PRICE_TYPE = 'bid'; 
 const RAW_DIR = path.join(__dirname, '..', 'data', 'raw', PAIR, TIMEFRAME, PRICE_TYPE);
 
-// Fast batch settings
 const BATCH_SIZE = 50;
 const BATCH_PAUSE = 500;
 const RETRIES = 5;
 
+let failedYears = [];
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function cleanEmptyFiles() {
+  if (!fs.existsSync(RAW_DIR)) return;
+  const files = fs.readdirSync(RAW_DIR);
+  for (const f of files) {
+    const fp = path.join(RAW_DIR, f);
+    if (fs.statSync(fp).size < 100) {
+      console.log(`[CLEAN] Removing empty/partial file: ${f}`);
+      fs.unlinkSync(fp);
+    }
+  }
 }
 
 function printHelpAndSettings() {
   console.log(`\n=== dukascopy-node Help & Settings for ${PAIR} ===`);
   try {
     const help = execSync(`npx dukascopy-node --help`, { encoding: 'utf8' });
-    // Extract only the relevant lines for the log
     const lines = help.split('\n').filter(l => 
       l.includes('batch-size') || l.includes('batch-pause') || l.includes('retries')
     );
     console.log(lines.join('\n'));
-    console.log(`\n[CONFIG] Using batch-size: ${BATCH_SIZE}, batch-pause: ${BATCH_PAUSE}ms, retries: ${RETRIES}\n`);
-  } catch (err) {
-    console.error("Could not fetch help output.");
-  }
+  } catch (err) {}
 }
 
 async function downloadYear(year, isCurrentYear) {
   fs.mkdirSync(RAW_DIR, { recursive: true });
+  cleanEmptyFiles();
   
   const from = `${year}-01-01`;
   const to = isCurrentYear ? new Date().toISOString().split('T')[0] : `${year}-12-31`;
 
-  // Check if file exists
-  const existingFiles = fs.readdirSync(RAW_DIR).filter(f => f.includes(year.toString()));
-  if (existingFiles.length > 0) {
-    console.log(`[SKIP] ${PAIR} ${year} (file exists)`);
+  // Check if we already have the FULL file for this year
+  const existingFiles = fs.readdirSync(RAW_DIR);
+  const hasFullYear = existingFiles.some(f => f.includes(from) && f.includes(to));
+  
+  if (hasFullYear) {
+    console.log(`[SKIP] ${PAIR} ${year} (full year file exists)`);
     return;
   }
 
@@ -50,67 +62,56 @@ async function downloadYear(year, isCurrentYear) {
     try {
       const cmd = `npx dukascopy-node -i ${PAIR} -from ${from} -to ${to} -t ${TIMEFRAME} -p ${PRICE_TYPE} -f csv -dir ${RAW_DIR} -bs ${BATCH_SIZE} -bp ${BATCH_PAUSE}`;
       console.log(`[DL] ${PAIR} ${year} (attempt ${attempt})`);
-      
-      // 20-minute timeout per command
       execSync(cmd, { stdio: 'inherit', timeout: 1200000 }); 
       
       const filesAfter = fs.readdirSync(RAW_DIR);
-      const newFile = filesAfter.find(f => f.includes(year.toString()));
+      // Strict check: filename must contain both the start and end dates
+      const newFile = filesAfter.find(f => f.includes(from) && f.includes(to));
       
       if (newFile) {
         const filePath = path.join(RAW_DIR, newFile);
-        console.log(`\n[VERIFY] ${newFile}`);
-        
-        // Print first and last timestamps
-        try {
+        if (fs.statSync(filePath).size > 100) {
+          console.log(`\n[VERIFY] ${newFile}`);
           const head = execSync(`head -n 2 ${filePath}`, { encoding: 'utf8' });
           const tail = execSync(`tail -n 1 ${filePath}`, { encoding: 'utf8' });
           console.log(`First: ${head.split('\n')[1] || 'empty'}`);
           console.log(`Last:  ${tail}`);
-          
-          // Verify Dec 31 for full years
-          if (!isCurrentYear && !tail.includes(`${year}-12-31`)) {
-            console.log(`⚠️ Warning: Dec 31 not found in tail for ${year}.`);
-          }
-        } catch (e) {
-          console.log(`Could not read file for verification.`);
+          return;
         }
-        console.log(`[OK] ${PAIR} ${year} downloaded.\n`);
-        return;
       }
+      console.error(`[ERROR] ${PAIR} ${year} downloaded but valid file not found.`);
     } catch (err) {
       console.error(`[ERROR] ${PAIR} ${year} (attempt ${attempt}): ${err.message}`);
     }
     
     if (attempt < RETRIES) {
-      const backoff = Math.pow(2, attempt) * 1000;
-      console.log(`  Retrying in ${backoff}ms...`);
-      await sleep(backoff);
+      await sleep(Math.pow(2, attempt) * 1000);
     }
   }
+  
   console.error(`[GIVE UP] ${PAIR} ${year}`);
+  failedYears.push(year);
 }
 
 async function main() {
-  if (!PAIR) {
-    console.error("No PAIR environment variable set.");
-    process.exit(1);
-  }
-
   printHelpAndSettings();
 
   if (TEST_MODE) {
     console.log(`TEST MODE: Downloading only 2019 for ${PAIR}`);
     await downloadYear(2019, false);
-    return;
+  } else {
+    const currentYear = new Date().getFullYear();
+    for (let year = START_YEAR; year <= currentYear; year++) {
+      await downloadYear(year, year === currentYear);
+    }
   }
-
-  const currentYear = new Date().getFullYear();
-
-  for (let year = START_YEAR; year <= currentYear; year++) {
-    await downloadYear(year, year === currentYear);
-  }
+  
   console.log(`\n=== All downloads complete for ${PAIR} ===`);
+
+  if (failedYears.length > 0) {
+    console.error(`FAILED YEARS: ${failedYears.join(', ')}`);
+    process.exit(1); // Force the GitHub job to turn red
+  }
 }
 
 main().catch(err => {
