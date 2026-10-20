@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       test_mode:
-        description: "Test mode (downloads only 1 month and skips the final Python job)"
+        description: "Test mode (downloads only 1 year and skips the final Python job)"
         type: boolean
         default: true
 
@@ -29,12 +29,14 @@ jobs:
       - name: Install Node dependencies
         run: npm install dukascopy-node
 
+      # Restore previous runs' data (via prefix) or this run's data (via exact match)
       - name: Restore cache for ${{ matrix.pair }}
-        id: cache-restore
         uses: actions/cache/restore@v4
         with:
           path: data/raw/${{ matrix.pair }}
-          key: dukascopy-${{ matrix.pair }}-v3
+          key: dukascopy-${{ matrix.pair }}-v4-${{ github.run_id }}
+          restore-keys: |
+            dukascopy-${{ matrix.pair }}-v4-
 
       - name: Run download script
         env:
@@ -46,12 +48,13 @@ jobs:
           END_TIME=$(date +%s)
           echo "⏱️ Total seconds for ${{ matrix.pair }}: $((END_TIME - START_TIME))"
 
+      # Save using the exact Run ID so process-data can find it precisely
       - name: Save cache for ${{ matrix.pair }}
         if: always()
         uses: actions/cache/save@v4
         with:
           path: data/raw/${{ matrix.pair }}
-          key: dukascopy-${{ matrix.pair }}-v3
+          key: dukascopy-${{ matrix.pair }}-v4-${{ github.run_id }}
 
   process-data:
     needs: download-pair
@@ -73,13 +76,62 @@ jobs:
       - name: Install Python dependencies
         run: pip install pandas pyarrow
 
-      - name: Restore all caches
+      # Explicitly restore using the EXACT run_id key saved by the matrix jobs
+      - name: Restore eurusd
         uses: actions/cache/restore@v4
         with:
-          path: data/raw
-          key: dukascopy-dummy # Won't hit this, but restores via restore-keys
-          restore-keys: |
-            dukascopy-
+          path: data/raw/eurusd
+          key: dukascopy-eurusd-v4-${{ github.run_id }}
+      - name: Restore gbpusd
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/gbpusd
+          key: dukascopy-gbpusd-v4-${{ github.run_id }}
+      - name: Restore usdjpy
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/usdjpy
+          key: dukascopy-usdjpy-v4-${{ github.run_id }}
+      - name: Restore audusd
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/audusd
+          key: dukascopy-audusd-v4-${{ github.run_id }}
+      - name: Restore usdcad
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/usdcad
+          key: dukascopy-usdcad-v4-${{ github.run_id }}
+      - name: Restore usdchf
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/usdchf
+          key: dukascopy-usdchf-v4-${{ github.run_id }}
+      - name: Restore nzdusd
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/nzdusd
+          key: dukascopy-nzdusd-v4-${{ github.run_id }}
+      - name: Restore eurjpy
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/eurjpy
+          key: dukascopy-eurjpy-v4-${{ github.run_id }}
+      - name: Restore gbpjpy
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/gbpjpy
+          key: dukascopy-gbpjpy-v4-${{ github.run_id }}
+      - name: Restore eurgbp
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/eurgbp
+          key: dukascopy-eurgbp-v4-${{ github.run_id }}
+      - name: Restore audjpy
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/audjpy
+          key: dukascopy-audjpy-v4-${{ github.run_id }}
 
       - name: Run Python resampling and validation
         run: python -m src.data.load_history
