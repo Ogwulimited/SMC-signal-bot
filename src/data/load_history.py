@@ -23,14 +23,12 @@ def load_raw_pair(pair: str, price_type: str = "bid") -> pd.DataFrame:
 
     dfs = []
     for f in files:
-        # Check for empty files first
         if os.path.getsize(f) == 0:
             print(f"[WARN] Empty file skipped: {os.path.basename(f)}")
             continue
             
         try:
-            # Dukascopy-node CSV sometimes has no header, but we can infer it.
-            # Standard format: timestamp,open,high,low,close,volume
+            # Dukascopy-node CSV format: timestamp,open,high,low,close,volume
             df = pd.read_csv(f, header=None, names=["timestamp", "open", "high", "low", "close", "volume"])
             dfs.append(df)
         except Exception as e:
@@ -41,7 +39,6 @@ def load_raw_pair(pair: str, price_type: str = "bid") -> pd.DataFrame:
 
     df = pd.concat(dfs, ignore_index=True)
 
-    # Convert timestamp (Dukascopy CSV usually has ms timestamp)
     if pd.api.types.is_numeric_dtype(df["timestamp"]):
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     else:
