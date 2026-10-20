@@ -4,37 +4,66 @@ on:
   workflow_dispatch:
     inputs:
       test_mode:
-        description: "Test mode (only download one pair for one month)"
+        description: "Test mode (downloads only 1 month and skips the final Python job)"
         type: boolean
         default: true
-      test_pair:
-        description: "Pair for test mode (e.g., eurusd)"
-        type: string
-        default: "eurusd"
-      test_month:
-        description: "Month for test mode (e.g., 2019-01)"
-        type: string
-        default: "2019-01"
-
-concurrency:
-  group: data-download
-  cancel-in-progress: false
 
 jobs:
-  download-and-process:
+  download-pair:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: [eurusd, gbpusd, usdjpy, audusd, usdcad, usdchf, nzdusd, eurjpy, gbpjpy, eurgbp, audjpy]
+    
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Node dependencies
+        run: npm install dukascopy-node
+
+      - name: Restore cache for ${{ matrix.pair }}
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/${{ matrix.pair }}
+          key: dukascopy-${{ matrix.pair }}-v3
+
+      - name: Run download script
+        env:
+          TEST_MODE: ${{ github.event.inputs.test_mode }}
+          PAIR: ${{ matrix.pair }}
+        run: |
+          START_TIME=$(date +%s)
+          node scripts/download_dukascopy.js
+          END_TIME=$(date +%s)
+          echo "⏱️ Total seconds for ${{ matrix.pair }}: $((END_TIME - START_TIME))"
+
+      - name: Save cache for ${{ matrix.pair }}
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/raw/${{ matrix.pair }}
+          key: dukascopy-${{ matrix.pair }}-v3
+
+  process-data:
+    needs: download-pair
+    if: ${{ github.event.inputs.test_mode == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: write
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "18"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -44,42 +73,16 @@ jobs:
       - name: Install Python dependencies
         run: pip install pandas pyarrow
 
-      - name: Install Node dependencies
-        run: npm install dukascopy-node
-
-      - name: Restore raw data cache
-        id: cache-raw
-        uses: actions/cache@v4
+      - name: Restore all caches
+        uses: actions/cache/restore@v4
         with:
           path: data/raw
-          key: dukascopy-raw-v1
+          key: dukascopy-dummy # Won't hit this, but restores via restore-keys
           restore-keys: |
-            dukascopy-raw-
-
-      - name: Run download script
-        env:
-          TEST_MODE: ${{ github.event.inputs.test_mode }}
-          TEST_PAIR: ${{ github.event.inputs.test_pair }}
-          TEST_MONTH: ${{ github.event.inputs.test_month }}
-        run: node scripts/download_dukascopy.js
-
-      - name: Print test sample (if test mode)
-        if: github.event.inputs.test_mode == 'true'
-        run: |
-          echo "=== Test sample files ==="
-          find data/raw -name "*.csv" -exec ls -lh {} \;
-          echo "=== First 3 lines of file ==="
-          head -3 data/raw/eurusd/m15/bid/*.csv 2>/dev/null || echo "No file found"
+            dukascopy-
 
       - name: Run Python resampling and validation
         run: python -m src.data.load_history
-
-      - name: Save raw data cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: data/raw
-          key: dukascopy-raw-v1-${{ github.run_id }}
 
       - name: Commit validation report
         run: |
