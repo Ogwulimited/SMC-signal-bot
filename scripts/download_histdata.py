@@ -2,8 +2,9 @@
 
 API: from histdata import download_hist_data as dl
      from histdata.api import Platform as P, TimeFrame as TF
-     dl(year='2023', month='1', pair='eurusd', time_frame=TF.ONE_MINUTE,
-        platform=P.GENERIC_ASCII, output_directory='.')
+     
+     - Past years: dl(year='2023', month=None, pair='eurusd', ...)
+     - Current year: dl(year='2026', month='1', pair='eurusd', ...)
 """
 
 import os
@@ -11,6 +12,7 @@ import sys
 import time
 import glob
 import zipfile
+import requests
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,7 +27,7 @@ START_YEAR = 2016
 RAW_DIR = Path(__file__).parent.parent / "data" / "raw"
 TEST_MODE = os.environ.get("TEST_MODE", "true").lower() == "true"
 TEST_PAIR = os.environ.get("TEST_PAIR", "eurusd")
-TEST_MONTH = os.environ.get("TEST_MONTH", "2023-01")
+TEST_YEAR = os.environ.get("TEST_YEAR", "2023")
 
 
 def latest_complete_month():
@@ -49,62 +51,113 @@ def extract_zip(zip_path, pair_dir):
     return None
 
 
-def download_month(pair, year, month):
+def validate_file(csv_path, pair, year, month=None):
+    """Print file details and check row counts."""
+    if not csv_path or not os.path.exists(csv_path):
+        return False
+    if os.path.getsize(csv_path) == 0:
+        print(f"[FAIL] {pair} {year}{'-' + str(month) if month else ''}: empty file")
+        return False
+
+    size_mb = os.path.getsize(csv_path) / (1024 * 1024)
+    with open(csv_path, "r") as f:
+        lines = f.readlines()
+        row_count = len(lines)
+        if row_count == 0:
+            print(f"[FAIL] {pair} {year}{'-' + str(month) if month else ''}: 0 rows")
+            return False
+        first_ts = lines[0].strip().split(";")[0]
+        last_ts = lines[-1].strip().split(";")[0]
+
+    print(f"[OK] {pair} {year}{'-' + str(month) if month else ''}: "
+          f"{size_mb:.2f} MB, {row_count} rows, "
+          f"first={first_ts}, last={last_ts}")
+
+    # Warning for full year row count
+    if month is None and year >= 2016:
+        if not (350000 <= row_count <= 375000):
+            print(f"  ⚠️ WARNING: Row count {row_count} is outside expected "
+                  f"350k-375k range for a full year of {pair}.")
+
+    return True
+
+
+def download_with_retry(pair, year, month=None, retries=3):
+    """Download with retry for network errors only."""
     pair_dir = RAW_DIR / pair
     pair_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check if a non-empty CSV already exists for this month
-    pattern = str(pair_dir / f"*{year}*{month:02d}*")
+    # Check if we already have a valid file
+    pattern = str(pair_dir / f"*{year}*")
+    if month:
+        pattern = str(pair_dir / f"*{year}*{month:02d}*")
+    
     existing = glob.glob(pattern)
     for f in existing:
         if os.path.getsize(f) > 0:
-            print(f"[SKIP] {pair} {year}-{month:02d} (exists)")
+            print(f"[SKIP] {pair} {year}{'-' + str(month) if month else ''} (exists)")
             return True
         else:
             print(f"[CLEAN] Removing empty file: {f}")
             os.remove(f)
 
-    for attempt in range(1, 4):
+    for attempt in range(1, retries + 1):
         try:
-            print(f"[DL] {pair} {year}-{month:02d} (attempt {attempt})")
-            filename = dl(
-                year=str(year), month=str(month), pair=pair,
-                time_frame=TF.ONE_MINUTE, platform=P.GENERIC_ASCII,
-                output_directory=str(pair_dir), verbose=True
-            )
+            print(f"[DL] {pair} {year}{'-' + str(month) if month else ''} (attempt {attempt})")
+            
+            # Pass month=None for full year, or str(month) for monthly
+            kwargs = {
+                "year": str(year),
+                "pair": pair,
+                "time_frame": TF.ONE_MINUTE,
+                "platform": P.GENERIC_ASCII,
+                "output_directory": str(pair_dir),
+                "verbose": True,
+            }
+            if month is not None:
+                kwargs["month"] = str(month)
+            else:
+                kwargs["month"] = None
+
+            filename = dl(**kwargs)
+
             if filename and os.path.exists(filename) and os.path.getsize(filename) > 0:
                 csv_path = extract_zip(filename, str(pair_dir))
-                if csv_path and os.path.getsize(csv_path) > 0:
-                    with open(csv_path, "r") as f:
-                        rows = sum(1 for _ in f)
-                    print(f"[OK] {pair} {year}-{month:02d}: {rows} rows, {os.path.getsize(csv_path)} bytes")
-                    if rows == 0:
-                        print(f"[FAIL] {pair} {year}-{month:02d}: 0 rows")
-                        return False
+                if validate_file(csv_path, pair, year, month):
                     return True
                 else:
-                    print(f"[FAIL] {pair} {year}-{month:02d}: empty CSV")
+                    return False
             else:
-                print(f"[FAIL] {pair} {year}-{month:02d}: empty zip")
+                print(f"[FAIL] {pair} {year}{'-' + str(month) if month else ''}: empty zip")
+
+        except AssertionError as e:
+            # Validation error from the library (e.g., invalid month for current year)
+            # Do NOT retry, fail immediately.
+            print(f"[FATAL] {pair} {year}{'-' + str(month) if month else ''}: {e}")
+            return False
+        except requests.exceptions.RequestException as e:
+            # Network error, safe to retry
+            print(f"[RETRY] {pair} {year}{'-' + str(month) if month else ''}: Network error: {e}")
         except Exception as e:
-            print(f"[ERROR] {pair} {year}-{month:02d}: {e}")
+            # Unknown error, treat as fatal
+            print(f"[FATAL] {pair} {year}{'-' + str(month) if month else ''}: Unexpected error: {e}")
+            return False
 
         time.sleep(3 * attempt)
 
-    print(f"[GIVE UP] {pair} {year}-{month:02d}")
+    print(f"[GIVE UP] {pair} {year}{'-' + str(month) if month else ''}")
     return False
 
 
 def main():
     if TEST_MODE:
-        year, month = TEST_MONTH.split("-")
-        year, month = int(year), int(month)
-        print(f"TEST MODE: {TEST_PAIR} {year}-{month:02d}")
-        ok = download_month(TEST_PAIR, year, month)
+        print(f"TEST MODE: {TEST_PAIR} full year {TEST_YEAR}")
+        ok = download_with_retry(TEST_PAIR, int(TEST_YEAR), month=None)
         if not ok:
             sys.exit(1)
-            
-        pattern = str(RAW_DIR / TEST_PAIR / f"*{year}*{month:02d}*.csv")
+        
+        # Print first 3 lines for test mode
+        pattern = str(RAW_DIR / TEST_PAIR / f"*{TEST_YEAR}*.csv")
         files = glob.glob(pattern)
         if files:
             print("\n=== FIRST 3 LINES OF FILE ===")
@@ -119,20 +172,24 @@ def main():
 
     end_year, end_month = latest_complete_month()
     failed = []
+
     for pair in PAIRS:
-        for year in range(START_YEAR, end_year + 1):
-            month_start = 1
-            month_end = 12
-            if year == end_year:
-                month_end = end_month
-            for month in range(month_start, month_end + 1):
-                ok = download_month(pair, year, month)
-                if not ok:
-                    failed.append(f"{pair} {year}-{month:02d}")
-                time.sleep(3)
+        # 1. Past years: full year download (month=None)
+        for year in range(START_YEAR, end_year):
+            ok = download_with_retry(pair, year, month=None)
+            if not ok:
+                failed.append(f"{pair} {year} (full year)")
+            time.sleep(3)
+
+        # 2. Current year: monthly downloads up to last complete month
+        for month in range(1, end_month + 1):
+            ok = download_with_retry(pair, end_year, month=month)
+            if not ok:
+                failed.append(f"{pair} {end_year}-{month:02d}")
+            time.sleep(3)
 
     if failed:
-        print(f"\nFAILED MONTHS: {len(failed)}")
+        print(f"\nFAILED DOWNLOADS: {len(failed)}")
         for f in failed:
             print(f"  - {f}")
         sys.exit(1)
