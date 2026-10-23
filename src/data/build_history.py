@@ -17,7 +17,7 @@ def load_m1(pair):
     dfs = [pd.read_csv(f, sep=";", header=None, names=["timestamp", "open", "high", "low", "close", "volume"]) for f in files]
     df = pd.concat(dfs, ignore_index=True)
     
-    # RULE 3: NY Local Time -> Drop Ambiguous/Nonexistent -> UTC
+    # NY Local Time -> Drop Ambiguous/Nonexistent -> UTC
     df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%d %H%M%S")
     df["timestamp"] = df["timestamp"].dt.tz_localize("America/New_York", ambiguous="NaT", nonexistent="NaT")
     df = df.dropna(subset=["timestamp"])
@@ -34,9 +34,10 @@ def explain_duplicates(df):
     
     identical, different = 0, 0
     if not dupes.empty:
-        for _, group in dupes.groupby("timestamp"):
-            if group.drop(columns=["timestamp"]).nunique().max() == 1: identical += 1
-            else: different += 1
+        # FIXED: Vectorized check instead of slow Python loop
+        groups = dupes.groupby("timestamp")
+        identical = (groups.nunique().max(axis=1) == 1).sum()
+        different = groups.ngroups - identical
             
     df = df.drop_duplicates(subset=["timestamp"], keep="first")
     return df, removed, f"{identical} identical, {different} conflicting (kept first)"
@@ -49,8 +50,12 @@ def get_bad_days(df, pair):
     is_weekend = ((ny_idx.dayofweek == 4) & (ny_idx.hour >= 17)) | ((ny_idx.dayofweek == 5)) | ((ny_idx.dayofweek == 6) & (ny_idx.hour < 17))
     expected_open = expected[~is_weekend]
     
-    missing = [t for t in expected_open if t not in set(df["timestamp"].dt.floor("15min"))]
-    if not missing: return pd.DataFrame()
+    # FIXED: Use pandas isin instead of slow Python list comprehension
+    actual = df["timestamp"].dt.floor("15min").unique()
+    missing_mask = ~expected_open.isin(actual)
+    missing = expected_open[missing_mask]
+    
+    if len(missing) == 0: return pd.DataFrame()
     
     missing_df = pd.DataFrame({"timestamp": missing})
     missing_df["ny_date"] = (missing_df["timestamp"].dt.tz_convert("America/New_York") + pd.Timedelta(hours=7)).dt.date
@@ -73,7 +78,7 @@ def main():
     reports = []
 
     for pair in PAIRS:
-        print(f"Processing {pair}...")
+        print(f"Processing {pair}...", flush=True)
         df = load_m1(pair)
         df, dupes_removed, dupes_explanation = explain_duplicates(df)
         
@@ -99,6 +104,7 @@ def main():
     for r in reports:
         lines.append(f"| {r['pair']} | {r['first'][:10]} | {r['last'][:10]} | {r['m15_bars']} | {r['holes_per_year']} | {r['dupes']} | {r['dupes_explain']} |")
     (REPORT_DIR / "histdata_validation.md").write_text("\n".join(lines))
+    print("Done.")
 
 if __name__ == "__main__":
     main()
