@@ -35,7 +35,12 @@ def download(pair, year, month=None):
     pair_dir = RAW_DIR / pair
     pair_dir.mkdir(parents=True, exist_ok=True)
     
-    pattern = str(pair_dir / f"*{year}*" + (f"*{month:02d}*" if month else "*"))
+    # FIXED: Convert path to string before adding string suffixes
+    if month:
+        pattern = str(pair_dir) + f"/*{year}*{month:02d}*"
+    else:
+        pattern = str(pair_dir) + f"/*{year}*"
+        
     if glob.glob(pattern):
         print(f"[SKIP] {pair} {year}-{month if month else 'Full'}")
         return True
