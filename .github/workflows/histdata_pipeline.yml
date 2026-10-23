@@ -47,13 +47,40 @@ jobs:
         with: { python-version: "3.11" }
       - run: pip install pandas pyarrow pytest
 
-      # Restore all raw data
-      - name: Restore raw caches
+      # Explicitly restore all 11 caches
+      - name: Restore eurusd
         uses: actions/cache/restore@v4
-        with:
-          path: data/raw
-          key: histdata-raw-all-v1
-          restore-keys: histdata-raw-
+        with: { path: data/raw/eurusd, key: "histdata-raw-eurusd-v1-${{ github.run_id }}", restore-keys: histdata-raw-eurusd-v1- }
+      - name: Restore gbpusd
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/gbpusd, key: "histdata-raw-gbpusd-v1-${{ github.run_id }}", restore-keys: histdata-raw-gbpusd-v1- }
+      - name: Restore usdjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/usdjpy, key: "histdata-raw-usdjpy-v1-${{ github.run_id }}", restore-keys: histdata-raw-usdjpy-v1- }
+      - name: Restore audusd
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/audusd, key: "histdata-raw-audusd-v1-${{ github.run_id }}", restore-keys: histdata-raw-audusd-v1- }
+      - name: Restore usdcad
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/usdcad, key: "histdata-raw-usdcad-v1-${{ github.run_id }}", restore-keys: histdata-raw-usdcad-v1- }
+      - name: Restore usdchf
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/usdchf, key: "histdata-raw-usdchf-v1-${{ github.run_id }}", restore-keys: histdata-raw-usdchf-v1- }
+      - name: Restore nzdusd
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/nzdusd, key: "histdata-raw-nzdusd-v1-${{ github.run_id }}", restore-keys: histdata-raw-nzdusd-v1- }
+      - name: Restore eurjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/eurjpy, key: "histdata-raw-eurjpy-v1-${{ github.run_id }}", restore-keys: histdata-raw-eurjpy-v1- }
+      - name: Restore gbpjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/gbpjpy, key: "histdata-raw-gbpjpy-v1-${{ github.run_id }}", restore-keys: histdata-raw-gbpjpy-v1- }
+      - name: Restore eurgbp
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/eurgbp, key: "histdata-raw-eurgbp-v1-${{ github.run_id }}", restore-keys: histdata-raw-eurgbp-v1- }
+      - name: Restore audjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/audjpy, key: "histdata-raw-audjpy-v1-${{ github.run_id }}", restore-keys: histdata-raw-audjpy-v1- }
 
       - name: Build Data
         run: python -m src.data.build_history
@@ -61,7 +88,6 @@ jobs:
       - name: Run Tests
         run: pytest tests/test_data.py -v
 
-      # Store processed data in cache only (Rule 1)
       - name: Save processed cache
         uses: actions/cache/save@v4
         with:
