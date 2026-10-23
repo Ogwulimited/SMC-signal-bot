@@ -1,0 +1,30 @@
+name: Cache Keep-Alive
+
+on:
+  schedule:
+    - cron: "0 0 * * 0" # Every Sunday at midnight
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        pair: [eurusd, gbpusd, usdjpy, audusd, usdcad, usdchf, nzdusd, eurjpy, gbpjpy, eurgbp, audjpy]
+    steps:
+      - name: Restore raw cache for ${{ matrix.pair }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/${{ matrix.pair }}
+          key: histdata-raw-${{ matrix.pair }}-v1
+          restore-keys: histdata-raw-${{ matrix.pair }}-
+
+  keepalive_processed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore processed cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/processed
+          key: histdata-processed-v1
+          restore-keys: histdata-processed-
