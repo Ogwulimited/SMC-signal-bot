@@ -1,0 +1,78 @@
+name: HistData Pipeline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: [eurusd, gbpusd, usdjpy, audusd, usdcad, usdchf, nzdusd, eurjpy, gbpjpy, eurgbp, audjpy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install histdata pandas pyarrow requests
+      
+      - name: Restore raw cache ${{ matrix.pair }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/${{ matrix.pair }}
+          key: histdata-raw-${{ matrix.pair }}-v1
+          restore-keys: histdata-raw-${{ matrix.pair }}-
+          
+      - name: Download ${{ matrix.pair }}
+        env: { PAIR: "${{ matrix.pair }}" }
+        run: python scripts/download_histdata.py
+        
+      - name: Save raw cache ${{ matrix.pair }}
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: data/raw/${{ matrix.pair }}
+          key: histdata-raw-${{ matrix.pair }}-v1-${{ github.run_id }}
+
+  build_and_test:
+    needs: download
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow pytest
+
+      # Restore all raw data
+      - name: Restore raw caches
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw
+          key: histdata-raw-all-v1
+          restore-keys: histdata-raw-
+
+      - name: Build Data
+        run: python -m src.data.build_history
+
+      - name: Run Tests
+        run: pytest tests/test_data.py -v
+
+      # Store processed data in cache only (Rule 1)
+      - name: Save processed cache
+        uses: actions/cache/save@v4
+        with:
+          path: data/processed
+          key: histdata-processed-v1-${{ github.run_id }}
+
+      - name: Commit Report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/data/histdata_validation.md
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: update validation report [skip ci]"
+          git push
