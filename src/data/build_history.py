@@ -14,11 +14,25 @@ def load_m1(pair):
     files = sorted(glob.glob(str(RAW_DIR / pair / "*.csv")))
     if not files: raise FileNotFoundError(f"No raw data for {pair}")
     
-    dfs = [pd.read_csv(f, sep=";", header=None, names=["timestamp", "open", "high", "low", "close", "volume"]) for f in files]
+    dfs = [pd.read_csv(f, sep=";", header=None, names=["raw_stamp", "open", "high", "low", "close", "volume"]) for f in files]
     df = pd.concat(dfs, ignore_index=True)
     
+    # DEBUG: Print for 3 summer weekend opens
+    if pair == "eurusd":
+        july_df = df[df["raw_stamp"].astype(str).str.startswith("20230702") | df["raw_stamp"].astype(str).str.startswith("20230703")]
+        if not july_df.empty:
+            print("=== DEBUG: Summer Weekend Open (EURUSD) ===")
+            for i in range(min(3, len(july_df))):
+                raw = july_df.iloc[i]["raw_stamp"]
+                ts = pd.to_datetime(raw, format="%Y%m%d %H%M%S")
+                loc = ts.tz_localize("America/New_York", ambiguous="NaT", nonexistent="NaT")
+                if pd.notna(loc):
+                    utc = loc.tz_convert("UTC")
+                    print(f"Raw: {raw} | Localized: {loc} | UTC: {utc}")
+            print("===========================================")
+
     # NY Local Time -> Drop Ambiguous/Nonexistent -> UTC
-    df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%d %H%M%S")
+    df["timestamp"] = pd.to_datetime(df["raw_stamp"], format="%Y%m%d %H%M%S")
     df["timestamp"] = df["timestamp"].dt.tz_localize("America/New_York", ambiguous="NaT", nonexistent="NaT")
     df = df.dropna(subset=["timestamp"])
     df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
