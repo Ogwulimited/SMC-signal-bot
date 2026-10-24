@@ -34,7 +34,6 @@ def explain_duplicates(df):
     
     identical, different = 0, 0
     if not dupes.empty:
-        # FIXED: Vectorized check instead of slow Python loop
         groups = dupes.groupby("timestamp")
         identical = (groups.nunique().max(axis=1) == 1).sum()
         different = groups.ngroups - identical
@@ -50,7 +49,6 @@ def get_bad_days(df, pair):
     is_weekend = ((ny_idx.dayofweek == 4) & (ny_idx.hour >= 17)) | ((ny_idx.dayofweek == 5)) | ((ny_idx.dayofweek == 6) & (ny_idx.hour < 17))
     expected_open = expected[~is_weekend]
     
-    # FIXED: Use pandas isin instead of slow Python list comprehension
     actual = df["timestamp"].dt.floor("15min").unique()
     missing_mask = ~expected_open.isin(actual)
     missing = expected_open[missing_mask]
@@ -79,6 +77,8 @@ def main():
 
     for pair in PAIRS:
         print(f"Processing {pair}...", flush=True)
+        
+        # Removed try/except so it fails loudly if load_m1 fails
         df = load_m1(pair)
         df, dupes_removed, dupes_explanation = explain_duplicates(df)
         
@@ -89,7 +89,6 @@ def main():
         total_holes = bad_days["missing_bars"].sum() if not bad_days.empty else 0
         years = (df["timestamp"].max() - df["timestamp"].min()).days / 365.25
 
-        # Save processed data for cache
         resample(df, "1h").to_parquet(PROCESSED_DIR / f"{pair}_h1.parquet", index=False)
         resample(df, "4h", 7).to_parquet(PROCESSED_DIR / f"{pair}_h4.parquet", index=False)
         resample(df, "1D", 7).to_parquet(PROCESSED_DIR / f"{pair}_d1.parquet", index=False)
