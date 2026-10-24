@@ -64,9 +64,14 @@ def get_bad_days(df, pair):
 def resample(df, rule, offset_hours=0):
     ny = df.set_index("timestamp").tz_convert("America/New_York")
     if offset_hours: ny.index = ny.index + pd.Timedelta(hours=offset_hours)
+    
     agg = {"open": ("open", "first"), "high": ("high", "max"), "low": ("low", "min"), "close": ("close", "last")}
     res = ny.resample(rule, label="left", closed="left").agg(**agg).dropna(subset=["open"])
+    
     if offset_hours: res.index = res.index - pd.Timedelta(hours=offset_hours)
+    
+    # CRITICAL FIX: Convert back to UTC before returning
+    res = res.tz_convert("UTC")
     res = res.reset_index()
     return res
 
@@ -78,7 +83,6 @@ def main():
     for pair in PAIRS:
         print(f"Processing {pair}...", flush=True)
         
-        # Removed try/except so it fails loudly if load_m1 fails
         df = load_m1(pair)
         df, dupes_removed, dupes_explanation = explain_duplicates(df)
         
