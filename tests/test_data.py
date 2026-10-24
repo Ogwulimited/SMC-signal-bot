@@ -2,7 +2,7 @@ import pytest
 import pandas as pd
 from pathlib import Path
 
-PROCESSED_DIR = Path(__file__).parent.parent.parent / "data" / "processed"
+PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 
 @pytest.fixture
 def h1():
