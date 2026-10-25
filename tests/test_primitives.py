@@ -119,12 +119,13 @@ def test_truncation():
         try:
             pd.testing.assert_frame_equal(expected, cut_events)
         except AssertionError:
+            cols = ["time", "label", "direction"]
             print(f"\n--- FAILED at cut={cut} ---")
             print(f"Cutoff time: {cutoff_time}")
             print("Expected:")
-            print(expected[["time", "label", "direction"]])
+            print(expected[cols] if not expected.empty else "Empty DataFrame")
             print("Actual:")
-            print(cut_events[["time", "label", "direction"]])
+            print(cut_events[cols] if not cut_events.empty else "Empty DataFrame")
             raise
 
 def test_truncation_h4_d1():
@@ -156,12 +157,13 @@ def test_truncation_h4_d1():
             try:
                 pd.testing.assert_frame_equal(expected, cut_events)
             except AssertionError:
+                cols = ["time", "label", "direction"]
                 print(f"\n--- FAILED at cut={cut} for {rule} ---")
                 print(f"Cutoff time: {cutoff_time}")
                 print("Expected:")
-                print(expected[["time", "label", "direction"]])
+                print(expected[cols] if not expected.empty else "Empty DataFrame")
                 print("Actual:")
-                print(cut_events[["time", "label", "direction"]])
+                print(cut_events[cols] if not cut_events.empty else "Empty DataFrame")
                 raise
 
 def test_drop_incomplete_trailing_bar():
