@@ -7,6 +7,9 @@ def find_swings(df, n, tf):
     
     confirm_time is the CLOSE time of the bar that confirms the swing.
     """
+    if len(df) < 2*n + 1:
+        return pd.DataFrame(columns=["index", "timestamp", "price", "kind", "confirm_time"])
+
     highs = df["high"].values
     lows = df["low"].values
     times = df["timestamp"].tolist()
