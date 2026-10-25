@@ -20,10 +20,11 @@ def load_m1(pair):
     
     df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%d %H%M%S")
     
-    # HistData.com raw stamps are fixed EST (UTC-5), no DST.
-    # Add 5 hours to get UTC.
-    df["timestamp"] = df["timestamp"] + pd.Timedelta(hours=5)
-    df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
+    # FIXED: Data actually respects NY DST, despite documentation.
+    # Reverting to tz_localize to match the 21:00 UTC summer open requirement.
+    df["timestamp"] = df["timestamp"].dt.tz_localize("America/New_York", ambiguous="NaT", nonexistent="NaT")
+    df = df.dropna(subset=["timestamp"])
+    df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
     
     for col in ["open", "high", "low", "close"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
