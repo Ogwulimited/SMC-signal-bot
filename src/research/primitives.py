@@ -116,8 +116,22 @@ def detect_bos_choch(df, swings, tf):
             })
             
     if not events:
-        return pd.DataFrame(columns=COLUMNS)
-    return pd.DataFrame(events)[COLUMNS]
+        df_out = pd.DataFrame({
+            "label": pd.array([], dtype=object),
+            "direction": pd.array([], dtype=object),
+            "time": pd.array([], dtype="datetime64[ns, UTC]"),
+            "close": pd.array([], dtype="float64"),
+            "broken_swing_time": pd.array([], dtype="datetime64[ns, UTC]"),
+            "broken_swing_price": pd.array([], dtype="float64"),
+            "last_opposite_time": pd.array([], dtype="datetime64[ns, UTC]"),
+            "last_opposite_price": pd.array([], dtype="float64"),
+        })
+    else:
+        df_out = pd.DataFrame(events)[COLUMNS]
+        df_out["label"] = df_out["label"].astype(object)
+        df_out["direction"] = df_out["direction"].astype(object)
+        
+    return df_out
 
 def compute_atr(df, period=14):
     high = df["high"]
