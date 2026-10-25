@@ -147,7 +147,9 @@ def test_truncation_h4_d1():
             cut_swings = find_swings(cut_resampled, n=n_swing, tf=tf)
             cut_events = detect_bos_choch(cut_resampled, cut_swings, tf)
             
-            cutoff_time = cut_resampled["timestamp"].max()
+            # FIXED: Add tf to cutoff_time so we compare against the CLOSE time
+            cutoff_time = cut_resampled["timestamp"].max() + tf
+            
             if full_events.empty: continue
             expected = full_events[full_events["time"] <= cutoff_time].reset_index(drop=True)
             
