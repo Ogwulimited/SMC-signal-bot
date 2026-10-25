@@ -21,14 +21,15 @@ def test_specific_sequence():
     lows = [c - 1 for c in closes]
     df = pd.DataFrame({"timestamp": timestamps, "high": highs, "low": lows, "close": closes})
     
-    swings = find_swings(df, n=1, tf=pd.Timedelta("1h"))
-    events = detect_bos_choch(df, swings)
+    tf = pd.Timedelta("1h")
+    swings = find_swings(df, n=1, tf=tf)
+    events = detect_bos_choch(df, swings, tf)
     
     assert len(events) == 1
     ev = events.iloc[0]
     assert ev["label"] == "INIT"
     assert ev["direction"] == "up"
-    assert pd.Timestamp(ev["time"]) == timestamps[7]
+    assert pd.Timestamp(ev["time"]) == timestamps[7] + tf
     assert ev["broken_swing_price"] == 8.0
 
 def test_bos_choch_sequence():
@@ -39,8 +40,9 @@ def test_bos_choch_sequence():
     closes = [9, 10, 9, 15, 12, 16, 9, 7.8]
     df = pd.DataFrame({"timestamp": timestamps, "high": highs, "low": lows, "close": closes})
     
-    swings = find_swings(df, n=1, tf=pd.Timedelta("1h"))
-    events = detect_bos_choch(df, swings)
+    tf = pd.Timedelta("1h")
+    swings = find_swings(df, n=1, tf=tf)
+    events = detect_bos_choch(df, swings, tf)
     
     assert events["label"].tolist() == ["INIT", "BOS", "CHoCH"]
     assert events["direction"].tolist() == ["up", "up", "down"]
@@ -53,8 +55,9 @@ def test_bos_choch_mirror():
     closes = [16, 15, 16, 10, 13, 9, 16, 17.2]
     df = pd.DataFrame({"timestamp": timestamps, "high": highs, "low": lows, "close": closes})
     
-    swings = find_swings(df, n=1, tf=pd.Timedelta("1h"))
-    events = detect_bos_choch(df, swings)
+    tf = pd.Timedelta("1h")
+    swings = find_swings(df, n=1, tf=tf)
+    events = detect_bos_choch(df, swings, tf)
     
     assert events["label"].tolist() == ["INIT", "BOS", "CHoCH"]
     assert events["direction"].tolist() == ["down", "down", "up"]
@@ -66,8 +69,9 @@ def test_consumption_rule():
     lows = [h - 1 for h in highs]
     df = pd.DataFrame({"timestamp": timestamps, "high": highs, "low": lows, "close": closes})
     
-    swings = find_swings(df, n=1, tf=pd.Timedelta("1h"))
-    events = detect_bos_choch(df, swings)
+    tf = pd.Timedelta("1h")
+    swings = find_swings(df, n=1, tf=tf)
+    events = detect_bos_choch(df, swings, tf)
     
     assert len(events) == 1
     assert events.iloc[0]["broken_swing_price"] == 15.0
@@ -101,12 +105,12 @@ def test_truncation():
     
     tf_m15 = pd.Timedelta("15m")
     full_swings = find_swings(df, n=2, tf=tf_m15)
-    full_events = detect_bos_choch(df, full_swings)
+    full_events = detect_bos_choch(df, full_swings, tf_m15)
     
     for cut in [random.randint(50, n - 20) for _ in range(100)]:
         df_cut = df.iloc[:cut].reset_index(drop=True)
         cut_swings = find_swings(df_cut, n=2, tf=tf_m15)
-        cut_events = detect_bos_choch(df_cut, cut_swings)
+        cut_events = detect_bos_choch(df_cut, cut_swings, tf_m15)
         
         cutoff_time = df_cut["timestamp"].iloc[-1] + tf_m15
         if full_events.empty: continue
@@ -117,9 +121,9 @@ def test_truncation():
         except AssertionError:
             print(f"\n--- FAILED at cut={cut} ---")
             print(f"Cutoff time: {cutoff_time}")
-            print("Expected (full events up to cutoff):")
+            print("Expected:")
             print(expected[["time", "label", "direction"]])
-            print("Actual (cut events):")
+            print("Actual:")
             print(cut_events[["time", "label", "direction"]])
             raise
 
@@ -135,13 +139,13 @@ def test_truncation_h4_d1():
         tf = pd.Timedelta(tf_str)
         full_resampled = resample_to_tf(df, rule)
         full_swings = find_swings(full_resampled, n=n_swing, tf=tf)
-        full_events = detect_bos_choch(full_resampled, full_swings)
+        full_events = detect_bos_choch(full_resampled, full_swings, tf)
         
         for cut in [random.randint(200, n - 200) for _ in range(50)]:
             df_cut = df.iloc[:cut].reset_index(drop=True)
             cut_resampled = resample_to_tf(df_cut, rule)
             cut_swings = find_swings(cut_resampled, n=n_swing, tf=tf)
-            cut_events = detect_bos_choch(cut_resampled, cut_swings)
+            cut_events = detect_bos_choch(cut_resampled, cut_swings, tf)
             
             cutoff_time = cut_resampled["timestamp"].max()
             if full_events.empty: continue
@@ -152,8 +156,8 @@ def test_truncation_h4_d1():
             except AssertionError:
                 print(f"\n--- FAILED at cut={cut} for {rule} ---")
                 print(f"Cutoff time: {cutoff_time}")
-                print("Expected (full events up to cutoff):")
+                print("Expected:")
                 print(expected[["time", "label", "direction"]])
-                print("Actual (cut events):")
+                print("Actual:")
                 print(cut_events[["time", "label", "direction"]])
                 raise
