@@ -161,3 +161,16 @@ def test_truncation_h4_d1():
                 print("Actual:")
                 print(cut_events[["time", "label", "direction"]])
                 raise
+
+def test_drop_incomplete_trailing_bar():
+    """Generate 10 complete H4 bars (160 M15 bars) + 2 extra M15 bars."""
+    start = pd.Timestamp("2023-01-01 17:00:00", tz="America/New_York")
+    periods = 160 + 2
+    timestamps = pd.date_range(start, periods=periods, freq="15min", tz="America/New_York")
+    df = pd.DataFrame({
+        "timestamp": timestamps.tz_convert("UTC"),
+        "open": 1, "high": 1, "low": 1, "close": 1
+    })
+    
+    res = resample_to_tf(df, "4h")
+    assert len(res) == 10, f"Expected 10 bars, got {len(res)}"
