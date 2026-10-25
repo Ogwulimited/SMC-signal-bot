@@ -3,6 +3,7 @@ import pandas as pd
 import glob
 from pathlib import Path
 from datetime import datetime, timezone
+from ..research.primitives import resample_to_tf
 
 RAW_DIR = Path(__file__).parent.parent.parent / "data" / "raw"
 PROCESSED_DIR = Path(__file__).parent.parent.parent / "data" / "processed"
@@ -18,16 +19,17 @@ def load_m1(pair):
     df = pd.concat(dfs, ignore_index=True)
     
     df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%d %H%M%S")
-    df["timestamp"] = df["timestamp"].dt.tz_localize("America/New_York", ambiguous="NaT", nonexistent="NaT")
-    df = df.dropna(subset=["timestamp"])
-    df["timestamp"] = df["timestamp"].dt.tz_convert("UTC")
+    
+    # HistData.com raw stamps are fixed EST (UTC-5), no DST.
+    # Add 5 hours to get UTC.
+    df["timestamp"] = df["timestamp"] + pd.Timedelta(hours=5)
+    df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
     
     for col in ["open", "high", "low", "close"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df.dropna(subset=["open", "high", "low", "close"]).sort_values("timestamp").reset_index(drop=True)
 
 def explain_duplicates(df):
-    before = len(df)
     dupes_count = int(df.duplicated(subset=["timestamp"], keep="first").sum())
     dupes = df[df.duplicated(subset=["timestamp"], keep=False)]
     
@@ -40,16 +42,26 @@ def explain_duplicates(df):
     df = df.drop_duplicates(subset=["timestamp"], keep="first")
     return df, dupes_count, f"{identical} identical, {different} conflicting (kept first)"
 
-def resample(df, rule, offset_hours=0):
+def resample_m1_to_m15(df):
+    """M1 to M15 resampling with NY wall-clock anchoring, immune to DST drift."""
     ny = df.set_index("timestamp").tz_convert("America/New_York")
-    if offset_hours: ny.index = ny.index + pd.Timedelta(hours=offset_hours)
+    ny_naive = ny.tz_localize(None)
+    
+    origin = pd.Timestamp("2020-01-01 17:00:00")
     agg = {"open": ("open", "first"), "high": ("high", "max"), "low": ("low", "min"), "close": ("close", "last")}
-    res = ny.resample(rule, label="left", closed="left").agg(**agg).dropna(subset=["open"])
-    if offset_hours: res.index = res.index - pd.Timedelta(hours=offset_hours)
+    res = ny_naive.resample("15min", origin=origin, label="left", closed="left").agg(**agg).dropna(subset=["open"])
+    
+    # Drop trailing incomplete bins based on M1 close
+    last_m1_close = ny_naive.index.max() + pd.Timedelta(minutes=1)
+    bin_end = res.index + pd.Timedelta(minutes=15)
+    res = res[bin_end <= last_m1_close]
+    
+    res.index = res.index.tz_localize("America/New_York", ambiguous="NaT", nonexistent="NaT")
+    res = res[res.index.notna()]
+    
     return res.tz_convert("UTC").reset_index()
 
-def get_bad_days_and_holidays(df, pair):
-    m15 = resample(df, "15min")
+def get_bad_days_and_holidays(m15, pair):
     start, end = m15["timestamp"].min(), m15["timestamp"].max()
     expected = pd.date_range(start, end, freq="15min", tz="UTC")
     
@@ -62,14 +74,20 @@ def get_bad_days_and_holidays(df, pair):
     missing = expected_open[missing_mask]
     
     missing_df = pd.DataFrame({"timestamp": missing})
-    if missing_df.empty: return pd.DataFrame(), 0
+    if missing_df.empty: return pd.DataFrame(), 0, 0
     
+    # Note: +7 hours shifts the timestamp so that 17:00 NY time aligns with midnight.
+    # This groups bars correctly into their respective trading days (17:00 to 17:00).
     missing_df["ny_date"] = (missing_df["timestamp"].dt.tz_convert("America/New_York") + pd.Timedelta(hours=7)).dt.date
     grouped = missing_df.groupby("ny_date").size().reset_index(name="missing_bars")
     
     bad_days = grouped[grouped["missing_bars"] >= 3]
     holidays = grouped[grouped["missing_bars"] >= 90]
-    return bad_days, len(holidays)
+    
+    # Sum over the FULL grouped series (all days with any missing bars), not just bad_days
+    total_missing = grouped["missing_bars"].sum()
+    
+    return bad_days, len(holidays), total_missing
 
 def main():
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
@@ -83,23 +101,28 @@ def main():
         m1_bars = len(df)
         df, dupes_removed, dupes_explanation = explain_duplicates(df)
         
-        m15 = resample(df, "15min")
+        m15 = resample_m1_to_m15(df)
         m15_bars = len(m15)
         
-        bad_days, holidays = get_bad_days_and_holidays(df, pair)
+        bad_days, holidays, total_missing = get_bad_days_and_holidays(m15, pair)
         if not bad_days.empty:
             bad_days.to_parquet(PROCESSED_DIR / f"bad_days_{pair}.parquet", index=False)
             
-        total_missing = bad_days["missing_bars"].sum() if not bad_days.empty else 0
         years = (df["timestamp"].max() - df["timestamp"].min()).days / 365.25
         
         bad_days_2023 = len(bad_days[bad_days["ny_date"].astype(str).str.startswith("2023")]) if not bad_days.empty else 0
         missing_2023 = bad_days[bad_days["ny_date"].astype(str).str.startswith("2023")]["missing_bars"].sum() if not bad_days.empty else 0
         
         m15.to_parquet(PROCESSED_DIR / f"{pair}_m15.parquet", index=False)
-        resample(df, "1h").to_parquet(PROCESSED_DIR / f"{pair}_h1.parquet", index=False)
-        resample(df, "4h", 7).to_parquet(PROCESSED_DIR / f"{pair}_h4.parquet", index=False)
-        resample(df, "1D", 7).to_parquet(PROCESSED_DIR / f"{pair}_d1.parquet", index=False)
+        
+        # Use the exact primitives.py resampling logic
+        h1 = resample_to_tf(m15, "1h")
+        h4 = resample_to_tf(m15, "4h")
+        d1 = resample_to_tf(m15, "1D")
+        
+        h1.to_parquet(PROCESSED_DIR / f"{pair}_h1.parquet", index=False)
+        h4.to_parquet(PROCESSED_DIR / f"{pair}_h4.parquet", index=False)
+        d1.to_parquet(PROCESSED_DIR / f"{pair}_d1.parquet", index=False)
 
         reports.append({
             "pair": pair, "first": df["timestamp"].min().isoformat(), "last": df["timestamp"].max().isoformat(),
