@@ -9,7 +9,8 @@ def find_swings(df, n, tf):
     """
     highs = df["high"].values
     lows = df["low"].values
-    times = df["timestamp"].values
+    # FIX 1: Keep timestamps as tz-aware pandas Timestamps, not numpy datetime64
+    times = df["timestamp"].tolist()
 
     # Sliding windows for highs
     h_windows = np.lib.stride_tricks.sliding_window_view(highs, 2*n+1)
@@ -27,13 +28,13 @@ def find_swings(df, n, tf):
     swings = []
     for i in swing_indices_h:
         swings.append({
-            "index": i, "timestamp": pd.Timestamp(times[i]), "price": highs[i],
-            "kind": "high", "confirm_time": pd.Timestamp(times[i+n]) + tf
+            "index": i, "timestamp": times[i], "price": highs[i],
+            "kind": "high", "confirm_time": times[i+n] + tf
         })
     for i in swing_indices_l:
         swings.append({
-            "index": i, "timestamp": pd.Timestamp(times[i]), "price": lows[i],
-            "kind": "low", "confirm_time": pd.Timestamp(times[i+n]) + tf
+            "index": i, "timestamp": times[i], "price": lows[i],
+            "kind": "low", "confirm_time": times[i+n] + tf
         })
     
     if not swings:
@@ -43,7 +44,8 @@ def find_swings(df, n, tf):
 
 def detect_bos_choch(df, swings):
     """Fully vectorized BOS/CHoCH detection using parallel lists."""
-    times = df["timestamp"].values
+    # FIX 1: Keep timestamps tz-aware
+    times = df["timestamp"].tolist()
     closes = df["close"].values
     
     h_prices, h_times = [], []
@@ -59,7 +61,7 @@ def detect_bos_choch(df, swings):
         c = closes[i]
         
         # Add newly confirmed swings to active lists
-        while s_idx < len(s_records) and s_records[s_idx]["confirm_time"].value <= pd.Timestamp(t).value:
+        while s_idx < len(s_records) and s_records[s_idx]["confirm_time"].value <= t.value:
             sw = s_records[s_idx]
             if sw["kind"] == "high":
                 h_prices.append(sw["price"])
@@ -85,7 +87,7 @@ def detect_bos_choch(df, swings):
             trend = "up"
             
             events.append({
-                "label": label, "direction": "up", "time": pd.Timestamp(t),
+                "label": label, "direction": "up", "time": t,
                 "close": c, "broken_swing_time": bt, "broken_swing_price": bp,
                 "last_opposite_time": opp_t, "last_opposite_price": opp_p
             })
@@ -106,7 +108,7 @@ def detect_bos_choch(df, swings):
             trend = "down"
             
             events.append({
-                "label": label, "direction": "down", "time": pd.Timestamp(t),
+                "label": label, "direction": "down", "time": t,
                 "close": c, "broken_swing_time": bt, "broken_swing_price": bp,
                 "last_opposite_time": opp_t, "last_opposite_price": opp_p
             })
@@ -120,12 +122,12 @@ def compute_atr(df, period=14):
     tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
     return tr.rolling(period).mean()
 
-def resample_to_tf(m15_df, rule, offset_hours=0):
+def resample_to_tf(m15_df, rule):
+    # FIX 2: Do not shift by flat timedelta. Use timezone-aware origin at 17:00 NY.
     ny = m15_df.set_index("timestamp").tz_convert("America/New_York")
-    if offset_hours: ny.index = ny.index + pd.Timedelta(hours=offset_hours)
+    origin = pd.Timestamp("2020-01-01 17:00:00", tz="America/New_York")
     agg = {"open": ("open", "first"), "high": ("high", "max"), "low": ("low", "min"), "close": ("close", "last")}
-    res = ny.resample(rule, label="left", closed="left").agg(**agg).dropna(subset=["open"])
-    if offset_hours: res.index = res.index - pd.Timedelta(hours=offset_hours)
+    res = ny.resample(rule, origin=origin, label="left", closed="left").agg(**agg).dropna(subset=["open"])
     return res.tz_convert("UTC").reset_index()
 
 def bars_available_at(df, t, tf_minutes):
