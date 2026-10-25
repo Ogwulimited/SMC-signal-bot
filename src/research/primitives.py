@@ -39,8 +39,11 @@ def find_swings(df, n, tf):
         
     return pd.DataFrame(swings).sort_values("confirm_time").reset_index(drop=True)
 
-def detect_bos_choch(df, swings):
-    """Fully vectorized BOS/CHoCH detection using parallel lists."""
+def detect_bos_choch(df, swings, tf):
+    """Fully vectorized BOS/CHoCH detection using parallel lists.
+    
+    Event 'time' is stamped as the CLOSE time (t + tf) of the triggering bar.
+    """
     times = df["timestamp"].tolist()
     closes = df["close"].values
     
@@ -56,6 +59,7 @@ def detect_bos_choch(df, swings):
         t = times[i]
         c = closes[i]
         
+        # Gate: check if swing confirmed at or before the OPEN of this bar
         while s_idx < len(s_records) and s_records[s_idx]["confirm_time"].value <= t.value:
             sw = s_records[s_idx]
             if sw["kind"] == "high":
@@ -66,6 +70,7 @@ def detect_bos_choch(df, swings):
                 l_times.append(sw["timestamp"])
             s_idx += 1
             
+        # Up break
         if h_prices and c > h_prices[-1]:
             opp_t = l_times[-1] if l_times else pd.NaT
             opp_p = l_prices[-1] if l_prices else np.nan
@@ -81,11 +86,12 @@ def detect_bos_choch(df, swings):
             trend = "up"
             
             events.append({
-                "label": label, "direction": "up", "time": t,
+                "label": label, "direction": "up", "time": t + tf, # FIX: Close time
                 "close": c, "broken_swing_time": bt, "broken_swing_price": bp,
                 "last_opposite_time": opp_t, "last_opposite_price": opp_p
             })
             
+        # Down break
         if l_prices and c < l_prices[-1]:
             opp_t = h_times[-1] if h_times else pd.NaT
             opp_p = h_prices[-1] if h_prices else np.nan
@@ -101,7 +107,7 @@ def detect_bos_choch(df, swings):
             trend = "down"
             
             events.append({
-                "label": label, "direction": "down", "time": t,
+                "label": label, "direction": "down", "time": t + tf, # FIX: Close time
                 "close": c, "broken_swing_time": bt, "broken_swing_price": bp,
                 "last_opposite_time": opp_t, "last_opposite_price": opp_p
             })
@@ -117,16 +123,13 @@ def compute_atr(df, period=14):
 
 def resample_to_tf(m15_df, rule):
     """Resamples M15 data with NY wall-clock anchoring, immune to DST drift."""
-    # FIX 2: Remove tzinfo to resample in naive wall-clock time
     ny = m15_df.set_index("timestamp").tz_convert("America/New_York")
     ny_naive = ny.tz_localize(None)
     
-    # Anchor to 17:00 NY time
     origin = pd.Timestamp("2020-01-01 17:00:00")
     agg = {"open": ("open", "first"), "high": ("high", "max"), "low": ("low", "min"), "close": ("close", "last")}
     res = ny_naive.resample(rule, origin=origin, label="left", closed="left").agg(**agg).dropna(subset=["open"])
     
-    # Reattach tz, mark nonexistent/ambiguous as NaT, drop them
     res.index = res.index.tz_localize("America/New_York", ambiguous="NaT", nonexistent="NaT")
     res = res[res.index.notna()]
     
