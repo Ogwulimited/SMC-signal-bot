@@ -130,6 +130,8 @@ def detect_bos_choch(df, swings, tf):
         df_out = pd.DataFrame(events)[COLUMNS]
         df_out["label"] = df_out["label"].astype(object)
         df_out["direction"] = df_out["direction"].astype(object)
+        for col in ["time", "broken_swing_time", "last_opposite_time"]:
+            df_out[col] = pd.to_datetime(df_out[col], utc=True).astype("datetime64[ns, UTC]")
         
     return df_out
 
@@ -162,7 +164,9 @@ def resample_to_tf(m15_df, rule):
     res.index = res.index.tz_localize("America/New_York", ambiguous="NaT", nonexistent="NaT")
     res = res[res.index.notna()]
     
-    return res.tz_convert("UTC").reset_index()
+    out = res.tz_convert("UTC").reset_index()
+    out["timestamp"] = out["timestamp"].astype("datetime64[ns, UTC]")
+    return out
 
 def bars_available_at(df, t, tf_minutes):
     close_time = df["timestamp"] + pd.Timedelta(minutes=tf_minutes)
