@@ -86,7 +86,7 @@ def detect_bos_choch(df, swings, tf):
             trend = "up"
             
             events.append({
-                "label": label, "direction": "up", "time": t + tf, # FIX: Close time
+                "label": label, "direction": "up", "time": t + tf,
                 "close": c, "broken_swing_time": bt, "broken_swing_price": bp,
                 "last_opposite_time": opp_t, "last_opposite_price": opp_p
             })
@@ -107,7 +107,7 @@ def detect_bos_choch(df, swings, tf):
             trend = "down"
             
             events.append({
-                "label": label, "direction": "down", "time": t + tf, # FIX: Close time
+                "label": label, "direction": "down", "time": t + tf,
                 "close": c, "broken_swing_time": bt, "broken_swing_price": bp,
                 "last_opposite_time": opp_t, "last_opposite_price": opp_p
             })
@@ -122,13 +122,23 @@ def compute_atr(df, period=14):
     return tr.rolling(period).mean()
 
 def resample_to_tf(m15_df, rule):
-    """Resamples M15 data with NY wall-clock anchoring, immune to DST drift."""
+    """Resamples M15 data with NY wall-clock anchoring, immune to DST drift.
+    
+    Drops trailing incomplete bins so find_swings/detect_bos_choch
+    never process a bar that hasn't fully closed in the data.
+    """
     ny = m15_df.set_index("timestamp").tz_convert("America/New_York")
     ny_naive = ny.tz_localize(None)
     
     origin = pd.Timestamp("2020-01-01 17:00:00")
     agg = {"open": ("open", "first"), "high": ("high", "max"), "low": ("low", "min"), "close": ("close", "last")}
     res = ny_naive.resample(rule, origin=origin, label="left", closed="left").agg(**agg).dropna(subset=["open"])
+    
+    # FIX: Drop trailing incomplete bins
+    last_m15_close = ny_naive.index.max() + pd.Timedelta(minutes=15)
+    bin_duration = pd.Timedelta(rule)
+    bin_end = res.index + bin_duration
+    res = res[bin_end <= last_m15_close]
     
     res.index = res.index.tz_localize("America/New_York", ambiguous="NaT", nonexistent="NaT")
     res = res[res.index.notna()]
