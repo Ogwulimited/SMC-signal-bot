@@ -9,15 +9,12 @@ def find_swings(df, n, tf):
     """
     highs = df["high"].values
     lows = df["low"].values
-    # FIX 1: Keep timestamps as tz-aware pandas Timestamps, not numpy datetime64
     times = df["timestamp"].tolist()
 
-    # Sliding windows for highs
     h_windows = np.lib.stride_tricks.sliding_window_view(highs, 2*n+1)
     h_centers = highs[n:-n]
     is_h = (h_centers == h_windows.max(axis=1)) & (h_centers > h_windows[:, :n].max(axis=1)) & (h_centers > h_windows[:, n+1:].max(axis=1))
 
-    # Sliding windows for lows
     l_windows = np.lib.stride_tricks.sliding_window_view(lows, 2*n+1)
     l_centers = lows[n:-n]
     is_l = (l_centers == l_windows.min(axis=1)) & (l_centers < l_windows[:, :n].min(axis=1)) & (l_centers < l_windows[:, n+1:].min(axis=1))
@@ -44,7 +41,6 @@ def find_swings(df, n, tf):
 
 def detect_bos_choch(df, swings):
     """Fully vectorized BOS/CHoCH detection using parallel lists."""
-    # FIX 1: Keep timestamps tz-aware
     times = df["timestamp"].tolist()
     closes = df["close"].values
     
@@ -60,7 +56,6 @@ def detect_bos_choch(df, swings):
         t = times[i]
         c = closes[i]
         
-        # Add newly confirmed swings to active lists
         while s_idx < len(s_records) and s_records[s_idx]["confirm_time"].value <= t.value:
             sw = s_records[s_idx]
             if sw["kind"] == "high":
@@ -71,7 +66,6 @@ def detect_bos_choch(df, swings):
                 l_times.append(sw["timestamp"])
             s_idx += 1
             
-        # Up break
         if h_prices and c > h_prices[-1]:
             opp_t = l_times[-1] if l_times else pd.NaT
             opp_p = l_prices[-1] if l_prices else np.nan
@@ -92,7 +86,6 @@ def detect_bos_choch(df, swings):
                 "last_opposite_time": opp_t, "last_opposite_price": opp_p
             })
             
-        # Down break
         if l_prices and c < l_prices[-1]:
             opp_t = h_times[-1] if h_times else pd.NaT
             opp_p = h_prices[-1] if h_prices else np.nan
@@ -123,11 +116,20 @@ def compute_atr(df, period=14):
     return tr.rolling(period).mean()
 
 def resample_to_tf(m15_df, rule):
-    # FIX 2: Do not shift by flat timedelta. Use timezone-aware origin at 17:00 NY.
+    """Resamples M15 data with NY wall-clock anchoring, immune to DST drift."""
+    # FIX 2: Remove tzinfo to resample in naive wall-clock time
     ny = m15_df.set_index("timestamp").tz_convert("America/New_York")
-    origin = pd.Timestamp("2020-01-01 17:00:00", tz="America/New_York")
+    ny_naive = ny.tz_localize(None)
+    
+    # Anchor to 17:00 NY time
+    origin = pd.Timestamp("2020-01-01 17:00:00")
     agg = {"open": ("open", "first"), "high": ("high", "max"), "low": ("low", "min"), "close": ("close", "last")}
-    res = ny.resample(rule, origin=origin, label="left", closed="left").agg(**agg).dropna(subset=["open"])
+    res = ny_naive.resample(rule, origin=origin, label="left", closed="left").agg(**agg).dropna(subset=["open"])
+    
+    # Reattach tz, mark nonexistent/ambiguous as NaT, drop them
+    res.index = res.index.tz_localize("America/New_York", ambiguous="NaT", nonexistent="NaT")
+    res = res[res.index.notna()]
+    
     return res.tz_convert("UTC").reset_index()
 
 def bars_available_at(df, t, tf_minutes):
