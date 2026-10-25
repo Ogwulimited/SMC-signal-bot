@@ -44,6 +44,9 @@ def detect_bos_choch(df, swings, tf):
     
     Event 'time' is stamped as the CLOSE time (t + tf) of the triggering bar.
     """
+    COLUMNS = ["label", "direction", "time", "close", "broken_swing_time",
+               "broken_swing_price", "last_opposite_time", "last_opposite_price"]
+    
     times = df["timestamp"].tolist()
     closes = df["close"].values
     
@@ -112,7 +115,9 @@ def detect_bos_choch(df, swings, tf):
                 "last_opposite_time": opp_t, "last_opposite_price": opp_p
             })
             
-    return pd.DataFrame(events)
+    if not events:
+        return pd.DataFrame(columns=COLUMNS)
+    return pd.DataFrame(events)[COLUMNS]
 
 def compute_atr(df, period=14):
     high = df["high"]
@@ -134,7 +139,7 @@ def resample_to_tf(m15_df, rule):
     agg = {"open": ("open", "first"), "high": ("high", "max"), "low": ("low", "min"), "close": ("close", "last")}
     res = ny_naive.resample(rule, origin=origin, label="left", closed="left").agg(**agg).dropna(subset=["open"])
     
-    # FIX: Drop trailing incomplete bins
+    # Drop trailing incomplete bins
     last_m15_close = ny_naive.index.max() + pd.Timedelta(minutes=15)
     bin_duration = pd.Timedelta(rule)
     bin_end = res.index + bin_duration
