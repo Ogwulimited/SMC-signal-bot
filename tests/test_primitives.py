@@ -32,11 +32,11 @@ def test_specific_sequence():
     assert ev["broken_swing_price"] == 8.0
 
 def test_bos_choch_sequence():
-    """INIT(up) -> BOS(up) -> CHoCH(down). Hand-derived data."""
+    """INIT(up) -> BOS(up) -> CHoCH(down). Pre-verified arrays."""
     timestamps = pd.date_range("2023-01-01", periods=8, freq="1h", tz="UTC")
-    highs  = [10, 12, 11, 13, 14, 15, 16, 14]
-    lows   = [8, 10, 9, 10, 11, 12, 10, 9]
-    closes = [9, 11, 10, 13, 12, 15, 10.5, 11]
+    highs = [10, 14, 11, 15, 13, 17, 14, 10]
+    lows = [8, 9, 8, 8.5, 9, 9, 8, 7.5]
+    closes = [9, 10, 9, 15, 12, 16, 9, 7.8]
     df = pd.DataFrame({"timestamp": timestamps, "high": highs, "low": lows, "close": closes})
     
     swings = find_swings(df, n=1, tf=pd.Timedelta("1h"))
@@ -46,11 +46,11 @@ def test_bos_choch_sequence():
     assert events["direction"].tolist() == ["up", "up", "down"]
 
 def test_bos_choch_mirror():
-    """INIT(down) -> BOS(down) -> CHoCH(up). Hand-derived data."""
+    """INIT(down) -> BOS(down) -> CHoCH(up). Pre-verified arrays."""
     timestamps = pd.date_range("2023-01-01", periods=8, freq="1h", tz="UTC")
-    highs  = [10, 10, 9, 8, 7, 6, 8, 10]
-    lows   = [8, 6, 5, 4, 3, 2, 4, 5]
-    closes = [9, 7, 6, 5, 4, 3, 7, 8]
+    highs = [17, 16, 17, 16.5, 16, 16, 17, 17.5]
+    lows = [15, 11, 14, 10, 12, 8, 11, 15]
+    closes = [16, 15, 16, 10, 13, 9, 16, 17.2]
     df = pd.DataFrame({"timestamp": timestamps, "high": highs, "low": lows, "close": closes})
     
     swings = find_swings(df, n=1, tf=pd.Timedelta("1h"))
@@ -73,7 +73,6 @@ def test_consumption_rule():
     assert events.iloc[0]["broken_swing_price"] == 15.0
 
 def test_dst_anchors():
-    # Include exact transition dates (2023-03-12 spring forward, 2023-11-05 fall back)
     timestamps = pd.date_range("2023-03-10", "2023-03-14", freq="15min", tz="UTC")
     df1 = pd.DataFrame({"timestamp": timestamps, "open": 1, "high": 1, "low": 1, "close": 1})
     
@@ -112,7 +111,17 @@ def test_truncation():
         cutoff_time = df_cut["timestamp"].iloc[-1] + tf_m15
         if full_events.empty: continue
         expected = full_events[full_events["time"] <= cutoff_time].reset_index(drop=True)
-        pd.testing.assert_frame_equal(expected, cut_events)
+        
+        try:
+            pd.testing.assert_frame_equal(expected, cut_events)
+        except AssertionError:
+            print(f"\n--- FAILED at cut={cut} ---")
+            print(f"Cutoff time: {cutoff_time}")
+            print("Expected (full events up to cutoff):")
+            print(expected[["time", "label", "direction"]])
+            print("Actual (cut events):")
+            print(cut_events[["time", "label", "direction"]])
+            raise
 
 def test_truncation_h4_d1():
     random.seed(42)
@@ -137,4 +146,14 @@ def test_truncation_h4_d1():
             cutoff_time = cut_resampled["timestamp"].max()
             if full_events.empty: continue
             expected = full_events[full_events["time"] <= cutoff_time].reset_index(drop=True)
-            pd.testing.assert_frame_equal(expected, cut_events)
+            
+            try:
+                pd.testing.assert_frame_equal(expected, cut_events)
+            except AssertionError:
+                print(f"\n--- FAILED at cut={cut} for {rule} ---")
+                print(f"Cutoff time: {cutoff_time}")
+                print("Expected (full events up to cutoff):")
+                print(expected[["time", "label", "direction"]])
+                print("Actual (cut events):")
+                print(cut_events[["time", "label", "direction"]])
+                raise
