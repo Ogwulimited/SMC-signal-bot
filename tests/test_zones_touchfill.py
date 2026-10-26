@@ -3,7 +3,7 @@ from src.research import zones
 from conftest import _mk_df
 
 
-def test_diagnostic_print_touch_and_fill_bullish(capsys):
+def test_touch_and_fill_bullish_normal_fill2():
     opens  = [11, 10.9, 10.5, 9.9]
     highs  = [11.2, 11.0, 10.6, 10.2]
     lows   = [10.8, 10.5, 9.8, 9.7]
@@ -14,12 +14,16 @@ def test_diagnostic_print_touch_and_fill_bullish(capsys):
 
     result = zones.find_touch_and_fill(m15_df, tf_m15, idm_swept_time,
                                         ob_low=9.0, ob_high=10.0, direction="bullish")
-    print("\n--- TOUCH_AND_FILL (normal fill2) ---")
-    print(result)
-    assert True
+
+    assert result is not None
+    assert result["touch_time"] == pd.Timestamp("2023-01-01 00:45:00", tz="UTC")
+    assert result["touch_index"] == 2
+    assert result["fill1"] == 10.0
+    assert result["fill2"] == 9.9
+    assert result["fill2_skipped"] is False
 
 
-def test_diagnostic_print_touch_and_fill_skipped(capsys):
+def test_touch_and_fill_fill2_skipped_no_next_bar():
     opens  = [10.5]
     highs  = [10.6]
     lows   = [9.8]
@@ -30,12 +34,16 @@ def test_diagnostic_print_touch_and_fill_skipped(capsys):
 
     result = zones.find_touch_and_fill(m15_df, tf_m15, idm_swept_time,
                                         ob_low=9.0, ob_high=10.0, direction="bullish")
-    print("\n--- TOUCH_AND_FILL (fill2 skipped, no next bar) ---")
-    print(result)
-    assert True
+
+    assert result is not None
+    assert result["touch_time"] == pd.Timestamp("2023-01-01 00:15:00", tz="UTC")
+    assert result["touch_index"] == 0
+    assert result["fill1"] == 10.0
+    assert pd.isna(result["fill2"])
+    assert result["fill2_skipped"] is True
 
 
-def test_diagnostic_print_touch_and_fill_none(capsys):
+def test_touch_and_fill_returns_none_when_no_touch():
     opens  = [11, 10.9, 10.5, 9.9]
     highs  = [11.2, 11.0, 10.6, 10.2]
     lows   = [10.8, 10.5, 9.8, 9.7]
@@ -46,6 +54,5 @@ def test_diagnostic_print_touch_and_fill_none(capsys):
 
     result = zones.find_touch_and_fill(m15_df, tf_m15, idm_swept_time,
                                         ob_low=4.0, ob_high=5.0, direction="bullish")
-    print("\n--- TOUCH_AND_FILL (expect None) ---")
-    print(result)
-    assert True
+
+    assert result is None
