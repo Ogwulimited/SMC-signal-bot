@@ -247,9 +247,14 @@ def find_equal_highs(df, tf, bad_days=None):
     if bad_days:
         highs = highs[~highs["timestamp"].apply(lambda t: t.date() in bad_days)].reset_index(drop=True)
     clusters = _cluster_equal_swings(highs, atr, "high")
-    cols = ["pool_price", "confirm_time", "expires_at", "swept_time",
+        cols = ["pool_price", "confirm_time", "expires_at", "swept_time",
             "cluster_size", "member_indexes", "side", "pool_type"]
-    return pd.DataFrame(clusters, columns=cols)
+    out = pd.DataFrame(clusters, columns=cols)
+    if not out.empty:
+        out["confirm_time"] = pd.to_datetime(out["confirm_time"], utc=True)
+        out["expires_at"] = pd.to_datetime(out["expires_at"], utc=True)
+        out["swept_time"] = pd.to_datetime(out["swept_time"], utc=True)
+    return out
 
 
 # ---------------------------------------------------------------------------
