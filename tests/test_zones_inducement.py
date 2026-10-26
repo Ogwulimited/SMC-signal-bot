@@ -5,7 +5,7 @@ from src.research import zones
 from conftest import _mk_df
 
 
-def test_diagnostic_print_inducement_model_b(capsys):
+def test_inducement_model_b_full_sequence():
     h1_opens  = [9.3, 9.3, 9.3, 9.7, 12.3, 10.0, 9.2, 7.3, 8.7, 9.7, 10.7, 11.7, 13.3, 14.3, 15.3]
     h1_highs  = [10, 10, 10, 11, 14, 11, 10, 9, 10, 11, 12, 13, 15, 16, 17]
     h1_lows   = [9, 9, 9, 9.5, 12, 9.5, 9, 7, 8.5, 9.5, 10.5, 11.5, 13, 14, 15]
@@ -23,17 +23,15 @@ def test_diagnostic_print_inducement_model_b(capsys):
     choch_time = h1_df["timestamp"].iloc[0]
     l_base_time = h1_df["timestamp"].iloc[7]
 
-    swings = primitives.find_swings(h1_df, config.STRUCTURE_SWING_N, tf_h1)
-    print("\n--- H1 SWINGS ---")
-    print(swings.to_string())
-
-    print("\n--- H1 DF ---")
-    print(h1_df.to_string())
-    print("\n--- M15 DF ---")
-    print(m15_df.to_string())
-
     result = zones.find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
                                     ob_low=5.5, ob_high=6.5, direction="bullish")
-    print("\n--- INDUCEMENT RESULT (Model B expected) ---")
-    print(result)
-    assert True
+
+    assert result is not None
+    assert result["model"] == "B"
+    assert result["idm_price"] == 7.0
+    assert result["idm_time"] == pd.Timestamp("2023-01-01 10:00:00", tz="UTC")
+    assert result["armed_time"] == pd.Timestamp("2023-01-01 13:00:00", tz="UTC")
+    assert result["swept_time"] == pd.Timestamp("2023-01-01 13:30:00", tz="UTC")
+    assert result["touch_time"] == pd.Timestamp("2023-01-01 14:00:00", tz="UTC")
+    assert result["same_bar_ambiguous"] is False
+    assert result["invalid_h1_close_through"] is False
