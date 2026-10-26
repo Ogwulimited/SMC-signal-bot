@@ -1,9 +1,11 @@
 import pandas as pd
+import numpy as np
+import pytest
 from src.research import zones
 from conftest import _mk_df
 
 
-def test_diagnostic_print_breaker_cancelled():
+def test_breaker_bullish_cancelled():
     tf_h1 = pd.Timedelta(hours=1)
     tf_m15 = pd.Timedelta(minutes=15)
 
@@ -29,6 +31,17 @@ def test_diagnostic_print_breaker_cancelled():
     ])
 
     result = zones.detect_breakers(h1, tf_h1, m15, tf_m15, bos_choch_events)
-    print("\n--- BREAKER CANCELLED DIAGNOSTIC ---")
-    print(result.to_string())
-    assert True
+
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["direction"] == "bullish"
+    assert row["zone_low"] == 9.7
+    assert row["zone_high"] == 9.9
+    assert row["failed_at"] == pd.Timestamp("2023-01-01 03:00:00", tz="UTC")
+    assert row["fvg_overlap"] == False
+    assert row["limit_price"] == pytest.approx(9.8)
+    assert np.isnan(row["stop"])
+    assert row["filled"] == False
+    assert pd.isna(row["fill_time"])
+    assert row["cancelled"] == True
+    assert row["cancel_time"] == pd.Timestamp("2023-01-01 06:00:00", tz="UTC")
