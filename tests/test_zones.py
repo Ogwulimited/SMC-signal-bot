@@ -1,5 +1,5 @@
 import pandas as pd
-from src.research import config
+from src import config
 from src.research import primitives
 from src.research import zones
 
