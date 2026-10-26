@@ -1,9 +1,10 @@
 import pandas as pd
+import pytest
 from src.research import zones
 from conftest import _mk_df
 
 
-def test_diagnostic_print_inducement_model_a_bearish_sweep_touch():
+def test_inducement_model_a_bearish_sweep_touch():
     tf_h1 = pd.Timedelta(hours=1)
     tf_m15 = pd.Timedelta(minutes=15)
 
@@ -29,6 +30,12 @@ def test_diagnostic_print_inducement_model_a_bearish_sweep_touch():
 
     result = zones.find_inducement(h1, m15, tf_h1, tf_m15, choch_time, l_base_time,
                                     ob_low, ob_high, direction="bearish")
-    print("\n--- INDUCEMENT MODEL A BEARISH SWEEP+TOUCH ---")
-    print(result)
-    assert True
+
+    assert result["model"] == "A"
+    assert result["idm_price"] == pytest.approx(10.3)
+    assert result["idm_time"] == pd.Timestamp("2023-01-01 01:45:00", tz="UTC")
+    assert result["armed_time"] == pd.Timestamp("2023-01-01 01:45:00", tz="UTC")
+    assert result["swept_time"] == pd.Timestamp("2023-01-01 02:30:00", tz="UTC")
+    assert result["touch_time"] == pd.Timestamp("2023-01-01 02:45:00", tz="UTC")
+    assert result["same_bar_ambiguous"] == False
+    assert result["invalid_h1_close_through"] == False
