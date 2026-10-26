@@ -1,91 +1,36 @@
-"""Configuration for the SMC signal bot — LIVE (v2, EQ-gated)."""
+"""SMC Research Engine Configuration."""
 
-RECOMMENDED_PAIRS = [
-    "frxAUDNZD",
-    "frxNZDCHF",
-    "frxEURAUD",
-    "frxGBPAUD",
-    "frxEURNZD",
-    "frxNZDCAD",
-    "frxAUDJPY",
-    "frxGBPUSD",
-    "cryETHUSD",
-    "frxNZDJPY",
-    "cryBTCUSD",
-    "frxGBPCHF",
-    "frxEURCHF",
-    "frxEURUSD",
-    "frxGBPNZD",
-    "frxUSDCHF",
-    "frxAUDCAD",
-    "frxUSDJPY",
-    "frxCADJPY",
-]
+# ----- Pairs -----
+PAIRS = ["eurusd", "gbpusd", "usdjpy", "audusd", "usdcad", "usdchf", "nzdusd", "eurjpy", "gbpjpy", "eurgbp", "audjpy"]
 
-SYMBOLS = RECOMMENDED_PAIRS
-
-GRANULARITY = 3600
-TIMEFRAME_LABEL = "H1"
-
-CANDLE_COUNT = 200
-DERIV_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public"
-
-# ----- SMC parameters -----
-SWING_LOOKBACK = 2
+# ----- Timeframes & Data -----
+GRANULARITY = 900  # M15 base
 ATR_PERIOD = 14
-EQ_TOLERANCE_ATR = 0.15
-BUFFER_ATR = 0.20
-DISPLACEMENT_ATR_MULT = 1.5
-MIN_RR = 2.5
-PATTERN_LOOKBACK_BARS = 30
 
-MIN_OB_WIDTH_ATR = 0.30
-MIN_TARGET_ATR = 1.00
+# ----- Phase 1: Primitives -----
+STRUCTURE_SWING_N = 2
+LIQUIDITY_SWING_N = 2
 
-# Legacy — kept for backwards compatibility with fvg.py import.
-MIN_FVG_ATR = 0.0
+# ----- Phase 2: Zones -----
+FVG_MIN_SIZE_ATR = 0.05
 
-# ----- Continuation model -----
-MIN_CONT_FVG_ATR = 0.05
-CONT_LIQUIDITY_TOL_ATR = 3.0
-CONT_MAX_OB_AGE = 800
-CONT_MAX_BARS_BOS_TO_TOUCH = 150
-CONT_CONFIRMATION_WAIT_BARS = 5
+EQ_LOWS_TOLERANCE_ATR = 0.15
+EQ_LOWS_MIN_BARS = 4
+EQ_LOWS_MAX_BARS = 120
+EQ_LOWS_MIN_CLUSTER = 2
 
-# ----- Target selection -----
-PREFER_MAJOR_LIQ_ATR = 5.0
+SWING_POOL_MAX_AGE_H1 = 240
+SWING_POOL_MAX_AGE_H4 = 60
 
-# ----- Time-based liquidity -----
-USE_TIME_BASED_LIQUIDITY = True
+PDH_PDL_LOOKBACK_DAYS = 3
+PWH_PWL_LOOKBACK_WEEKS = 2
+PMH_PML_LOOKBACK_MONTHS = 2
 
-# ----- Backtest performance -----
-DETECT_WINDOW = 1000
+OB_MITIGATION_START_OFFSET = 3
+OB_SEARCH_BACK_MAX = 5
+OB_BREAKER_SEARCH_BACK = 10
 
-# ----- Entry wait window (reversal model) -----
-MAX_WAIT_FOR_FILL_BARS = 30
-
-# ----- HTF bias (D1) -----
-HTF_GRANULARITY = 86400
-HTF_CANDLE_COUNT = 500
-HTF_SWING_LOOKBACK = 3
-
-# ----- Backtest outcome simulation -----
-MAX_HORIZON_BARS = 48
-SPREAD_ATR_FRAC = 0.04
-
-# ----- Telegram -----
-TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
-
-# ----- State -----
-STATE_FILE = "state.json"
-SIGNAL_COOLDOWN_SECONDS = 3600
-
-# ----- Trade monitor -----
-TRADES_FILE = "trades.json"
-MONITOR_GRANULARITY = 900
-MAX_TRADE_DURATION_SECONDS = 48 * 3600
-MONITOR_CANDLE_COUNT = 300
+SWEEP_RECLAIM_WINDOW = 3
 
 # ----- Reports -----
 REPORTS_DIR = "reports"
