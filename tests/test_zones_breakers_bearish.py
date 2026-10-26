@@ -1,10 +1,11 @@
 import numpy as np
 import pandas as pd
+import pytest
 from src.research import zones
 from conftest import _mk_df
 
 
-def test_diagnostic_print_detect_breakers_bearish():
+def test_detect_breakers_bearish_basic():
     warmup_n = 15
     h1_opens  = [10.0]*warmup_n + [10.0, 10.0, 10.5, 11.0, 9.2, 9.4, 9.3, 8.8, 8.7]
     h1_highs  = [10.2]*warmup_n + [10.1, 10.7, 11.2, 11.1, 9.5, 9.45, 9.9, 8.9, 8.8]
@@ -34,6 +35,24 @@ def test_diagnostic_print_detect_breakers_bearish():
     bos_events["last_opposite_time"] = pd.to_datetime(bos_events["last_opposite_time"], utc=True)
 
     result = zones.detect_breakers(h1_df, tf_h1, m15_df, tf_m15, bos_events)
-    print("\n--- BREAKERS BEARISH ---")
-    print(result.to_string())
-    assert True
+
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["direction"] == "bearish"
+    assert row["swing_time"] == pd.Timestamp("2023-01-01 15:00:00", tz="UTC")
+    assert row["swing_price"] == 9.9
+    assert row["bos_time"] == pd.Timestamp("2023-01-01 17:00:00", tz="UTC")
+    assert row["zone_index"] == 15
+    assert row["zone_time"] == pd.Timestamp("2023-01-01 15:00:00", tz="UTC")
+    assert row["zone_low"] == 9.9
+    assert row["zone_high"] == 10.1
+    assert row["failed_at"] == pd.Timestamp("2023-01-01 19:00:00", tz="UTC")
+    assert row["fvg_overlap"] == False
+    assert pd.isna(row["fvg_low"])
+    assert pd.isna(row["fvg_high"])
+    assert row["limit_price"] == pytest.approx(10.0)
+    assert row["stop"] == pytest.approx(10.14)
+    assert row["filled"] == True
+    assert row["fill_time"] == pd.Timestamp("2023-01-01 20:00:00", tz="UTC")
+    assert row["cancelled"] == False
+    assert pd.isna(row["cancel_time"])
