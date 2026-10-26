@@ -48,12 +48,12 @@ def test_detect_breakers_bullish_basic():
     assert row["zone_low"] == 9.9
     assert row["zone_high"] == 11.0
     assert row["failed_at"] == pd.Timestamp("2023-01-01 19:00:00", tz="UTC")
-    assert row["fvg_overlap"] is True
+    assert row["fvg_overlap"] == True
     assert row["fvg_low"] == 10.95
     assert row["fvg_high"] == 11.0
     assert row["limit_price"] == 10.45
     assert row["stop"] == 9.86
-    assert row["filled"] is True
+    assert row["filled"] == True
     assert row["fill_time"] == pd.Timestamp("2023-01-01 19:45:00", tz="UTC")
-    assert row["cancelled"] is False
+    assert row["cancelled"] == False
     assert pd.isna(row["cancel_time"])
