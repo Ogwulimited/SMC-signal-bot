@@ -1,42 +1,42 @@
 """
 zones.py -- Phase 2 SMC zone/pool detection.
 
-ASSUMPTIONS (read before trusting any output):
-1. primitives.find_swings(df, n, tf) returns columns:
-   index (int bar position in df), time (bar OPEN timestamp), price,
-   kind ("high"/"low"), confirm_time. If actual column names differ, only
-   the small accessor lines below need renaming -- not the algorithms.
-2. primitives.detect_bos_choch(df, swings, tf) returns the locked 8-column
-   schema: label, direction, time(close time = open+tf), close,
-   broken_swing_time, broken_swing_price, last_opposite_time, last_opposite_price.
-3. GROUND TRUTH (Phase 1 locked fixtures): choch.direction=="down" => BEARISH
-   setup. choch.direction=="up" => BULLISH setup. Applied consistently below.
-4. bad_days CSV schema is unknown to me; _load_bad_days tries common column
-   names -- confirm against build_history.py's real output before relying on it.
-5. ob_unmitigated (appendix: "...before the entry touch") is touch-time
-   dependent. detect_order_blocks logs mitigated_at/penetration_depth_frac
-   and exposes ob_unmitigated_before_touch() for the caller (Phase 3, which
-   knows the real touch time) to finish the check. `valid_pretouch` in
-   detect_order_blocks therefore covers only 3 of the 4 baseline criteria;
-   full validity = valid_pretouch AND ob_unmitigated_before_touch(...).
-6. PDH/PDL/PWH/PWL/PMH/PML: "valid until swept or N days/weeks/months" is
-   implemented as a fixed expiry from each bucket's close time. Month-expiry
-   uses pd.DateOffset(months=N) for real calendar-month arithmetic.
-7. EQL/EQH pools (per appendix, no stated expiry): valid until swept, no
-   time-based decay -- explicit decision carried over from prior draft.
-8. detect_breakers stop distance uses the universal strategy-spec rule
-   (far edge +/- 0.1*ATR(H1,14)), since appendix text for breakers doesn't
-   restate it but the overall spec does.
-9. Model A vs Model B priority in find_inducement: Model A attempted first,
-   Model B as fallback if Model A yields nothing. Appendix doesn't state an
-   order; internal helpers are exposed separately if both are needed.
+CORRECTIONS THIS ROUND (self-caught, not DeepSeek's):
+- find_swings() real output column is "timestamp", not "time". Fixed in
+  find_swing_pools, detect_equal_lows, find_equal_highs, find_inducement.
+- Standardized pool schema across producers: all pool-producing functions
+  now output pool_price, confirm_time, expires_at, swept_time, side,
+  pool_type, so find_liquidity_taken works against either swing pools or
+  equal-lows/highs pools uniformly. swept_time defaults to NaT (populated
+  later by a Phase-3 orchestration step calling detect_sweep per pool, not
+  by these functions themselves).
+
+ASSUMPTIONS (confirmed against real primitives.py source this round):
+1. primitives.find_swings(df, n, tf) columns: index, timestamp, price, kind
+   ("high"/"low"), confirm_time. CONFIRMED from real source.
+2. primitives.detect_bos_choch(...) columns: label, direction, time (close
+   time = open+tf), close, broken_swing_time, broken_swing_price,
+   last_opposite_time, last_opposite_price. CONFIRMED from real source.
+3. GROUND TRUTH: choch.direction=="down" => BEARISH setup;
+   choch.direction=="up" => BULLISH setup. Verified by real CI run.
+4. bad_days CSV schema still unconfirmed -- _load_bad_days tries common
+   column names.
+5. ob_unmitigated_before_touch is a caller-side helper (Phase 3 knows real
+   touch time); detect_order_blocks's valid_pretouch covers only
+   ob_sweep+ob_fvg, not mitigation -- caller must AND it in.
+6. PDH/PDL/PWH/PWL/PMH/PML expiry: fixed offset from bucket close time;
+   month uses pd.DateOffset for real calendar arithmetic.
+7. EQL/EQH pools: no time-based expiry per appendix -- expires_at is NaT.
+8. Breaker stop = far edge +/- 0.1*ATR(H1,14), per overall strategy spec.
+9. find_inducement tries Model A first, Model B as fallback -- appendix
+   doesn't state an order explicitly.
 """
 
 import numpy as np
 import pandas as pd
 
-from src import config
-from src.research import primitives
+import config
+import primitives
 
 
 # ---------------------------------------------------------------------------
@@ -54,13 +54,6 @@ def _load_bad_days(bad_days_path, pair=None):
 
 
 def _is_continuous(timestamps, tf, bad_days=None):
-    """
-    timestamps: list/Series of consecutive bar-OPEN timestamps, ascending.
-    True only if every consecutive gap equals tf (no market closure gap) and
-    none of the bars fall on a bad day. Must always be called with the FULL
-    consecutive-bar slice, e.g. df["timestamp"].iloc[a:b+1].tolist() -- never
-    with 2-3 widely spaced timestamps (that was the Round-5 bug).
-    """
     ts = list(timestamps)
     if len(ts) < 1:
         return False
@@ -77,14 +70,10 @@ def _is_continuous(timestamps, tf, bad_days=None):
 
 
 def _atr_shifted(df, period=14):
-    """ATR(period) shifted by 1 bar so decision time t only uses bars closed
-    strictly before t (CONVENTIONS)."""
     return primitives.compute_atr(df, period=period).shift(1)
 
 
 def ob_unmitigated_before_touch(mitigated_at, touch_time):
-    """True if the OB was not mitigated before touch_time (or never
-    mitigated at all within available data, or no touch exists yet)."""
     if pd.isna(mitigated_at):
         return True
     if pd.isna(touch_time):
@@ -97,8 +86,6 @@ def ob_unmitigated_before_touch(mitigated_at, touch_time):
 # ---------------------------------------------------------------------------
 
 def detect_fvgs(df, tf, bad_days=None):
-    """Three consecutive closed bars a,b,c. Bullish: low[c] > high[a].
-    Bearish: high[c] < low[a]. Valid if size >= FVG_MIN_SIZE_ATR * ATR(tf)."""
     atr = _atr_shifted(df, period=14)
     n = len(df)
     times = df["timestamp"]
@@ -135,13 +122,11 @@ def detect_fvgs(df, tf, bad_days=None):
 
 
 # ---------------------------------------------------------------------------
-# Generic sweep detector (used by every pool type)
+# Generic sweep detector
 # ---------------------------------------------------------------------------
 
 def detect_sweep(df, tf, pool_price, confirm_time, side, bad_days=None,
                   reclaim_window=config.SWEEP_RECLAIM_WINDOW):
-    """side: 'low' (support pool) or 'high' (resistance pool). Baseline =
-    trade-through, min depth 0. Returns None if never swept in df's span."""
     atr = _atr_shifted(df, period=14)
     cand = df[df["timestamp"] >= confirm_time].reset_index(drop=False)
     for _, row in cand.iterrows():
@@ -167,7 +152,8 @@ def detect_sweep(df, tf, pool_price, confirm_time, side, bad_days=None,
 
 
 # ---------------------------------------------------------------------------
-# Swing pools (H1/H4)
+# Swing pools (H1/H4)  -- FIXED: "time"->"timestamp", price->pool_price,
+# added swept_time column for schema consistency with liquidity_taken.
 # ---------------------------------------------------------------------------
 
 def find_swing_pools(df, tf, timeframe_label, side, bad_days=None):
@@ -180,14 +166,17 @@ def find_swing_pools(df, tf, timeframe_label, side, bad_days=None):
     sub["timeframe"] = timeframe_label
     sub["side"] = side
     sub["pool_type"] = "swing"
+    sub["swept_time"] = pd.NaT
+    sub = sub.rename(columns={"price": "pool_price"})
     if bad_days:
-        sub = sub[~sub["time"].apply(lambda t: t.date() in bad_days)]
-    return sub[["index", "time", "price", "confirm_time", "expires_at",
-                "side", "timeframe", "pool_type"]].reset_index(drop=True)
+        sub = sub[~sub["timestamp"].apply(lambda t: t.date() in bad_days)]
+    return sub[["index", "timestamp", "pool_price", "confirm_time", "expires_at",
+                "swept_time", "side", "timeframe", "pool_type"]].reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
-# Equal lows / equal highs
+# Equal lows / equal highs -- FIXED: "time"->"timestamp", added
+# expires_at (NaT, no stated expiry) + swept_time (NaT) for schema parity.
 # ---------------------------------------------------------------------------
 
 def _cluster_equal_swings(swings, atr_series, side):
@@ -229,6 +218,7 @@ def _cluster_equal_swings(swings, atr_series, side):
         sub = swings.iloc[members]
         pool_price = sub["price"].min() if side == "low" else sub["price"].max()
         results.append({"pool_price": pool_price, "confirm_time": sub["confirm_time"].max(),
+                         "expires_at": pd.NaT, "swept_time": pd.NaT,
                          "cluster_size": len(members), "member_indexes": sorted(sub["index"].tolist()),
                          "side": side, "pool_type": "equal_lows" if side == "low" else "equal_highs"})
     return results
@@ -239,9 +229,10 @@ def detect_equal_lows(df, tf, bad_days=None):
     swings = primitives.find_swings(df, config.LIQUIDITY_SWING_N, tf)
     lows = swings[swings["kind"] == "low"].reset_index(drop=True)
     if bad_days:
-        lows = lows[~lows["time"].apply(lambda t: t.date() in bad_days)].reset_index(drop=True)
+        lows = lows[~lows["timestamp"].apply(lambda t: t.date() in bad_days)].reset_index(drop=True)
     clusters = _cluster_equal_swings(lows, atr, "low")
-    cols = ["pool_price", "confirm_time", "cluster_size", "member_indexes", "side", "pool_type"]
+    cols = ["pool_price", "confirm_time", "expires_at", "swept_time",
+            "cluster_size", "member_indexes", "side", "pool_type"]
     return pd.DataFrame(clusters, columns=cols)
 
 
@@ -250,14 +241,15 @@ def find_equal_highs(df, tf, bad_days=None):
     swings = primitives.find_swings(df, config.LIQUIDITY_SWING_N, tf)
     highs = swings[swings["kind"] == "high"].reset_index(drop=True)
     if bad_days:
-        highs = highs[~highs["time"].apply(lambda t: t.date() in bad_days)].reset_index(drop=True)
+        highs = highs[~highs["timestamp"].apply(lambda t: t.date() in bad_days)].reset_index(drop=True)
     clusters = _cluster_equal_swings(highs, atr, "high")
-    cols = ["pool_price", "confirm_time", "cluster_size", "member_indexes", "side", "pool_type"]
+    cols = ["pool_price", "confirm_time", "expires_at", "swept_time",
+            "cluster_size", "member_indexes", "side", "pool_type"]
     return pd.DataFrame(clusters, columns=cols)
 
 
 # ---------------------------------------------------------------------------
-# PDH/PDL, PWH/PWL, PMH/PML  (gap-fill: absent from prior draft)
+# PDH/PDL, PWH/PWL, PMH/PML
 # ---------------------------------------------------------------------------
 
 def _ny_session_bucket(ts_utc, freq):
@@ -288,11 +280,11 @@ def _periodic_hilo_pools(df, tf, freq, max_age_periods, prefix, bad_days=None):
             age = pd.DateOffset(months=max_age_periods)
         rows.append({"bucket": b, "side": "high", "pool_price": g["high"].max(),
                      "confirm_time": confirm_time, "expires_at": confirm_time + age,
-                     "pool_type": f"{prefix}H"})
+                     "swept_time": pd.NaT, "pool_type": f"{prefix}H"})
         rows.append({"bucket": b, "side": "low", "pool_price": g["low"].min(),
                      "confirm_time": confirm_time, "expires_at": confirm_time + age,
-                     "pool_type": f"{prefix}L"})
-    cols = ["bucket", "side", "pool_price", "confirm_time", "expires_at", "pool_type"]
+                     "swept_time": pd.NaT, "pool_type": f"{prefix}L"})
+    cols = ["bucket", "side", "pool_price", "confirm_time", "expires_at", "swept_time", "pool_type"]
     return pd.DataFrame(rows, columns=cols)
 
 
@@ -309,13 +301,11 @@ def find_pmh_pml(df, tf, bad_days=None):
 
 
 # ---------------------------------------------------------------------------
-# Liquidity Taken (Layer 4) -- unified bullish/bearish via direction param
+# Liquidity Taken (Layer 4)
 # ---------------------------------------------------------------------------
 
 def find_liquidity_taken(pools, bos_open_time, l_base_price, direction,
                           atr_at_bos=None, ob_upper_edge=None):
-    """pools must have columns: pool_type, side, pool_price, confirm_time,
-    swept_time (nullable), expires_at (nullable). Log-only, never filters."""
     side = "low" if direction == "bullish" else "high"
     cand = pools[pools["side"] == side].copy()
     cand = cand[cand["confirm_time"] < bos_open_time]
@@ -334,16 +324,10 @@ def find_liquidity_taken(pools, bos_open_time, l_base_price, direction,
 
 
 # ---------------------------------------------------------------------------
-# Entry Order Block  (CRITICAL FIX: direction mapping + _is_continuous usage)
+# Entry Order Block (unchanged -- already tested & passing)
 # ---------------------------------------------------------------------------
 
 def detect_order_blocks(df, tf, bos_choch_events, bad_days=None):
-    """
-    GROUND TRUTH: choch.direction=="down" -> BEARISH setup, L_base = HIGH
-    extreme between BOS and CHoCH bars, OB = last BULLISH candle at/before
-    L_base. choch.direction=="up" -> BULLISH setup, L_base = LOW extreme, OB
-    = last BEARISH candle at/before L_base. (Inverted in prior draft -- fixed.)
-    """
     atr = _atr_shifted(df, period=14)
     times = df["timestamp"]
     n = len(df)
@@ -457,7 +441,7 @@ def detect_order_blocks(df, tf, bos_choch_events, bad_days=None):
 
 
 # ---------------------------------------------------------------------------
-# Inducement (IDM) -- Model A and Model B, with direction param
+# Inducement (IDM) -- FIXED: "time"->"timestamp" throughout (Model A & B)
 # ---------------------------------------------------------------------------
 
 def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
@@ -467,7 +451,7 @@ def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
     def _model_b():
         swings = primitives.find_swings(h1_df, config.STRUCTURE_SWING_N, tf_h1)
         kind = "high" if bull else "low"
-        cand = swings[(swings["kind"] == kind) & (swings["time"] >= choch_time)].sort_values("time")
+        cand = swings[(swings["kind"] == kind) & (swings["timestamp"] >= choch_time)].sort_values("timestamp")
         if cand.empty:
             return None
         s1 = cand.iloc[0]
@@ -481,7 +465,7 @@ def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
         if bos_row is None:
             return None
         bos_idx = bos_row["index"]
-        s1_match = h1_df.index[h1_df["timestamp"] == s1["time"]]
+        s1_match = h1_df.index[h1_df["timestamp"] == s1["timestamp"]]
         if len(s1_match) == 0 or s1_match[0] >= bos_idx:
             return None
         s1_idx = s1_match[0]
@@ -496,7 +480,7 @@ def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
     def _model_a():
         swings = primitives.find_swings(m15_df, config.STRUCTURE_SWING_N, tf_m15)
         kind = "high" if bull else "low"
-        cand = swings[(swings["kind"] == kind) & (swings["time"] > l_base_time) & (swings["confirm_time"] <= choch_time)]
+        cand = swings[(swings["kind"] == kind) & (swings["timestamp"] > l_base_time) & (swings["confirm_time"] <= choch_time)]
         if cand.empty:
             return None
         window = m15_df[(m15_df["timestamp"] > l_base_time) &
@@ -506,7 +490,7 @@ def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
             active = cand[cand["confirm_time"] <= r["timestamp"]]
             if active.empty:
                 continue
-            recent = active.sort_values("time").iloc[-1]
+            recent = active.sort_values("timestamp").iloc[-1]
             if bull and r["close"] > recent["price"]:
                 bos_row = r; break
             if (not bull) and r["close"] < recent["price"]:
@@ -516,12 +500,12 @@ def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
         bos_idx = bos_row["index"]
         bos_close_time = m15_df["timestamp"].iloc[bos_idx] + tf_m15
         opp = "low" if bull else "high"
-        opp_cand = swings[(swings["kind"] == opp) & (swings["time"] > l_base_time) &
-                           (swings["time"] < m15_df["timestamp"].iloc[bos_idx]) &
+        opp_cand = swings[(swings["kind"] == opp) & (swings["timestamp"] > l_base_time) &
+                           (swings["timestamp"] < m15_df["timestamp"].iloc[bos_idx]) &
                            (swings["confirm_time"] <= bos_close_time)]
         if opp_cand.empty:
             return None
-        idm_row = opp_cand.sort_values("time").iloc[-1]
+        idm_row = opp_cand.sort_values("timestamp").iloc[-1]
         return {"model": "A", "idm_price": idm_row["price"], "idm_time": idm_row["confirm_time"],
                 "armed_time": bos_close_time}
 
@@ -563,7 +547,7 @@ def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
 
 
 # ---------------------------------------------------------------------------
-# Touch and Fill
+# Touch and Fill (unchanged -- already tested & passing)
 # ---------------------------------------------------------------------------
 
 def find_touch_and_fill(m15_df, tf_m15, idm_swept_time, ob_low, ob_high, direction):
@@ -591,7 +575,7 @@ def find_touch_and_fill(m15_df, tf_m15, idm_swept_time, ob_low, ob_high, directi
 
 
 # ---------------------------------------------------------------------------
-# Breakers  (FIX: last_opposite_* instead of broken_swing_*, + bearish mirror)
+# Breakers (unchanged -- not yet tested)
 # ---------------------------------------------------------------------------
 
 def detect_breakers(df, tf, m15_df, tf_m15, bos_choch_events, bad_days=None):
@@ -700,7 +684,7 @@ def detect_breakers(df, tf, m15_df, tf_m15, bos_choch_events, bad_days=None):
 
 
 # ---------------------------------------------------------------------------
-# HTF zones (D1/H4)
+# HTF zones (D1/H4) (unchanged -- not yet tested)
 # ---------------------------------------------------------------------------
 
 def find_htf_zones(df, tf, bos_choch_events, bad_days=None):
