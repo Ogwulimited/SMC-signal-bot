@@ -1,10 +1,11 @@
 import numpy as np
 import pandas as pd
+import pytest
 from src.research import zones
 from conftest import _mk_df
 
 
-def test_diagnostic_print_touch_and_fill_bearish_normal():
+def test_touch_and_fill_bearish_normal():
     m15 = _mk_df(
         opens=[9.0, 9.3, 9.8, 10.5, 10.6],
         highs=[9.4, 9.5, 10.2, 10.6, 10.8],
@@ -17,12 +18,15 @@ def test_diagnostic_print_touch_and_fill_bearish_normal():
 
     result = zones.find_touch_and_fill(m15, tf_m15, idm_swept_time,
                                         ob_low=10.0, ob_high=11.0, direction="bearish")
-    print("\n--- TOUCH_AND_FILL BEARISH NORMAL ---")
-    print(result)
-    assert True
+
+    assert result["touch_time"] == pd.Timestamp("2023-01-01 00:45:00", tz="UTC")
+    assert result["touch_index"] == 2
+    assert result["fill1"] == 10.0
+    assert result["fill2"] == pytest.approx(10.5)
+    assert result["fill2_skipped"] == False
 
 
-def test_diagnostic_print_touch_and_fill_bearish_skipped_no_next_bar():
+def test_touch_and_fill_bearish_skipped_no_next_bar():
     m15 = _mk_df(
         opens=[9.0, 9.2, 9.4],
         highs=[9.3, 9.5, 10.2],
@@ -35,12 +39,15 @@ def test_diagnostic_print_touch_and_fill_bearish_skipped_no_next_bar():
 
     result = zones.find_touch_and_fill(m15, tf_m15, idm_swept_time,
                                         ob_low=10.0, ob_high=11.0, direction="bearish")
-    print("\n--- TOUCH_AND_FILL BEARISH SKIPPED (no next bar) ---")
-    print(result)
-    assert True
+
+    assert result["touch_time"] == pd.Timestamp("2023-01-01 00:45:00", tz="UTC")
+    assert result["touch_index"] == 2
+    assert result["fill1"] == 10.0
+    assert np.isnan(result["fill2"])
+    assert result["fill2_skipped"] == True
 
 
-def test_diagnostic_print_touch_and_fill_bearish_no_touch():
+def test_touch_and_fill_bearish_no_touch():
     m15 = _mk_df(
         opens=[9.0, 9.1, 9.2],
         highs=[9.3, 9.4, 9.5],
@@ -53,6 +60,5 @@ def test_diagnostic_print_touch_and_fill_bearish_no_touch():
 
     result = zones.find_touch_and_fill(m15, tf_m15, idm_swept_time,
                                         ob_low=10.0, ob_high=11.0, direction="bearish")
-    print("\n--- TOUCH_AND_FILL BEARISH NO TOUCH (expect None) ---")
-    print(result)
-    assert True
+
+    assert result is None
