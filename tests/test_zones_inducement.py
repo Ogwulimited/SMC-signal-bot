@@ -68,7 +68,7 @@ def test_inducement_model_a_full_sequence():
     assert result["same_bar_ambiguous"] is False
     assert result["invalid_h1_close_through"] is False
     
-def test_diagnostic_print_inducement_same_bar_ambiguous(capsys):
+def test_inducement_same_bar_ambiguous():
     h1_opens  = [9.3, 9.3, 9.3, 9.7, 12.3, 10.0, 9.2, 7.3, 8.7, 9.7, 10.7, 11.7, 13.3, 14.3, 15.3]
     h1_highs  = [10, 10, 10, 11, 14, 11, 10, 9, 10, 11, 12, 13, 15, 16, 17]
     h1_lows   = [9, 9, 9, 9.5, 12, 9.5, 9, 7, 8.5, 9.5, 10.5, 11.5, 13, 14, 15]
@@ -88,6 +88,11 @@ def test_diagnostic_print_inducement_same_bar_ambiguous(capsys):
 
     result = zones.find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
                                     ob_low=5.9, ob_high=6.9, direction="bullish")
-    print("\n--- INDUCEMENT RESULT (same_bar_ambiguous expected True) ---")
-    print(result)
-    assert True
+
+    assert result is not None
+    assert result["model"] == "B"
+    assert result["idm_price"] == 7.0
+    assert result["swept_time"] == pd.Timestamp("2023-01-01 13:30:00", tz="UTC")
+    assert pd.isna(result["touch_time"])
+    assert result["same_bar_ambiguous"] is True
+    assert result["invalid_h1_close_through"] is False
