@@ -106,3 +106,86 @@ def test_ob_unmitigated_before_touch_helper():
 # full multi-timeframe pipeline (H1+M15 swings/BOS interacting). Recommend:
 # run the above tests first in CI, confirm green, THEN construct these two
 # fixtures from REAL printed intermediate output rather than hand-derivation.
+
+def test_find_swing_pools_low_basic():
+    lows = [15, 14, 10, 14, 15, 15, 15]
+    highs = [20] * 7
+    opens = lows[:]
+    closes = lows[:]
+    df = _mk_df(opens, highs, lows, closes)
+    tf = pd.Timedelta(hours=1)
+    pools = zones.find_swing_pools(df, tf, "H1", "low")
+    assert len(pools) == 1
+    row = pools.iloc[0]
+    assert row["index"] == 2
+    assert row["pool_price"] == 10
+    expected_confirm = df["timestamp"].iloc[4] + tf
+    assert row["confirm_time"] == expected_confirm
+    assert row["expires_at"] == expected_confirm + config.SWING_POOL_MAX_AGE_H1 * tf
+    assert row["side"] == "low"
+    assert row["timeframe"] == "H1"
+    assert row["pool_type"] == "swing"
+    assert pd.isna(row["swept_time"])
+
+
+def test_equal_lows_in_and_out_of_tolerance():
+    n = 35
+    opens = [100.0] * n
+    highs = [100.5] * n
+    lows = [99.5] * n
+    closes = [100.0] * n
+    lows[15] = 90.0
+    closes[15] = 95.0
+    lows[20] = 89.95
+    closes[20] = 95.0
+    lows[30] = 50.0
+    df = _mk_df(opens, highs, lows, closes)
+    tf = pd.Timedelta(hours=1)
+    eql = zones.detect_equal_lows(df, tf)
+    assert len(eql) == 1
+    row = eql.iloc[0]
+    assert row["cluster_size"] == 2
+    assert abs(row["pool_price"] - 89.95) < 1e-9
+    assert row["pool_type"] == "equal_lows"
+    assert pd.isna(row["expires_at"])
+
+
+def test_find_liquidity_taken_bullish_logs_matching_pool():
+    pools = pd.DataFrame([
+        {"pool_type": "swing", "side": "low", "pool_price": 95.0,
+         "confirm_time": pd.Timestamp("2023-01-01 00:00", tz="UTC"),
+         "swept_time": pd.NaT, "expires_at": pd.NaT},
+        {"pool_type": "swing", "side": "low", "pool_price": 105.0,
+         "confirm_time": pd.Timestamp("2023-01-01 00:00", tz="UTC"),
+         "swept_time": pd.NaT, "expires_at": pd.NaT},
+        {"pool_type": "swing", "side": "high", "pool_price": 95.0,
+         "confirm_time": pd.Timestamp("2023-01-01 00:00", tz="UTC"),
+         "swept_time": pd.NaT, "expires_at": pd.NaT},
+    ])
+    bos_open_time = pd.Timestamp("2023-01-02 00:00", tz="UTC")
+    result = zones.find_liquidity_taken(pools, bos_open_time, l_base_price=90.0,
+                                         direction="bullish", atr_at_bos=2.0, ob_upper_edge=92.0)
+    assert len(result) == 1
+    assert result.iloc[0]["pool_type"] == "swing"
+    assert result.iloc[0]["pool_price"] == 95.0
+    assert abs(result.iloc[0]["depth"] - 5.0) < 1e-9
+    assert abs(result.iloc[0]["depth_atr"] - 2.5) < 1e-9
+
+
+def test_diagnostic_print_bos_choch_for_htf_zones(capsys):
+    highs  = [10, 14, 11, 15, 13, 17, 14, 10, 9, 8, 11, 13]
+    lows   = [8, 9, 8, 8.5, 9, 9, 8, 7.5, 7, 6.5, 7, 8]
+    closes = [9, 10, 9, 15, 12, 16, 9, 7.8, 7.2, 6.8, 10.5, 12.5]
+    opens  = [8.5, 9, 9.5, 9.5, 15, 12.5, 16, 9, 8, 7, 7.2, 10.5]
+    df = _mk_df(opens, highs, lows, closes)
+    tf = pd.Timedelta(hours=1)
+    swings = primitives.find_swings(df, n=1, tf=tf)
+    events = primitives.detect_bos_choch(df, swings, tf)
+    print("\n--- SWINGS ---")
+    print(swings.to_string())
+    print("\n--- EVENTS ---")
+    print(events.to_string())
+    htf = zones.find_htf_zones(df, tf, events)
+    print("\n--- HTF ZONES ---")
+    print(htf.to_string())
+    assert True
