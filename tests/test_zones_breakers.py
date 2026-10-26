@@ -6,7 +6,7 @@ from src.research import zones
 from conftest import _mk_df
 
 
-def test_diagnostic_print_detect_breakers(capsys):
+def test_detect_breakers_bullish_basic():
     warmup_n = 15
     h1_opens  = [10.0]*warmup_n + [10.0, 10.0, 9.5, 9.0, 10.8, 10.6, 10.7, 11.2, 11.3]
     h1_highs  = [10.2]*warmup_n + [11.0, 10.0, 9.6, 11.2, 10.95, 10.8, 11.3, 11.4, 11.5]
@@ -36,8 +36,24 @@ def test_diagnostic_print_detect_breakers(capsys):
     bos_events["last_opposite_time"] = pd.to_datetime(bos_events["last_opposite_time"], utc=True)
 
     result = zones.detect_breakers(h1_df, tf_h1, m15_df, tf_m15, bos_events)
-    pd.set_option("display.max_columns", None)
-    pd.set_option("display.width", 200)
-    print("\n--- BREAKERS RESULT ---")
-    print(result.to_string())
-    assert True
+
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["direction"] == "bullish"
+    assert row["swing_time"] == pd.Timestamp("2023-01-01 15:00:00", tz="UTC")
+    assert row["swing_price"] == 11.0
+    assert row["bos_time"] == pd.Timestamp("2023-01-01 17:00:00", tz="UTC")
+    assert row["zone_index"] == 15
+    assert row["zone_time"] == pd.Timestamp("2023-01-01 15:00:00", tz="UTC")
+    assert row["zone_low"] == 9.9
+    assert row["zone_high"] == 11.0
+    assert row["failed_at"] == pd.Timestamp("2023-01-01 19:00:00", tz="UTC")
+    assert row["fvg_overlap"] is True
+    assert row["fvg_low"] == 10.95
+    assert row["fvg_high"] == 11.0
+    assert row["limit_price"] == 10.45
+    assert row["stop"] == 9.86
+    assert row["filled"] is True
+    assert row["fill_time"] == pd.Timestamp("2023-01-01 19:45:00", tz="UTC")
+    assert row["cancelled"] is False
+    assert pd.isna(row["cancel_time"])
