@@ -14,4 +14,4 @@ jobs:
       - name: Install dependencies
         run: pip install pandas pyarrow pytest
       - name: Run Phase 2 Tests
-        run: python -m pytest tests/test_zones.py -v
+        run: python -m pytest tests/test_zones.py -v -s
