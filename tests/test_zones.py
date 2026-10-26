@@ -13,6 +13,8 @@ def _mk_df(opens, highs, lows, closes, freq="1h", start="2023-01-01"):
 # --- CRITICAL REGRESSION: direction mapping (the Round-5 bug) --------------
 # NOTE: opens[] are my own addition (Phase 1's fixtures only had H/L/C).
 # highs/lows/closes below are UNCHANGED from the locked Phase 1 fixtures.
+# n=1 matches Phase 1's real test_bos_choch_sequence/test_bos_choch_mirror
+# source exactly -- NOT config.STRUCTURE_SWING_N (that was my earlier bug).
 
 def test_order_block_direction_bearish_on_choch_down():
     highs  = [10, 14, 11, 15, 13, 17, 14, 10]
@@ -21,7 +23,7 @@ def test_order_block_direction_bearish_on_choch_down():
     opens  = [8.5, 9, 9.5, 9.5, 15, 12.5, 16, 9]
     df = _mk_df(opens, highs, lows, closes)
     tf = pd.Timedelta(hours=1)
-    swings = primitives.find_swings(df, config.STRUCTURE_SWING_N, tf)
+    swings = primitives.find_swings(df, n=1, tf=tf)
     events = primitives.detect_bos_choch(df, swings, tf)
     obs = zones.detect_order_blocks(df, tf, events)
     assert not obs.empty
@@ -36,7 +38,7 @@ def test_order_block_direction_bullish_on_choch_up():
     opens  = [16.5, 16, 15.5, 15.5, 10, 12.5, 9, 16]
     df = _mk_df(opens, highs, lows, closes)
     tf = pd.Timedelta(hours=1)
-    swings = primitives.find_swings(df, config.STRUCTURE_SWING_N, tf)
+    swings = primitives.find_swings(df, n=1, tf=tf)
     events = primitives.detect_bos_choch(df, swings, tf)
     obs = zones.detect_order_blocks(df, tf, events)
     assert not obs.empty
