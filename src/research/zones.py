@@ -293,8 +293,13 @@ def _periodic_hilo_pools(df, tf, freq, max_age_periods, prefix, bad_days=None):
         rows.append({"bucket": b, "side": "low", "pool_price": g["low"].min(),
                      "confirm_time": confirm_time, "expires_at": confirm_time + age,
                      "swept_time": pd.NaT, "pool_type": f"{prefix}L"})
-    cols = ["bucket", "side", "pool_price", "confirm_time", "expires_at", "swept_time", "pool_type"]
-    return pd.DataFrame(rows, columns=cols)
+        cols = ["bucket", "side", "pool_price", "confirm_time", "expires_at", "swept_time", "pool_type"]
+    out = pd.DataFrame(rows, columns=cols)
+    if not out.empty:
+        out["confirm_time"] = pd.to_datetime(out["confirm_time"], utc=True)
+        out["expires_at"] = pd.to_datetime(out["expires_at"], utc=True)
+        out["swept_time"] = pd.to_datetime(out["swept_time"], utc=True)
+    return out
 
 
 def find_pdh_pdl(df, tf, bad_days=None):
