@@ -3,7 +3,7 @@ from src.research import zones
 from conftest import _mk_df
 
 
-def test_diagnostic_print_inducement_model_b_bearish():
+def test_inducement_model_b_bearish_full_sequence():
     h1_opens  = [10.7, 10.7, 10.7, 10.3, 7.7, 10.0, 10.8, 12.7, 11.3, 10.3, 9.3, 8.3, 6.7, 5.7, 4.7]
     h1_highs  = [11.0, 11.0, 11.0, 10.5, 8.0, 10.5, 11.0, 13.0, 11.5, 10.5, 9.5, 8.5, 7.0, 6.0, 5.0]
     h1_lows   = [10.0, 10.0, 10.0, 9.5, 7.0, 9.5, 10.0, 11.0, 10.5, 9.5, 8.5, 7.5, 6.0, 5.0, 4.0]
@@ -23,6 +23,13 @@ def test_diagnostic_print_inducement_model_b_bearish():
 
     result = zones.find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
                                     ob_low=13.5, ob_high=14.5, direction="bearish")
-    print("\n--- INDUCEMENT BEARISH MODEL B ---")
-    print(result)
-    assert True
+
+    assert result is not None
+    assert result["model"] == "B"
+    assert result["idm_price"] == 13.0
+    assert result["idm_time"] == pd.Timestamp("2023-01-01 10:00:00", tz="UTC")
+    assert result["armed_time"] == pd.Timestamp("2023-01-01 13:00:00", tz="UTC")
+    assert result["swept_time"] == pd.Timestamp("2023-01-01 13:30:00", tz="UTC")
+    assert result["touch_time"] == pd.Timestamp("2023-01-01 14:00:00", tz="UTC")
+    assert result["same_bar_ambiguous"] is False
+    assert result["invalid_h1_close_through"] is False
