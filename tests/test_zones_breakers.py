@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 from src import config
 from src.research import primitives
 from src.research import zones
@@ -51,8 +52,8 @@ def test_detect_breakers_bullish_basic():
     assert row["fvg_overlap"] == True
     assert row["fvg_low"] == 10.95
     assert row["fvg_high"] == 11.0
-    assert row["limit_price"] == 10.45
-    assert row["stop"] == 9.86
+    assert row["limit_price"] == pytest.approx(10.45)
+    assert row["stop"] == pytest.approx(9.86)
     assert row["filled"] == True
     assert row["fill_time"] == pd.Timestamp("2023-01-01 19:45:00", tz="UTC")
     assert row["cancelled"] == False
