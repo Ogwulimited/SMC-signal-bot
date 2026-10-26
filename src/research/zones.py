@@ -166,7 +166,7 @@ def find_swing_pools(df, tf, timeframe_label, side, bad_days=None):
     sub["timeframe"] = timeframe_label
     sub["side"] = side
     sub["pool_type"] = "swing"
-    sub["swept_time"] = pd.NaT
+        sub["swept_time"] = pd.DatetimeIndex([pd.NaT] * len(sub), tz="UTC")
     sub = sub.rename(columns={"price": "pool_price"})
     if bad_days:
         sub = sub[~sub["timestamp"].apply(lambda t: t.date() in bad_days)]
