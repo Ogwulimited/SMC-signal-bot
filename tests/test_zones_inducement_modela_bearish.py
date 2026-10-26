@@ -15,8 +15,6 @@ def test_diagnostic_print_inducement_model_a_bearish():
         freq="1h", start="2023-01-01 00:00:00",
     )
 
-    # M15 bars: need swing low (l_base area), swing high (IDM for bearish),
-    # then a close below the swing low to confirm "BOS" on M15, before choch_time.
     m15 = _mk_df(
         opens=[10.0, 9.8, 9.6, 9.9, 10.1, 9.7, 9.4, 9.2],
         highs=[10.1, 9.9, 9.7, 10.2, 10.3, 9.8, 9.5, 9.3],
@@ -25,7 +23,7 @@ def test_diagnostic_print_inducement_model_a_bearish():
         freq="15min", start="2023-01-01 00:00:00",
     )
 
-    l_base_time = pd.Timestamp("2023-01-01 00:30:00", tz="UTC")
+    l_base_time = pd.Timestamp("2022-12-31 23:45:00", tz="UTC")
     choch_time = pd.Timestamp("2023-01-01 02:15:00", tz="UTC")
     ob_low, ob_high = 9.0, 9.5
 
