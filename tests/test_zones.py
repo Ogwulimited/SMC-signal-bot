@@ -162,6 +162,9 @@ def test_find_liquidity_taken_bullish_logs_matching_pool():
          "confirm_time": pd.Timestamp("2023-01-01 00:00", tz="UTC"),
          "swept_time": pd.NaT, "expires_at": pd.NaT},
     ])
+    pools["confirm_time"] = pd.to_datetime(pools["confirm_time"], utc=True)
+    pools["swept_time"] = pd.to_datetime(pools["swept_time"], utc=True)
+    pools["expires_at"] = pd.to_datetime(pools["expires_at"], utc=True)
     bos_open_time = pd.Timestamp("2023-01-02 00:00", tz="UTC")
     result = zones.find_liquidity_taken(pools, bos_open_time, l_base_price=90.0,
                                          direction="bullish", atr_at_bos=2.0, ob_upper_edge=92.0)
