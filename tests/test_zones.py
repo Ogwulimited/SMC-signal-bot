@@ -155,10 +155,10 @@ def test_find_liquidity_taken_bullish_logs_matching_pool():
         {"pool_type": "swing", "side": "low", "pool_price": 95.0,
          "confirm_time": pd.Timestamp("2023-01-01 00:00", tz="UTC"),
          "swept_time": pd.NaT, "expires_at": pd.NaT},
-        {"pool_type": "swing", "side": "low", "pool_price": 105.0,
+        {"pool_type": "swing", "side": "low", "pool_price": 85.0,   # BELOW l_base -> excluded (90 < 85 is False)
          "confirm_time": pd.Timestamp("2023-01-01 00:00", tz="UTC"),
          "swept_time": pd.NaT, "expires_at": pd.NaT},
-        {"pool_type": "swing", "side": "high", "pool_price": 95.0,
+        {"pool_type": "swing", "side": "high", "pool_price": 95.0,  # wrong side -> excluded
          "confirm_time": pd.Timestamp("2023-01-01 00:00", tz="UTC"),
          "swept_time": pd.NaT, "expires_at": pd.NaT},
     ])
@@ -173,6 +173,7 @@ def test_find_liquidity_taken_bullish_logs_matching_pool():
     assert result.iloc[0]["pool_price"] == 95.0
     assert abs(result.iloc[0]["depth"] - 5.0) < 1e-9
     assert abs(result.iloc[0]["depth_atr"] - 2.5) < 1e-9
+    assert abs(result.iloc[0]["distance_atr"] - 1.5) < 1e-9
 
 
 def test_diagnostic_print_bos_choch_for_htf_zones(capsys):
