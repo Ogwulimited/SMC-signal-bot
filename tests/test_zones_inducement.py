@@ -35,3 +35,33 @@ def test_inducement_model_b_full_sequence():
     assert result["touch_time"] == pd.Timestamp("2023-01-01 14:00:00", tz="UTC")
     assert result["same_bar_ambiguous"] is False
     assert result["invalid_h1_close_through"] is False
+
+
+def test_diagnostic_print_inducement_model_a(capsys):
+    m15_opens  = [8.7, 9.0, 9.6, 9.8, 9.6, 9.3, 8.6, 9.1, 9.7, 13.0, 7.6, 10.6, 10.6, 10.1, 9.7]
+    m15_highs  = [9.0, 9.5, 10.0, 12.0, 9.8, 9.5, 9.7, 10.0, 14.0, 13.5, 7.8, 11.5, 11.0, 10.5, 10.0]
+    m15_lows   = [8.5, 9.0, 9.5, 9.8, 9.2, 8.0, 8.8, 9.5, 9.6, 7.5, 6.2, 10.5, 10.0, 9.5, 9.0]
+    m15_closes = [8.8, 9.2, 9.7, 10.0, 9.5, 8.5, 9.0, 9.6, 13.8, 8.0, 6.5, 10.8, 10.2, 9.8, 9.3]
+    m15_df = _mk_df(m15_opens, m15_highs, m15_lows, m15_closes, freq="15min", start="2023-01-01 12:00")
+
+    h1_opens  = [8.0] * 10
+    h1_highs  = [9.0] * 10
+    h1_lows   = [7.5] * 10
+    h1_closes = [8.2] * 10
+    h1_df = _mk_df(h1_opens, h1_highs, h1_lows, h1_closes, freq="1h", start="2023-01-01 10:00")
+
+    tf_h1 = pd.Timedelta(hours=1)
+    tf_m15 = pd.Timedelta(minutes=15)
+    l_base_time = m15_df["timestamp"].iloc[0]
+    choch_time = m15_df["timestamp"].iloc[14] + tf_m15
+
+    swings = primitives.find_swings(m15_df, config.STRUCTURE_SWING_N, tf_m15)
+    print("\n--- M15 SWINGS ---")
+    print(swings.to_string())
+
+    result = zones.find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
+                                    ob_low=6.0, ob_high=6.5, direction="bullish")
+    print("\n--- INDUCEMENT RESULT (Model A expected) ---")
+    print(result)
+    assert True
+    
