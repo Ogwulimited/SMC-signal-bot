@@ -15,6 +15,9 @@ def test_diagnostic_print_find_liquidity_taken_bearish():
          "confirm_time": pd.Timestamp("2023-01-01 05:00:00", tz="UTC"),
          "swept_time": pd.NaT, "expires_at": pd.Timestamp("2023-01-05 00:00:00", tz="UTC")},
     ])
+    pools["confirm_time"] = pd.to_datetime(pools["confirm_time"], utc=True)
+    pools["swept_time"] = pd.to_datetime(pools["swept_time"], utc=True)
+    pools["expires_at"] = pd.to_datetime(pools["expires_at"], utc=True)
 
     bos_open_time = pd.Timestamp("2023-01-01 09:00:00", tz="UTC")
     l_base_price = 9.0
