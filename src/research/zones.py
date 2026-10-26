@@ -35,8 +35,8 @@ ASSUMPTIONS (confirmed against real primitives.py source this round):
 import numpy as np
 import pandas as pd
 
-from scr import config
-from scr.research import primitives
+from src import config
+from src.research import primitives
 
 
 # ---------------------------------------------------------------------------
