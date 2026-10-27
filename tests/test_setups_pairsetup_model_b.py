@@ -1,22 +1,18 @@
 """
-Diagnostic: can PairSetup actually arm via Model B (H1-only) when Model A
-(M15-based) cannot resolve on the same CHOCH_SEEN candidate?
+Locks PairSetup's Model B (H1-only) arming path with real exact-value
+assertions, derived from real CI output (not hand-traced). Proves, for the
+first time, that state can reach ARMED with model == "B" when Model A
+cannot resolve (flat M15 data guarantees no M15 swing can ever form).
 
 Reuses the locked Model-A happy-path D1/H1 fixtures through CHoCH
-(index 33), then extends h1_df further with new bars engineered to produce
-a Model B SH1 -> IDM -> BOS sequence per zones.find_inducement's
-_model_b(). M15 data is flat/constant so _model_a() has no price variation
-to form any swing -- cand is structurally guaranteed empty, so Model A
-returns None regardless of window timing, isolating this test to Model B.
-
-Does not modify setups.py or zones.py. Diagnostic-only: prints +
-assert True. Exact-value assertions will be derived from real CI output
-in a follow-up commit per mandatory discipline.
+(index 33), then extends h1_df with 9 further bars producing a genuine
+Model B SH1 -> IDM -> BOS sequence per zones.find_inducement's _model_b().
 """
 
 import pandas as pd
 import pytest
 from src.research import setups
+from src.research import primitives
 from conftest import _mk_df
 
 
@@ -31,8 +27,6 @@ def _build_d1_bullish_happy():
 
 
 def _build_h1_through_choch():
-    """Bars 0-33: identical to the locked Model-A happy-path fixture, up
-    through CHoCH confirmation at index 33."""
     opens  = [7.0]*14 + [7.0, 6.8, 6.9, 6.85, 6.2, 7.4, 8.4, 9.4, 10.0, 10.0,
                           9.9, 9.2, 9.3, 9.4, 8.5, 9.6, 10.2, 10.3, 10.0, 10.25]
     highs  = [7.2]*14 + [7.1, 7.0, 7.0, 6.9, 7.5, 8.5, 9.5, 10.1, 10.2, 10.2,
@@ -45,19 +39,11 @@ def _build_h1_through_choch():
 
 
 def _build_h1_extended_for_model_b():
-    """Bars 0-33 unchanged, then 9 new bars (34-42) engineered to produce:
-    - a swing high at idx36 (high=12.0) confirmed ~idx38, acting as SH1
-    - a swing low at idx39 (low=9.0) confirmed ~idx41, acting as the IDM
-      candidate between SH1 and the BOS bar
-    - a close above 12.0 at idx42 (close=12.8), acting as Model B's BOS
-    """
     opens, highs, lows, closes = _build_h1_through_choch()
-
     opens  += [10.7, 10.8, 10.9, 11.8, 11.2, 11.0, 9.5, 9.8, 10.0]
     highs  += [10.9, 11.0, 12.0, 11.9, 11.3, 11.1, 10.0, 10.2, 13.0]
     lows   += [10.6, 10.7, 10.8, 11.0, 10.9, 9.0,  9.4, 9.6, 9.9]
     closes += [10.8, 10.9, 11.8, 11.2, 11.0, 9.5,  9.8, 10.0, 12.8]
-
     return _mk_df(opens, highs, lows, closes, freq="1h", start="2023-02-01")
 
 
@@ -78,9 +64,6 @@ def _build_empty_d1_zones():
 
 
 def _build_m15_flat_noise(n=20, start="2023-02-02 03:00"):
-    """Deliberately flat -- no price variation means no M15 swing can ever
-    form, so _model_a()'s `cand` is always empty and it returns None,
-    regardless of window timing. This isolates the test to Model B only."""
     opens  = [100.0] * n
     highs  = [100.1] * n
     lows   = [99.9] * n
@@ -88,7 +71,7 @@ def _build_m15_flat_noise(n=20, start="2023-02-02 03:00"):
     return _mk_df(opens, highs, lows, closes, freq="15min", start=start)
 
 
-def test_pairsetup_model_b_arming_diagnostic():
+def test_pairsetup_model_b_arming():
     d1_df = _build_d1_bullish_happy()
     opens, highs, lows, closes = _build_h1_through_choch()
     h1_df_choch_only = _mk_df(opens, highs, lows, closes, freq="1h", start="2023-02-01")
@@ -106,32 +89,50 @@ def test_pairsetup_model_b_arming_diagnostic():
     ps = setups.PairSetup("nzdusd")
 
     ps.on_d1_close(d1_df, _build_empty_d1_zones(), _build_h4_zone_bullish(), current_low=10.1, current_high=10.3)
-    print(f"\nAfter D1: state={ps.state} bias={ps.bias}")
+    assert ps.state == "IDLE"
+    assert ps.bias["state"] == "bullish"
+    assert ps.bias["direction"] == "up"
 
     for i in range(len(h1_df_choch_only)):
         ps.on_h1_close(h1_df_choch_only.iloc[:i + 1], pools, tf_h1)
 
-    print(f"After H1 loop (through index 33): state={ps.state}")
-    print(f"candidate_ob: {ps.candidate_ob}")
-    print(f"h1_choch_event: {ps.h1_choch_event}")
-
-    assert True  # diagnostic checkpoint -- confirm we reach CHOCH_SEEN before proceeding
+    assert ps.state == "CHOCH_SEEN"
+    assert ps.candidate_ob["bos_time"] == pd.Timestamp("2023-02-02 04:00:00", tz="UTC")
+    assert ps.candidate_ob["choch_time"] == pd.Timestamp("2023-02-02 10:00:00", tz="UTC")
+    assert ps.candidate_ob["l_base_time"] == pd.Timestamp("2023-02-02 03:00:00", tz="UTC")
+    assert ps.candidate_ob["l_base_price"] == pytest.approx(8.0)
+    assert ps.candidate_ob["ob_low"] == pytest.approx(8.0)
+    assert ps.candidate_ob["ob_high"] == pytest.approx(9.5)
+    assert ps.candidate_ob["direction"] == "bullish"
+    assert ps.candidate_ob["valid_pretouch"] == True
 
     h1_df_extended = _build_h1_extended_for_model_b()
     m15_df = _build_m15_flat_noise()
 
-    from src.research import primitives
+    # Sanity-check the extended fixture actually produces the intended
+    # SH1 / IDM candidate swings (derived from real CI output, not guessed).
     swings_check = primitives.find_swings(h1_df_extended, 2, tf_h1)
-    print("\n=== Extended H1 swings (checking SH1 / IDM candidates exist) ===")
-    print(swings_check[swings_check["timestamp"] >= pd.Timestamp("2023-02-02 10:00:00", tz="UTC")].to_string())
+    post_choch = swings_check[swings_check["timestamp"] >= pd.Timestamp("2023-02-02 10:00:00", tz="UTC")]
+    sh1_rows = post_choch[post_choch["kind"] == "high"]
+    idm_rows = post_choch[post_choch["kind"] == "low"]
+    assert len(sh1_rows) == 1
+    assert sh1_rows.iloc[0]["price"] == pytest.approx(12.0)
+    assert sh1_rows.iloc[0]["confirm_time"] == pd.Timestamp("2023-02-02 15:00:00", tz="UTC")
+    assert len(idm_rows) == 1
+    assert idm_rows.iloc[0]["price"] == pytest.approx(9.0)
+    assert idm_rows.iloc[0]["confirm_time"] == pd.Timestamp("2023-02-02 18:00:00", tz="UTC")
 
     for i in range(len(m15_df)):
         ps.on_m15_close(h1_df_extended, m15_df.iloc[:i + 1], tf_h1, tf_m15)
-        print(f"\n[m15 step {i}, ts={m15_df['timestamp'].iloc[i]}] "
-              f"state={ps.state} model={ps.model} "
-              f"m15_bos_time={ps.m15_bos_time} idm_price={ps.idm_price} idm_time={ps.idm_time} "
-              f"idm_swept_time={ps.idm_swept_time} touch_time={ps.touch_time} "
-              f"same_bar_ambiguous={ps.same_bar_ambiguous} invalid_h1_close_through={ps.invalid_h1_close_through}")
-
-    print(f"\n=== FINAL: state={ps.state} model={ps.model} ===")
-    assert True  # diagnostic only -- exact assertions derived from real CI output next
+        # Resolves on the very first M15 step: Model B depends only on H1
+        # data (passed whole, not incrementally sliced), and the flat M15
+        # fixture guarantees Model A's swing search is always empty.
+        assert ps.state == "ARMED"
+        assert ps.model == "B"
+        assert ps.m15_bos_time == pd.Timestamp("2023-02-02 19:00:00", tz="UTC")
+        assert ps.idm_price == pytest.approx(9.0)
+        assert ps.idm_time == pd.Timestamp("2023-02-02 18:00:00", tz="UTC")
+        assert pd.isna(ps.idm_swept_time)
+        assert pd.isna(ps.touch_time)
+        assert ps.same_bar_ambiguous == False
+        assert ps.invalid_h1_close_through == False
