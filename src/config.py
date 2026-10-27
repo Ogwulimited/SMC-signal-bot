@@ -34,3 +34,4 @@ SWEEP_RECLAIM_WINDOW = 3
 
 # ----- Reports -----
 REPORTS_DIR = "reports"
+D1_SWING_N = 3
