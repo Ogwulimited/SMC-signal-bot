@@ -11,11 +11,6 @@ from src.research import zones
 
 
 def compute_d1_bias(d1_df):
-    """
-    Computes current D1 directional bias from closed D1 bars.
-    Returns dict: state ("bullish"/"bearish"/"reversing"/"none"),
-    plus the triggering event's time/direction/label.
-    """
     tf = pd.Timedelta(days=1)
     swings = primitives.find_swings(d1_df, config.D1_SWING_N, tf)
     events = primitives.detect_bos_choch(d1_df, swings, tf)
@@ -33,10 +28,6 @@ def compute_d1_bias(d1_df):
 
 
 def select_htf_zone(d1_zones, h4_zones, bias_direction, current_low, current_high):
-    """
-    Picks which HTF zone to watch: active D1 zone if price overlaps it,
-    else nearest active H4 zone in the trend direction. Returns dict or None.
-    """
     def _active(zones_df):
         z = zones_df[(zones_df["direction"] == bias_direction) & (zones_df["invalidated_at"].isna())]
         return z
@@ -62,10 +53,6 @@ def select_htf_zone(d1_zones, h4_zones, bias_direction, current_low, current_hig
 
 
 def find_candidate_obs(df, tf, bos_choch_events, pools):
-    """
-    Combines detect_order_blocks + find_liquidity_taken to produce
-    candidate OB setups that pass both structural and liquidity checks.
-    """
     atr_series = primitives.compute_atr(df, period=14).shift(1)
     time_to_idx = {t: i for i, t in enumerate(df["timestamp"])}
 
@@ -91,17 +78,71 @@ def find_candidate_obs(df, tf, bos_choch_events, pools):
     return pd.DataFrame(rows, columns=cols)
 
 
+def _scan_sweep_and_touch(m15_df, tf_m15, armed_time, idm_price, ob_low, ob_high, direction, bad_days=None):
+    """
+    Layer 5 watch logic: once armed, find the first M15 bar that sweeps the
+    IDM, then the first bar AT OR AFTER that sweep bar that touches the OB
+    zone. If the sweep bar and touch bar are the same bar, that's the
+    same-bar-ambiguous case -- no usable touch_time is returned.
+
+    This intentionally mirrors zones.find_inducement's post-arming scan
+    logic exactly (same proven pattern, Phase 2 locked), but is re-run
+    independently here so PairSetup can watch incrementally after the
+    model/IDM have already been frozen, without ever re-deriving the model.
+    """
+    bull = direction == "bullish"
+    m15_after = m15_df[m15_df["timestamp"] + tf_m15 > armed_time].reset_index(drop=False)
+
+    swept_time, swept_idx = pd.NaT, None
+    for _, r in m15_after.iterrows():
+        if bad_days and r["timestamp"].date() in bad_days:
+            continue
+        if bull and r["low"] < idm_price:
+            swept_time, swept_idx = r["timestamp"] + tf_m15, r["index"]
+            break
+        if (not bull) and r["high"] > idm_price:
+            swept_time, swept_idx = r["timestamp"] + tf_m15, r["index"]
+            break
+
+    touch_time, same_bar_ambiguous = pd.NaT, False
+    if swept_idx is not None:
+        after_sweep = m15_df[m15_df["timestamp"] >= m15_df["timestamp"].iloc[swept_idx]].reset_index(drop=False)
+        for _, r in after_sweep.iterrows():
+            touched = (r["low"] <= ob_high) if bull else (r["high"] >= ob_low)
+            if touched:
+                if r["index"] == swept_idx:
+                    same_bar_ambiguous = True
+                else:
+                    touch_time = r["timestamp"] + tf_m15
+                break
+
+    return {"swept_time": swept_time, "touch_time": touch_time, "same_bar_ambiguous": same_bar_ambiguous}
+
+
 class PairSetup:
     """
     Stateful per-pair state machine implementing the setups spec.
-    States covered this slice: IDLE -> EPISODE -> BOS_SEEN -> CHOCH_SEEN -> ARMED.
-    SWEPT/TRIGGERED/IN_TRADE/CLOSED are later slices (need Phase 4 stop/target math).
+    States covered: IDLE -> EPISODE -> BOS_SEEN -> CHOCH_SEEN -> ARMED ->
+    SWEPT -> TRIGGERED. IN_TRADE/CLOSED are later slices (need Phase 4
+    stop/target math).
 
-    Arming (Layer 4) tries Model A first, falls back to Model B if Model A
-    hasn't resolved yet -- both checked via the same zones.find_inducement
-    call, which already implements "A or B" fallback internally. This is a
-    single sequence, not two separate parallel models; a trade is skipped
-    only if neither model resolves.
+    Arming (Layer 4) tries Model A first, falls back to Model B -- both
+    checked via the same zones.find_inducement call (single fallback
+    sequence, not two parallel instances).
+
+    Layer 5 (this slice): once ARMED, the model/IDM/OB are frozen and never
+    re-derived. We watch M15 bars for an IDM sweep, then a later touch into
+    the OB zone (TRIGGERED). Same-bar sweep+touch is treated as unusable --
+    the candidate is abandoned and logged via last_cancel_reason, not
+    retried. Cancel checks implemented this slice: H1 close clean through
+    the OB zone, and D1 bias change (via existing _reset_episode wiring).
+    Deferred cancel conditions (logged technical debt, not yet built):
+    newer-sequence-replaces-older, price-runs-to-target-before-touch,
+    bad/missing data days.
+
+    Fill price math (Fill 1 optimistic / Fill 2 conservative) is NOT built
+    this slice -- TRIGGERED only records touch_time and the raw OB edge
+    price. Fill modeling is the next micro-step.
     """
 
     def __init__(self, pair):
@@ -121,6 +162,11 @@ class PairSetup:
         self.touch_time = None
         self.same_bar_ambiguous = None
         self.invalid_h1_close_through = None
+        self.fill1_price = None
+        # Diagnostic breadcrumb only -- deliberately NOT cleared by
+        # _reset_episode, so it survives to explain why the last episode
+        # ended. Overwritten by the next cancellation, if any.
+        self.last_cancel_reason = None
 
     def _reset_episode(self):
         self.state = "IDLE"
@@ -136,6 +182,7 @@ class PairSetup:
         self.touch_time = None
         self.same_bar_ambiguous = None
         self.invalid_h1_close_through = None
+        self.fill1_price = None
 
     def on_d1_close(self, d1_df, d1_zones, h4_zones, current_low, current_high):
         new_bias = compute_d1_bias(d1_df)
@@ -172,12 +219,24 @@ class PairSetup:
     def on_h1_close(self, h1_df, pools, tf):
         if self.bias is None or self.bias["state"] not in ("bullish", "bearish") or self.zone is None:
             return
-        if self.state == "ARMED":
+
+        last_bar = h1_df.iloc[-1]
+
+        if self.state in ("ARMED", "SWEPT"):
+            ob_low = self.candidate_ob["ob_low"]
+            ob_high = self.candidate_ob["ob_high"]
+            bull = self.candidate_ob["direction"] == "bullish"
+            invalidated = (last_bar["close"] < ob_low) if bull else (last_bar["close"] > ob_high)
+            if invalidated:
+                self.last_cancel_reason = "h1_close_through_ob"
+                self._reset_episode()
+            return
+
+        if self.state == "TRIGGERED":
             return
 
         bias_dir = "up" if self.bias["state"] == "bullish" else "down"
         sweep_dir = "down" if bias_dir == "up" else "up"
-        last_bar = h1_df.iloc[-1]
 
         if self.state == "IDLE":
             overlaps = (last_bar["low"] <= self.zone["zone_high"]) and (last_bar["high"] >= self.zone["zone_low"])
@@ -218,35 +277,58 @@ class PairSetup:
                     self._reset_episode()
 
     def on_m15_close(self, h1_df, m15_df, tf_h1, tf_m15):
-        """
-        Arming check (Layer 4), delegated entirely to zones.find_inducement
-        (already-locked Phase 2 code) rather than reimplementing M15/H1
-        BOS/IDM logic by hand. find_inducement tries Model A first and
-        falls back to Model B internally -- we accept whichever resolves
-        first. Only if neither resolves do we stay in CHOCH_SEEN and retry
-        on the next M15 close.
-        """
-        if self.state != "CHOCH_SEEN" or self.candidate_ob is None:
-            return
+        if self.state == "CHOCH_SEEN":
+            if self.candidate_ob is None:
+                return
 
-        result = zones.find_inducement(
-            h1_df, m15_df, tf_h1, tf_m15,
-            choch_time=self.h1_choch_event["time"],
-            l_base_time=self.candidate_ob["l_base_time"],
-            ob_low=self.candidate_ob["ob_low"],
-            ob_high=self.candidate_ob["ob_high"],
-            direction=self.candidate_ob["direction"],
-        )
+            result = zones.find_inducement(
+                h1_df, m15_df, tf_h1, tf_m15,
+                choch_time=self.h1_choch_event["time"],
+                l_base_time=self.candidate_ob["l_base_time"],
+                ob_low=self.candidate_ob["ob_low"],
+                ob_high=self.candidate_ob["ob_high"],
+                direction=self.candidate_ob["direction"],
+            )
+            if result is None:
+                return  # neither model resolved yet; stay in CHOCH_SEEN, retry next M15 close
 
-        if result is None:
-            return  # neither model resolved yet; stay in CHOCH_SEEN, retry on next M15 close
+            self.model = result["model"]  # "A" or "B" -- kept for research/logging only
+            self.m15_bos_time = result["armed_time"]
+            self.idm_price = result["idm_price"]
+            self.idm_time = result["idm_time"]
+            self.idm_swept_time = pd.NaT
+            self.touch_time = pd.NaT
+            self.same_bar_ambiguous = False
+            self.invalid_h1_close_through = False
+            self.state = "ARMED"
+            # fall through into the ARMED watch block below, in case the
+            # m15_df snapshot used to resolve arming already contains bars
+            # at or after armed_time
 
-        self.model = result["model"]  # "A" or "B" -- kept for research/logging only
-        self.m15_bos_time = result["armed_time"]
-        self.idm_price = result["idm_price"]
-        self.idm_time = result["idm_time"]
-        self.idm_swept_time = result.get("swept_time")
-        self.touch_time = result.get("touch_time")
-        self.same_bar_ambiguous = result.get("same_bar_ambiguous")
-        self.invalid_h1_close_through = result.get("invalid_h1_close_through")
-        self.state = "ARMED"
+        if self.state in ("ARMED", "SWEPT"):
+            scan = _scan_sweep_and_touch(
+                m15_df, tf_m15,
+                armed_time=self.m15_bos_time,
+                idm_price=self.idm_price,
+                ob_low=self.candidate_ob["ob_low"],
+                ob_high=self.candidate_ob["ob_high"],
+                direction=self.candidate_ob["direction"],
+            )
+            self.idm_swept_time = scan["swept_time"]
+
+            if scan["same_bar_ambiguous"]:
+                self.same_bar_ambiguous = True
+                self.last_cancel_reason = "same_bar_ambiguous"
+                self._reset_episode()
+                return
+
+            if pd.notna(scan["touch_time"]):
+                self.touch_time = scan["touch_time"]
+                edge = (self.candidate_ob["ob_high"] if self.candidate_ob["direction"] == "bullish"
+                        else self.candidate_ob["ob_low"])
+                self.fill1_price = edge
+                self.state = "TRIGGERED"
+                return
+
+            if pd.notna(self.idm_swept_time) and self.state == "ARMED":
+                self.state = "SWEPT"
