@@ -110,6 +110,10 @@ class PairSetup:
         self.m15_bos_time = None
         self.idm_price = None
         self.idm_time = None
+        self.idm_swept_time = None
+        self.touch_time = None
+        self.same_bar_ambiguous = None
+        self.invalid_h1_close_through = None
 
     def _reset_episode(self):
         self.state = "IDLE"
@@ -120,6 +124,10 @@ class PairSetup:
         self.m15_bos_time = None
         self.idm_price = None
         self.idm_time = None
+        self.idm_swept_time = None
+        self.touch_time = None
+        self.same_bar_ambiguous = None
+        self.invalid_h1_close_through = None
 
     def on_d1_close(self, d1_df, d1_zones, h4_zones, current_low, current_high):
         new_bias = compute_d1_bias(d1_df)
@@ -201,36 +209,34 @@ class PairSetup:
                 else:
                     self._reset_episode()
 
-    def on_m15_close(self, m15_df, tf):
+    def on_m15_close(self, h1_df, m15_df, tf_h1, tf_m15):
+        """
+        Model A arming check, delegated entirely to zones.find_inducement
+        (already-locked Phase 2 code) rather than reimplementing M15 BOS/IDM
+        logic by hand. Model B results from the same call are deliberately
+        ignored this slice (deferred to its own follow-up).
+        """
         if self.state != "CHOCH_SEEN" or self.candidate_ob is None:
             return
 
-        bias_dir = "up" if self.bias["state"] == "bullish" else "down"
-        swings = primitives.find_swings(m15_df, config.STRUCTURE_SWING_N, tf)
-        events = primitives.detect_bos_choch(m15_df, swings, tf)
-        if events.empty:
-            return
+        result = zones.find_inducement(
+            h1_df, m15_df, tf_h1, tf_m15,
+            choch_time=self.h1_choch_event["time"],
+            l_base_time=self.candidate_ob["l_base_time"],
+            ob_low=self.candidate_ob["ob_low"],
+            ob_high=self.candidate_ob["ob_high"],
+            direction=self.candidate_ob["direction"],
+        )
 
-        l_base_time = self.candidate_ob["l_base_time"]
-        choch_time = self.h1_choch_event["time"]
+        if result is None or result["model"] != "A":
+            return  # Model B deferred; stay in CHOCH_SEEN, retry on next M15 close
 
-        bos_candidates = events[
-            (events["direction"] == bias_dir) & (events["label"] == "BOS")
-            & (events["time"] >= l_base_time) & (events["time"] <= choch_time)
-        ]
-        if bos_candidates.empty:
-            return
-        m15_bos = bos_candidates.iloc[0]
-
-        idm_kind = "low" if bias_dir == "up" else "high"
-        prior_swings = swings[
-            (swings["kind"] == idm_kind) & (swings["confirm_time"] <= m15_bos["time"])
-        ]
-        if prior_swings.empty:
-            return
-        idm_swing = prior_swings.sort_values("timestamp").iloc[-1]
-
-        self.m15_bos_time = m15_bos["time"]
-        self.idm_price = idm_swing["price"]
-        self.idm_time = idm_swing["timestamp"]
+        self.m15_bos_time = result["armed_time"]
+        self.idm_price = result["idm_price"]
+        self.idm_time = result["idm_time"]
+        # Stashed for free from find_inducement; not acted on this slice (Layer 5 future work)
+        self.idm_swept_time = result.get("swept_time")
+        self.touch_time = result.get("touch_time")
+        self.same_bar_ambiguous = result.get("same_bar_ambiguous")
+        self.invalid_h1_close_through = result.get("invalid_h1_close_through")
         self.state = "ARMED"
