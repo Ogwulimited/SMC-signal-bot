@@ -58,3 +58,33 @@ def select_htf_zone(d1_zones, h4_zones, bias_direction, current_low, current_hig
     nearest = h4_active.sort_values("dist").iloc[0]
     return {"timeframe": "H4", "zone_low": nearest["zone_low"], "zone_high": nearest["zone_high"],
             "confirm_time": nearest["confirm_time"]}
+
+
+def find_candidate_obs(df, tf, bos_choch_events, pools):
+    """
+    Combines detect_order_blocks + find_liquidity_taken to produce
+    candidate OB setups that pass both structural and liquidity checks.
+    """
+    atr_series = primitives.compute_atr(df, period=14).shift(1)
+    time_to_idx = {t: i for i, t in enumerate(df["timestamp"])}
+
+    obs = zones.detect_order_blocks(df, tf, bos_choch_events)
+    obs = obs[obs["valid_pretouch"] == True].reset_index(drop=True)
+
+    rows = []
+    for _, row in obs.iterrows():
+        bos_open_time = row["bos_time"] - tf
+        bos_idx = time_to_idx.get(bos_open_time)
+        atr_at_bos = atr_series.iloc[bos_idx] if bos_idx is not None else np.nan
+        edge = row["ob_high"] if row["direction"] == "bullish" else row["ob_low"]
+
+        liq = zones.find_liquidity_taken(pools, bos_open_time, row["l_base_price"],
+                                          row["direction"], atr_at_bos=atr_at_bos, ob_upper_edge=edge)
+        if liq.empty:
+            continue
+        out_row = row.to_dict()
+        out_row["liquidity_pools"] = liq.to_dict("records")
+        rows.append(out_row)
+
+    cols = list(obs.columns) + ["liquidity_pools"]
+    return pd.DataFrame(rows, columns=cols)
