@@ -1,0 +1,17 @@
+name: SMC Research Phase 3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test_setups:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pandas pyarrow pytest
+      - name: Run Phase 3 Tests
+        run: python -m pytest tests/test_setups_d1bias.py -v -s
