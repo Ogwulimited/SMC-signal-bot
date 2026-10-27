@@ -431,7 +431,7 @@ def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
                      ob_low, ob_high, direction, bad_days=None):
     bull = direction == "bullish"
 
-        def _model_b():
+    def _model_b():
         swings = primitives.find_swings(h1_df, config.STRUCTURE_SWING_N, tf_h1)
         kind = "high" if bull else "low"
         cand = swings[(swings["kind"] == kind) & (swings["timestamp"] >= choch_time)].sort_values("timestamp")
