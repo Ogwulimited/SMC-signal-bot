@@ -93,9 +93,15 @@ def find_candidate_obs(df, tf, bos_choch_events, pools):
 
 class PairSetup:
     """
-    Stateful per-pair state machine implementing the setups spec, Model A only.
+    Stateful per-pair state machine implementing the setups spec.
     States covered this slice: IDLE -> EPISODE -> BOS_SEEN -> CHOCH_SEEN -> ARMED.
     SWEPT/TRIGGERED/IN_TRADE/CLOSED are later slices (need Phase 4 stop/target math).
+
+    Arming (Layer 4) tries Model A first, falls back to Model B if Model A
+    hasn't resolved yet -- both checked via the same zones.find_inducement
+    call, which already implements "A or B" fallback internally. This is a
+    single sequence, not two separate parallel models; a trade is skipped
+    only if neither model resolves.
     """
 
     def __init__(self, pair):
@@ -107,6 +113,7 @@ class PairSetup:
         self.h1_bos_event = None
         self.h1_choch_event = None
         self.candidate_ob = None
+        self.model = None
         self.m15_bos_time = None
         self.idm_price = None
         self.idm_time = None
@@ -121,6 +128,7 @@ class PairSetup:
         self.h1_bos_event = None
         self.h1_choch_event = None
         self.candidate_ob = None
+        self.model = None
         self.m15_bos_time = None
         self.idm_price = None
         self.idm_time = None
@@ -211,10 +219,12 @@ class PairSetup:
 
     def on_m15_close(self, h1_df, m15_df, tf_h1, tf_m15):
         """
-        Model A arming check, delegated entirely to zones.find_inducement
-        (already-locked Phase 2 code) rather than reimplementing M15 BOS/IDM
-        logic by hand. Model B results from the same call are deliberately
-        ignored this slice (deferred to its own follow-up).
+        Arming check (Layer 4), delegated entirely to zones.find_inducement
+        (already-locked Phase 2 code) rather than reimplementing M15/H1
+        BOS/IDM logic by hand. find_inducement tries Model A first and
+        falls back to Model B internally -- we accept whichever resolves
+        first. Only if neither resolves do we stay in CHOCH_SEEN and retry
+        on the next M15 close.
         """
         if self.state != "CHOCH_SEEN" or self.candidate_ob is None:
             return
@@ -228,13 +238,13 @@ class PairSetup:
             direction=self.candidate_ob["direction"],
         )
 
-        if result is None or result["model"] != "A":
-            return  # Model B deferred; stay in CHOCH_SEEN, retry on next M15 close
+        if result is None:
+            return  # neither model resolved yet; stay in CHOCH_SEEN, retry on next M15 close
 
+        self.model = result["model"]  # "A" or "B" -- kept for research/logging only
         self.m15_bos_time = result["armed_time"]
         self.idm_price = result["idm_price"]
         self.idm_time = result["idm_time"]
-        # Stashed for free from find_inducement; not acted on this slice (Layer 5 future work)
         self.idm_swept_time = result.get("swept_time")
         self.touch_time = result.get("touch_time")
         self.same_bar_ambiguous = result.get("same_bar_ambiguous")
