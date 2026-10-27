@@ -1,9 +1,8 @@
 import pandas as pd
+import pytest
 from src.research import setups
 from conftest import _mk_df
 
-
-# ---------- Scenario A: bearish mirror of the bullish happy path ----------
 
 def _build_d1_bearish():
     return _mk_df(
@@ -34,68 +33,6 @@ def _build_m15_bearish():
     closes = [100, 101, 104, 103, 102, 101.5, 101.2, 96, 95.8, 95.5, 94.2]
     return _mk_df(opens, highs, lows, closes, freq="15min", start="2023-02-02 03:00")
 
-
-def test_pairsetup_model_a_bearish_mirror_diagnostic():
-    d1_df = _build_d1_bearish()
-    h1_df = _build_h1_bearish()
-    m15_df = _build_m15_bearish()
-
-    d1_zones = pd.DataFrame(columns=["direction", "zone_low", "zone_high", "confirm_time", "invalidated_at"])
-    d1_zones["confirm_time"] = pd.to_datetime(d1_zones["confirm_time"], utc=True)
-    d1_zones["invalidated_at"] = pd.to_datetime(d1_zones["invalidated_at"], utc=True)
-
-    h4_zones = pd.DataFrame([
-        {"direction": "bearish", "zone_low": 9.5, "zone_high": 10.0,
-         "confirm_time": pd.Timestamp("2023-01-05", tz="UTC"), "invalidated_at": pd.NaT},
-    ])
-    h4_zones["invalidated_at"] = pd.to_datetime(h4_zones["invalidated_at"], utc=True)
-
-    pools = pd.DataFrame([
-        {"pool_type": "swing", "side": "high", "pool_price": 11.0,
-         "confirm_time": h1_df["timestamp"].iloc[5], "swept_time": pd.NaT, "expires_at": pd.NaT},
-    ])
-    pools["swept_time"] = pd.to_datetime(pools["swept_time"], utc=True)
-    pools["expires_at"] = pd.to_datetime(pools["expires_at"], utc=True)
-
-    tf_h1 = pd.Timedelta(hours=1)
-    tf_m15 = pd.Timedelta(minutes=15)
-
-    ps = setups.PairSetup("gbpusd")
-
-    ps.on_d1_close(d1_df, d1_zones, h4_zones, current_low=9.7, current_high=9.9)
-    print("[BEAR] AFTER D1: state=", ps.state, "bias=", ps.bias, "zone=", ps.zone)
-
-    for i in range(len(h1_df)):
-        ps.on_h1_close(h1_df.iloc[:i + 1], pools, tf_h1)
-        print(f"[BEAR] H1 bar {i} ts={h1_df['timestamp'].iloc[i]} close={h1_df['close'].iloc[i]} -> state={ps.state}")
-        if ps.h1_bos_event is not None:
-            print("   h1_bos_event time=", ps.h1_bos_event["time"],
-                  "dir=", ps.h1_bos_event["direction"], "label=", ps.h1_bos_event["label"])
-        if ps.h1_choch_event is not None:
-            print("   h1_choch_event time=", ps.h1_choch_event["time"],
-                  "dir=", ps.h1_choch_event["direction"], "label=", ps.h1_choch_event["label"])
-        if ps.candidate_ob is not None:
-            print("   candidate_ob l_base_time=", ps.candidate_ob["l_base_time"],
-                  "l_base_price=", ps.candidate_ob["l_base_price"],
-                  "ob_low=", ps.candidate_ob["ob_low"], "ob_high=", ps.candidate_ob["ob_high"],
-                  "direction=", ps.candidate_ob["direction"],
-                  "valid_pretouch=", ps.candidate_ob["valid_pretouch"])
-
-    print("[BEAR] STATE BEFORE M15 LOOP:", ps.state)
-
-    for i in range(len(m15_df)):
-        ps.on_m15_close(h1_df, m15_df.iloc[:i + 1], tf_h1, tf_m15)
-        print(f"[BEAR] M15 bar {i} ts={m15_df['timestamp'].iloc[i]} close={m15_df['close'].iloc[i]} -> state={ps.state}")
-        if ps.state == "ARMED":
-            print("   ARMED! m15_bos_time=", ps.m15_bos_time, "idm_price=", ps.idm_price, "idm_time=", ps.idm_time)
-            print("   idm_swept_time=", ps.idm_swept_time, "touch_time=", ps.touch_time,
-                  "same_bar_ambiguous=", ps.same_bar_ambiguous,
-                  "invalid_h1_close_through=", ps.invalid_h1_close_through)
-
-    assert True
-
-
-# ---------- Scenario B: CHoCH fires but no matching pool -> expect reset to IDLE ----------
 
 def _build_d1_bullish_happy():
     return _mk_df(
@@ -135,7 +72,88 @@ def _build_empty_d1_zones():
     return d1_zones
 
 
-def test_pairsetup_resets_when_no_matching_pool_diagnostic():
+def _build_m15_flat_noise():
+    opens  = [100, 100, 100, 100, 100]
+    highs  = [100.1, 100.1, 100.1, 100.1, 100.1]
+    lows   = [99.9, 99.9, 99.9, 99.9, 99.9]
+    closes = [100, 100, 100, 100, 100]
+    return _mk_df(opens, highs, lows, closes, freq="15min", start="2023-02-02 10:15")
+
+
+def test_pairsetup_model_a_bearish_mirror():
+    d1_df = _build_d1_bearish()
+    h1_df = _build_h1_bearish()
+    m15_df = _build_m15_bearish()
+
+    d1_zones = pd.DataFrame(columns=["direction", "zone_low", "zone_high", "confirm_time", "invalidated_at"])
+    d1_zones["confirm_time"] = pd.to_datetime(d1_zones["confirm_time"], utc=True)
+    d1_zones["invalidated_at"] = pd.to_datetime(d1_zones["invalidated_at"], utc=True)
+
+    h4_zones = pd.DataFrame([
+        {"direction": "bearish", "zone_low": 9.5, "zone_high": 10.0,
+         "confirm_time": pd.Timestamp("2023-01-05", tz="UTC"), "invalidated_at": pd.NaT},
+    ])
+    h4_zones["invalidated_at"] = pd.to_datetime(h4_zones["invalidated_at"], utc=True)
+
+    pools = pd.DataFrame([
+        {"pool_type": "swing", "side": "high", "pool_price": 11.0,
+         "confirm_time": h1_df["timestamp"].iloc[5], "swept_time": pd.NaT, "expires_at": pd.NaT},
+    ])
+    pools["swept_time"] = pd.to_datetime(pools["swept_time"], utc=True)
+    pools["expires_at"] = pd.to_datetime(pools["expires_at"], utc=True)
+
+    tf_h1 = pd.Timedelta(hours=1)
+    tf_m15 = pd.Timedelta(minutes=15)
+
+    ps = setups.PairSetup("gbpusd")
+
+    ps.on_d1_close(d1_df, d1_zones, h4_zones, current_low=9.7, current_high=9.9)
+    assert ps.state == "IDLE"
+    assert ps.bias["state"] == "bearish"
+    assert ps.bias["direction"] == "down"
+    assert ps.zone["zone_low"] == pytest.approx(9.5)
+    assert ps.zone["zone_high"] == pytest.approx(10.0)
+
+    for i in range(len(h1_df)):
+        ps.on_h1_close(h1_df.iloc[:i + 1], pools, tf_h1)
+        if i < 21:
+            assert ps.state == "IDLE"
+        elif i == 21:
+            assert ps.state == "EPISODE"
+        elif i < 27:
+            assert ps.state == "EPISODE"
+        elif i == 27:
+            assert ps.state == "BOS_SEEN"
+            assert ps.h1_bos_event["direction"] == "up"
+            assert ps.h1_bos_event["label"] == "BOS"
+        elif i < 33:
+            assert ps.state == "BOS_SEEN"
+        elif i == 33:
+            assert ps.state == "CHOCH_SEEN"
+            assert ps.h1_choch_event["direction"] == "down"
+            assert ps.h1_choch_event["label"] == "CHoCH"
+            assert ps.candidate_ob["l_base_price"] == pytest.approx(12.0)
+            assert ps.candidate_ob["ob_low"] == pytest.approx(10.5)
+            assert ps.candidate_ob["ob_high"] == pytest.approx(12.0)
+            assert ps.candidate_ob["direction"] == "bearish"
+            assert ps.candidate_ob["valid_pretouch"] == True
+
+    for i in range(len(m15_df)):
+        ps.on_m15_close(h1_df, m15_df.iloc[:i + 1], tf_h1, tf_m15)
+        if i < 10:
+            assert ps.state == "CHOCH_SEEN"
+        elif i == 10:
+            assert ps.state == "ARMED"
+            assert ps.m15_bos_time == pd.Timestamp("2023-02-02 05:45:00", tz="UTC")
+            assert ps.idm_price == pytest.approx(105.0)
+            assert ps.idm_time == pd.Timestamp("2023-02-02 04:15:00", tz="UTC")
+            assert pd.isna(ps.idm_swept_time)
+            assert pd.isna(ps.touch_time)
+            assert ps.same_bar_ambiguous == False
+            assert ps.invalid_h1_close_through == False
+
+
+def test_pairsetup_resets_when_no_matching_pool():
     d1_df = _build_d1_bullish_happy()
     h1_df = _build_h1_happy()
 
@@ -148,32 +166,34 @@ def test_pairsetup_resets_when_no_matching_pool_diagnostic():
     ps = setups.PairSetup("audusd")
 
     ps.on_d1_close(d1_df, _build_empty_d1_zones(), _build_h4_zone_bullish(), current_low=10.1, current_high=10.3)
-    print("[RESET] AFTER D1: state=", ps.state)
+    assert ps.state == "IDLE"
 
     for i in range(len(h1_df)):
         ps.on_h1_close(h1_df.iloc[:i + 1], pools, tf_h1)
-        print(f"[RESET] H1 bar {i} ts={h1_df['timestamp'].iloc[i]} -> state={ps.state}")
-        if i == 33:
-            print("   AFTER BAR33: episode_start_time=", ps.episode_start_time,
-                  "h1_bos_event=", None if ps.h1_bos_event is None else ps.h1_bos_event["time"],
-                  "h1_choch_event=", None if ps.h1_choch_event is None else ps.h1_choch_event["time"],
-                  "candidate_ob=", ps.candidate_ob)
+        if i < 21:
+            assert ps.state == "IDLE"
+        elif i < 27:
+            assert ps.state == "EPISODE"
+        elif i < 33:
+            assert ps.state == "BOS_SEEN"
+        elif i == 33:
+            assert ps.state == "IDLE"
+            assert ps.episode_start_time is None
+            assert ps.h1_bos_event is None
+            assert ps.h1_choch_event is None
+            assert ps.candidate_ob is None
 
-    print("[RESET] FINAL STATE:", ps.state)
-    assert True
-
-
-# ---------- Scenario C: CHoCH_SEEN reached, Model A never resolves -> stuck? ----------
-
-def _build_m15_flat_noise():
-    opens  = [100, 100, 100, 100, 100]
-    highs  = [100.1, 100.1, 100.1, 100.1, 100.1]
-    lows   = [99.9, 99.9, 99.9, 99.9, 99.9]
-    closes = [100, 100, 100, 100, 100]
-    return _mk_df(opens, highs, lows, closes, freq="15min", start="2023-02-02 10:15")
+    assert ps.state == "IDLE"
 
 
-def test_pairsetup_stuck_in_choch_seen_when_model_a_unresolved_diagnostic():
+def test_pairsetup_stuck_in_choch_seen_when_model_a_unresolved():
+    """
+    Documents a KNOWN LIMITATION, not desired behavior: if CHoCH fires but
+    M15 price action never produces a qualifying Model A BOS, the state
+    machine has no timeout and waits in CHOCH_SEEN indefinitely. Flagged as
+    design-decision risk #4 in the handoff; this test locks current actual
+    behavior so any future fix is a deliberate, visible change.
+    """
     d1_df = _build_d1_bullish_happy()
     h1_df = _build_h1_happy()
 
@@ -190,16 +210,12 @@ def test_pairsetup_stuck_in_choch_seen_when_model_a_unresolved_diagnostic():
     ps = setups.PairSetup("usdjpy")
 
     ps.on_d1_close(d1_df, _build_empty_d1_zones(), _build_h4_zone_bullish(), current_low=10.1, current_high=10.3)
-
     for i in range(len(h1_df)):
         ps.on_h1_close(h1_df.iloc[:i + 1], pools, tf_h1)
 
-    print("[STUCK] STATE BEFORE M15 LOOP:", ps.state)
+    assert ps.state == "CHOCH_SEEN"
 
     m15_df = _build_m15_flat_noise()
     for i in range(len(m15_df)):
         ps.on_m15_close(h1_df, m15_df.iloc[:i + 1], tf_h1, tf_m15)
-        print(f"[STUCK] M15 bar {i} ts={m15_df['timestamp'].iloc[i]} -> state={ps.state}")
-
-    print("[STUCK] FINAL STATE:", ps.state)
-    assert True
+        assert ps.state == "CHOCH_SEEN"
