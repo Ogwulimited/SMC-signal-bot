@@ -3,7 +3,7 @@ from src.research import zones
 from conftest import _mk_df
 
 
-def test_diagnostic_print_find_swing_pools_high():
+def test_find_swing_pools_high():
     tf = pd.Timedelta(hours=1)
 
     df = _mk_df(
@@ -15,6 +15,14 @@ def test_diagnostic_print_find_swing_pools_high():
     )
 
     result = zones.find_swing_pools(df, tf, "H1", "high")
-    print("\n--- SWING POOLS HIGH ---")
-    print(result.to_string())
-    assert True
+
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["index"] == 3
+    assert row["pool_price"] == 11.5
+    assert row["confirm_time"] == pd.Timestamp("2023-01-01 06:00:00", tz="UTC")
+    assert row["expires_at"] == pd.Timestamp("2023-01-11 06:00:00", tz="UTC")
+    assert pd.isna(row["swept_time"])
+    assert row["side"] == "high"
+    assert row["timeframe"] == "H1"
+    assert row["pool_type"] == "swing"
