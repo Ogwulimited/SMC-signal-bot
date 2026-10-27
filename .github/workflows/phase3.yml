@@ -14,4 +14,4 @@ jobs:
       - name: Install dependencies
         run: pip install pandas pyarrow pytest
       - name: Run Phase 3 Tests
-        run: python -m pytest tests/test_setups_d1bias.py tests/test_setups_zoneselect.py tests/test_setups_candidateobs.py tests/test_setups_pairsetup_model_a.py tests/test_setups_pairsetup_edge_cases.py -v -s
+        run: python -m pytest tests/test_setups_d1bias.py tests/test_setups_zoneselect.py tests/test_setups_candidateobs.py tests/test_setups_pairsetup_model_a.py tests/test_setups_pairsetup_edge_cases.py tests/test_setups_pairsetup_model_b.py -v -s
