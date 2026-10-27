@@ -428,6 +428,7 @@ def detect_order_blocks(df, tf, bos_choch_events, bad_days=None):
 # ---------------------------------------------------------------------------
 
 def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
+def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
                      ob_low, ob_high, direction, bad_days=None):
     bull = direction == "bullish"
 
