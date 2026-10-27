@@ -431,7 +431,7 @@ def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
                      ob_low, ob_high, direction, bad_days=None):
     bull = direction == "bullish"
 
-    def _model_b():
+        def _model_b():
         swings = primitives.find_swings(h1_df, config.STRUCTURE_SWING_N, tf_h1)
         kind = "high" if bull else "low"
         cand = swings[(swings["kind"] == kind) & (swings["timestamp"] >= choch_time)].sort_values("timestamp")
@@ -452,13 +452,15 @@ def find_inducement(h1_df, m15_df, tf_h1, tf_m15, choch_time, l_base_time,
         if len(s1_match) == 0 or s1_match[0] >= bos_idx:
             return None
         s1_idx = s1_match[0]
+        armed_time = h1_df["timestamp"].iloc[bos_idx] + tf_h1
         opp = "low" if bull else "high"
-        between = swings[(swings["kind"] == opp) & (swings["index"] > s1_idx) & (swings["index"] < bos_idx)]
+        between = swings[(swings["kind"] == opp) & (swings["index"] > s1_idx) & (swings["index"] < bos_idx)
+                          & (swings["confirm_time"] <= armed_time)]
         if between.empty:
             return None
         idm_row = between.loc[between["price"].idxmin() if bull else between["price"].idxmax()]
         return {"model": "B", "idm_price": idm_row["price"], "idm_time": idm_row["confirm_time"],
-                "armed_time": h1_df["timestamp"].iloc[bos_idx] + tf_h1}
+                "armed_time": armed_time}
 
     def _model_a():
         swings = primitives.find_swings(m15_df, config.STRUCTURE_SWING_N, tf_m15)
