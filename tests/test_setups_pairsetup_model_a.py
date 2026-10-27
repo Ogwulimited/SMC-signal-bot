@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 from src.research import setups
 from conftest import _mk_df
 
@@ -33,7 +34,7 @@ def _build_m15_fixture():
     return _mk_df(opens, highs, lows, closes, freq="15min", start="2023-02-02 03:00")
 
 
-def test_pairsetup_model_a_diagnostic():
+def test_pairsetup_model_a_happy_path():
     d1_df = _build_d1_fixture()
     h1_df = _build_h1_fixture()
     m15_df = _build_m15_fixture()
@@ -61,32 +62,52 @@ def test_pairsetup_model_a_diagnostic():
     ps = setups.PairSetup("eurusd")
 
     ps.on_d1_close(d1_df, d1_zones, h4_zones, current_low=10.1, current_high=10.3)
-    print("AFTER D1: state=", ps.state, "bias=", ps.bias, "zone=", ps.zone)
+    assert ps.state == "IDLE"
+    assert ps.bias["state"] == "bullish"
+    assert ps.bias["direction"] == "up"
+    assert ps.zone["timeframe"] == "H4"
+    assert ps.zone["zone_low"] == pytest.approx(10.0)
+    assert ps.zone["zone_high"] == pytest.approx(10.5)
 
     for i in range(len(h1_df)):
         ps.on_h1_close(h1_df.iloc[:i + 1], pools, tf_h1)
-        print(f"H1 bar {i} ts={h1_df['timestamp'].iloc[i]} close={h1_df['close'].iloc[i]} -> state={ps.state}")
-        if ps.h1_bos_event is not None:
-            print("   h1_bos_event time=", ps.h1_bos_event["time"],
-                  "dir=", ps.h1_bos_event["direction"], "label=", ps.h1_bos_event["label"])
-        if ps.h1_choch_event is not None:
-            print("   h1_choch_event time=", ps.h1_choch_event["time"],
-                  "dir=", ps.h1_choch_event["direction"], "label=", ps.h1_choch_event["label"])
-        if ps.candidate_ob is not None:
-            print("   candidate_ob l_base_time=", ps.candidate_ob["l_base_time"],
-                  "l_base_price=", ps.candidate_ob["l_base_price"],
-                  "ob_low=", ps.candidate_ob["ob_low"], "ob_high=", ps.candidate_ob["ob_high"],
-                  "valid_pretouch=", ps.candidate_ob["valid_pretouch"])
 
-    print("STATE BEFORE M15 LOOP:", ps.state)
+        if i < 21:
+            assert ps.state == "IDLE"
+        elif i == 21:
+            assert ps.state == "EPISODE"
+        elif i < 27:
+            assert ps.state == "EPISODE"
+        elif i == 27:
+            assert ps.state == "BOS_SEEN"
+            assert ps.h1_bos_event["time"] == pd.Timestamp("2023-02-02 04:00:00", tz="UTC")
+            assert ps.h1_bos_event["direction"] == "down"
+            assert ps.h1_bos_event["label"] == "BOS"
+        elif i < 33:
+            assert ps.state == "BOS_SEEN"
+        elif i == 33:
+            assert ps.state == "CHOCH_SEEN"
+            assert ps.h1_choch_event["time"] == pd.Timestamp("2023-02-02 10:00:00", tz="UTC")
+            assert ps.h1_choch_event["direction"] == "up"
+            assert ps.h1_choch_event["label"] == "CHoCH"
+            assert ps.candidate_ob["l_base_time"] == pd.Timestamp("2023-02-02 03:00:00", tz="UTC")
+            assert ps.candidate_ob["l_base_price"] == pytest.approx(8.0)
+            assert ps.candidate_ob["ob_low"] == pytest.approx(8.0)
+            assert ps.candidate_ob["ob_high"] == pytest.approx(9.5)
+            assert ps.candidate_ob["valid_pretouch"] == True
+
+    assert ps.state == "CHOCH_SEEN"
 
     for i in range(len(m15_df)):
         ps.on_m15_close(h1_df, m15_df.iloc[:i + 1], tf_h1, tf_m15)
-        print(f"M15 bar {i} ts={m15_df['timestamp'].iloc[i]} close={m15_df['close'].iloc[i]} -> state={ps.state}")
-        if ps.state == "ARMED":
-            print("   ARMED! m15_bos_time=", ps.m15_bos_time, "idm_price=", ps.idm_price, "idm_time=", ps.idm_time)
-            print("   idm_swept_time=", ps.idm_swept_time, "touch_time=", ps.touch_time,
-                  "same_bar_ambiguous=", ps.same_bar_ambiguous,
-                  "invalid_h1_close_through=", ps.invalid_h1_close_through)
-
-    assert True
+        if i < 10:
+            assert ps.state == "CHOCH_SEEN"
+        elif i == 10:
+            assert ps.state == "ARMED"
+            assert ps.m15_bos_time == pd.Timestamp("2023-02-02 05:45:00", tz="UTC")
+            assert ps.idm_price == pytest.approx(95.0)
+            assert ps.idm_time == pd.Timestamp("2023-02-02 04:15:00", tz="UTC")
+            assert pd.isna(ps.idm_swept_time)
+            assert pd.isna(ps.touch_time)
+            assert ps.same_bar_ambiguous == False
+            assert ps.invalid_h1_close_through == False
