@@ -88,3 +88,38 @@ def find_candidate_obs(df, tf, bos_choch_events, pools):
 
     cols = list(obs.columns) + ["liquidity_pools"]
     return pd.DataFrame(rows, columns=cols)
+
+
+def on_m15_close(self, m15_df, tf):
+    if self.state != "CHOCH_SEEN" or self.candidate_ob is None:
+        return
+
+    bias_dir = "up" if self.bias["state"] == "bullish" else "down"
+    swings = primitives.find_swings(m15_df, config.STRUCTURE_SWING_N, tf)
+    events = primitives.detect_bos_choch(m15_df, swings, tf)
+    if events.empty:
+        return
+
+    l_base_time = self.candidate_ob["l_base_time"]
+    choch_time = self.h1_choch_event["time"]
+
+    bos_candidates = events[
+        (events["direction"] == bias_dir) & (events["label"] == "BOS")
+        & (events["time"] >= l_base_time) & (events["time"] <= choch_time)
+    ]
+    if bos_candidates.empty:
+        return
+    m15_bos = bos_candidates.iloc[0]
+
+    idm_kind = "low" if bias_dir == "up" else "high"
+    prior_swings = swings[
+        (swings["kind"] == idm_kind) & (swings["confirm_time"] <= m15_bos["time"])
+    ]
+    if prior_swings.empty:
+        return
+    idm_swing = prior_swings.sort_values("timestamp").iloc[-1]
+
+    self.m15_bos_time = m15_bos["time"]
+    self.idm_price = idm_swing["price"]
+    self.idm_time = idm_swing["timestamp"]
+    self.state = "ARMED"
