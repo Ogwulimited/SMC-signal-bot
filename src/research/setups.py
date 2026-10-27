@@ -9,6 +9,7 @@ from src import config
 from src.research import primitives
 from src.research import zones
 
+
 def compute_d1_bias(d1_df):
     """
     Computes current D1 directional bias from closed D1 bars.
@@ -90,36 +91,146 @@ def find_candidate_obs(df, tf, bos_choch_events, pools):
     return pd.DataFrame(rows, columns=cols)
 
 
-def on_m15_close(self, m15_df, tf):
-    if self.state != "CHOCH_SEEN" or self.candidate_ob is None:
-        return
+class PairSetup:
+    """
+    Stateful per-pair state machine implementing the setups spec, Model A only.
+    States covered this slice: IDLE -> EPISODE -> BOS_SEEN -> CHOCH_SEEN -> ARMED.
+    SWEPT/TRIGGERED/IN_TRADE/CLOSED are later slices (need Phase 4 stop/target math).
+    """
 
-    bias_dir = "up" if self.bias["state"] == "bullish" else "down"
-    swings = primitives.find_swings(m15_df, config.STRUCTURE_SWING_N, tf)
-    events = primitives.detect_bos_choch(m15_df, swings, tf)
-    if events.empty:
-        return
+    def __init__(self, pair):
+        self.pair = pair
+        self.state = "IDLE"
+        self.bias = None
+        self.zone = None
+        self.episode_start_time = None
+        self.h1_bos_event = None
+        self.h1_choch_event = None
+        self.candidate_ob = None
+        self.m15_bos_time = None
+        self.idm_price = None
+        self.idm_time = None
 
-    l_base_time = self.candidate_ob["l_base_time"]
-    choch_time = self.h1_choch_event["time"]
+    def _reset_episode(self):
+        self.state = "IDLE"
+        self.episode_start_time = None
+        self.h1_bos_event = None
+        self.h1_choch_event = None
+        self.candidate_ob = None
+        self.m15_bos_time = None
+        self.idm_price = None
+        self.idm_time = None
 
-    bos_candidates = events[
-        (events["direction"] == bias_dir) & (events["label"] == "BOS")
-        & (events["time"] >= l_base_time) & (events["time"] <= choch_time)
-    ]
-    if bos_candidates.empty:
-        return
-    m15_bos = bos_candidates.iloc[0]
+    def on_d1_close(self, d1_df, d1_zones, h4_zones, current_low, current_high):
+        new_bias = compute_d1_bias(d1_df)
+        bias_changed = (
+            self.bias is None
+            or new_bias["state"] != self.bias["state"]
+            or new_bias["direction"] != self.bias["direction"]
+        )
+        self.bias = new_bias
 
-    idm_kind = "low" if bias_dir == "up" else "high"
-    prior_swings = swings[
-        (swings["kind"] == idm_kind) & (swings["confirm_time"] <= m15_bos["time"])
-    ]
-    if prior_swings.empty:
-        return
-    idm_swing = prior_swings.sort_values("timestamp").iloc[-1]
+        if new_bias["state"] not in ("bullish", "bearish"):
+            self._reset_episode()
+            self.zone = None
+            return
 
-    self.m15_bos_time = m15_bos["time"]
-    self.idm_price = idm_swing["price"]
-    self.idm_time = idm_swing["timestamp"]
-    self.state = "ARMED"
+        new_zone = select_htf_zone(d1_zones, h4_zones, new_bias["state"], current_low, current_high)
+        zone_changed = (
+            self.zone is None or new_zone is None
+            or new_zone["zone_low"] != self.zone["zone_low"]
+            or new_zone["zone_high"] != self.zone["zone_high"]
+            or new_zone["confirm_time"] != self.zone["confirm_time"]
+        )
+        if bias_changed or zone_changed:
+            self._reset_episode()
+        self.zone = new_zone
+
+        if self.zone is not None and self.state != "IDLE":
+            far_edge = self.zone["zone_low"] if new_bias["state"] == "bullish" else self.zone["zone_high"]
+            d1_close = d1_df.iloc[-1]["close"]
+            beyond = (d1_close < far_edge) if new_bias["state"] == "bullish" else (d1_close > far_edge)
+            if beyond:
+                self._reset_episode()
+
+    def on_h1_close(self, h1_df, pools, tf):
+        if self.bias is None or self.bias["state"] not in ("bullish", "bearish") or self.zone is None:
+            return
+        if self.state == "ARMED":
+            return
+
+        bias_dir = "up" if self.bias["state"] == "bullish" else "down"
+        sweep_dir = "down" if bias_dir == "up" else "up"
+        last_bar = h1_df.iloc[-1]
+
+        if self.state == "IDLE":
+            overlaps = (last_bar["low"] <= self.zone["zone_high"]) and (last_bar["high"] >= self.zone["zone_low"])
+            if overlaps:
+                self.state = "EPISODE"
+                self.episode_start_time = last_bar["timestamp"]
+            return
+
+        swings = primitives.find_swings(h1_df, config.STRUCTURE_SWING_N, tf)
+        events = primitives.detect_bos_choch(h1_df, swings, tf)
+        if events.empty:
+            return
+        events = events[events["time"] >= self.episode_start_time]
+
+        if self.state == "EPISODE":
+            bos_candidates = events[events["direction"] == sweep_dir]
+            if not bos_candidates.empty:
+                self.h1_bos_event = bos_candidates.iloc[0]
+                self.state = "BOS_SEEN"
+
+        if self.state == "BOS_SEEN":
+            choch_candidates = events[
+                (events["time"] > self.h1_bos_event["time"])
+                & (events["direction"] == bias_dir)
+                & (events["label"] == "CHoCH")
+            ]
+            if not choch_candidates.empty:
+                self.h1_choch_event = choch_candidates.iloc[0]
+                candidates = find_candidate_obs(h1_df, tf, events, pools)
+                match = candidates[
+                    (candidates["bos_time"] == self.h1_bos_event["time"])
+                    & (candidates["choch_time"] == self.h1_choch_event["time"])
+                ]
+                if not match.empty:
+                    self.candidate_ob = match.iloc[0].to_dict()
+                    self.state = "CHOCH_SEEN"
+                else:
+                    self._reset_episode()
+
+    def on_m15_close(self, m15_df, tf):
+        if self.state != "CHOCH_SEEN" or self.candidate_ob is None:
+            return
+
+        bias_dir = "up" if self.bias["state"] == "bullish" else "down"
+        swings = primitives.find_swings(m15_df, config.STRUCTURE_SWING_N, tf)
+        events = primitives.detect_bos_choch(m15_df, swings, tf)
+        if events.empty:
+            return
+
+        l_base_time = self.candidate_ob["l_base_time"]
+        choch_time = self.h1_choch_event["time"]
+
+        bos_candidates = events[
+            (events["direction"] == bias_dir) & (events["label"] == "BOS")
+            & (events["time"] >= l_base_time) & (events["time"] <= choch_time)
+        ]
+        if bos_candidates.empty:
+            return
+        m15_bos = bos_candidates.iloc[0]
+
+        idm_kind = "low" if bias_dir == "up" else "high"
+        prior_swings = swings[
+            (swings["kind"] == idm_kind) & (swings["confirm_time"] <= m15_bos["time"])
+        ]
+        if prior_swings.empty:
+            return
+        idm_swing = prior_swings.sort_values("timestamp").iloc[-1]
+
+        self.m15_bos_time = m15_bos["time"]
+        self.idm_price = idm_swing["price"]
+        self.idm_time = idm_swing["timestamp"]
+        self.state = "ARMED"
