@@ -145,8 +145,12 @@ class PairSetup:
     Layer 6: a breaker candidate is a SEPARATE, independent entry idea
     riding on the same original H1 BOS event (self.h1_bos_event) that
     produced the OB sequence -- not a variant of Model A/B. It becomes
-    eligible the moment candidate_ob is set (same liquidity_taken gate as
-    the OB side), and is re-evaluated from scratch every M15 close via
+    eligible only once BOTH candidate_ob AND h1_bos_event are set (the
+    h1_bos_event guard matters for unit tests/callers that construct a
+    PairSetup by directly injecting candidate_ob without going through the
+    full on_h1_close pipeline -- without it, _update_breaker would build a
+    malformed single-row DataFrame from h1_bos_event=None and blow up).
+    It is re-evaluated from scratch every M15 close via
     zones.detect_breakers(). Conflict rule: whichever side actually
     resolves FIRST in real time (OB touch_time vs breaker fill_time) wins
     -- self.winner is then frozen and the LOSING side stops being updated
@@ -355,7 +359,7 @@ class PairSetup:
             self.invalid_h1_close_through = False
             self.state = "ARMED"
 
-        if self.candidate_ob is not None and self.winner is None:
+        if self.candidate_ob is not None and self.h1_bos_event is not None and self.winner is None:
             self._update_breaker(h1_df, m15_df, tf_h1, tf_m15)
 
         if self.state in ("ARMED", "SWEPT") and self.winner is None:
