@@ -60,6 +60,14 @@ def select_t1_target(pool_universe, entry_time, entry_price, direction, risk_r,
 
     side = "high" if direction == "bullish" else "low"
     cand = pool_universe[pool_universe["side"] == side].copy()
+
+    # Defensive dtype coercion: if confirm_time/expires_at/swept_time is
+    # entirely NaT in this subset, pandas infers a tz-naive dtype, which
+    # then fails comparison against a tz-aware entry_time. Force tz-aware
+    # UTC regardless of content (all-real, all-NaT, or mixed).
+    for col in ["confirm_time", "expires_at", "swept_time"]:
+        cand[col] = pd.to_datetime(cand[col], utc=True)
+
     cand = cand[cand["confirm_time"] <= entry_time]
     cand = cand[(cand["swept_time"].isna()) | (cand["swept_time"] >= entry_time)]
     cand = cand[(cand["expires_at"].isna()) | (cand["expires_at"] >= entry_time)]
