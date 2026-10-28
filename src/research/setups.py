@@ -140,8 +140,31 @@ class PairSetup:
     bar immediately following the touch bar (touch_time == that bar's
     timestamp, since touch_time is stored as the touch bar's CLOSE time).
     fill2_price stays None ("pending") until that next bar has actually
-    closed and been observed -- this is not a failure, just not-yet-known,
-    matching how a live bot would experience real alert latency.
+    closed and been observed.
+
+    Layer 6: a breaker candidate is a SEPARATE, independent entry idea
+    riding on the same original H1 BOS event (self.h1_bos_event) that
+    produced the OB sequence -- not a variant of Model A/B. It becomes
+    eligible the moment candidate_ob is set (same liquidity_taken gate as
+    the OB side), and is re-evaluated from scratch every M15 close via
+    zones.detect_breakers(). Conflict rule: whichever side actually
+    resolves FIRST in real time (OB touch_time vs breaker fill_time) wins
+    -- self.winner is then frozen and the LOSING side stops being updated
+    entirely (explicit user choice this round; may be revisited after
+    Phase 5 tuning to track both to completion instead of freezing).
+    Tie-break assumption (untested): if both times are exactly equal, OB
+    wins by default.
+
+    Consumption note for Phase 4: self.state reaching "TRIGGERED" reflects
+    the OB ladder's OWN progress, not necessarily which side won -- always
+    check self.winner to know which trade was actually taken.
+
+    Known limitation (pre-existing Layer 3 behavior, not fixed here):
+    h1_bos_event is matched by direction only, not by label == "BOS". On
+    the rare episode where that event is the very first event in the whole
+    H1 series (label "INIT"), zones.detect_breakers won't find it (it only
+    consumes rows labeled "BOS"), so self.breaker stays None for that one
+    episode. Flagged, not fixed -- would require touching locked Layer 3.
     """
 
     def __init__(self, pair):
@@ -164,6 +187,9 @@ class PairSetup:
         self.fill1_price = None
         self.fill2_price = None
         self.last_cancel_reason = None
+        self.breaker = None
+        self.winner = None
+        self.resolved_at = pd.NaT
 
     def _reset_episode(self):
         self.state = "IDLE"
@@ -181,6 +207,9 @@ class PairSetup:
         self.invalid_h1_close_through = None
         self.fill1_price = None
         self.fill2_price = None
+        self.breaker = None
+        self.winner = None
+        self.resolved_at = pd.NaT
 
     def on_d1_close(self, d1_df, d1_zones, h4_zones, current_low, current_high):
         new_bias = compute_d1_bias(d1_df)
@@ -220,7 +249,7 @@ class PairSetup:
 
         last_bar = h1_df.iloc[-1]
 
-        if self.state in ("ARMED", "SWEPT"):
+        if self.state in ("ARMED", "SWEPT") and self.winner is None:
             ob_low = self.candidate_ob["ob_low"]
             ob_high = self.candidate_ob["ob_high"]
             bull = self.candidate_ob["direction"] == "bullish"
@@ -230,7 +259,7 @@ class PairSetup:
                 self._reset_episode()
             return
 
-        if self.state == "TRIGGERED":
+        if self.state in ("ARMED", "SWEPT", "TRIGGERED"):
             return
 
         bias_dir = "up" if self.bias["state"] == "bullish" else "down"
@@ -274,6 +303,32 @@ class PairSetup:
                 else:
                     self._reset_episode()
 
+    def _update_breaker(self, h1_df, m15_df, tf_h1, tf_m15):
+        bos_row = pd.DataFrame([self.h1_bos_event])
+        result = zones.detect_breakers(h1_df, tf_h1, m15_df, tf_m15, bos_row)
+        self.breaker = result.iloc[0].to_dict() if not result.empty else None
+
+    def _resolve_winner(self):
+        ob_time = self.touch_time if self.state == "TRIGGERED" else pd.NaT
+        breaker_time = pd.NaT
+        if self.breaker is not None and self.breaker.get("filled"):
+            breaker_time = self.breaker.get("fill_time")
+
+        ob_known = pd.notna(ob_time)
+        breaker_known = pd.notna(breaker_time)
+
+        if not ob_known and not breaker_known:
+            return
+        if ob_known and not breaker_known:
+            self.winner, self.resolved_at = "ob", ob_time
+        elif breaker_known and not ob_known:
+            self.winner, self.resolved_at = "breaker", breaker_time
+        else:
+            if ob_time <= breaker_time:
+                self.winner, self.resolved_at = "ob", ob_time
+            else:
+                self.winner, self.resolved_at = "breaker", breaker_time
+
     def on_m15_close(self, h1_df, m15_df, tf_h1, tf_m15):
         if self.state == "CHOCH_SEEN":
             if self.candidate_ob is None:
@@ -300,7 +355,10 @@ class PairSetup:
             self.invalid_h1_close_through = False
             self.state = "ARMED"
 
-        if self.state in ("ARMED", "SWEPT"):
+        if self.candidate_ob is not None and self.winner is None:
+            self._update_breaker(h1_df, m15_df, tf_h1, tf_m15)
+
+        if self.state in ("ARMED", "SWEPT") and self.winner is None:
             scan = _scan_sweep_and_touch(
                 m15_df, tf_m15,
                 armed_time=self.m15_bos_time,
@@ -323,13 +381,13 @@ class PairSetup:
                         else self.candidate_ob["ob_low"])
                 self.fill1_price = edge
                 self.state = "TRIGGERED"
-                return
-
-            if pd.notna(self.idm_swept_time) and self.state == "ARMED":
+            elif pd.notna(self.idm_swept_time) and self.state == "ARMED":
                 self.state = "SWEPT"
-            return
 
-        if self.state == "TRIGGERED" and self.fill2_price is None:
+        if self.winner is None:
+            self._resolve_winner()
+
+        if self.winner == "ob" and self.state == "TRIGGERED" and self.fill2_price is None:
             next_bar = m15_df[m15_df["timestamp"] == self.touch_time]
             if not next_bar.empty:
                 self.fill2_price = next_bar.iloc[0]["open"]
