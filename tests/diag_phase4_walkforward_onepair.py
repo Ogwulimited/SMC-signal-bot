@@ -13,11 +13,17 @@ entry decision. Trade-outcome scoring (build_trade_from_setup) gets the
 full h1/m15/pool history, because scoring an already-placed historical
 trade by scanning its own forward price path is standard backtesting,
 not lookahead bias.
+
+ASSUMPTION (flagged): H4 bos/choch events for find_htf_zones use
+config.STRUCTURE_SWING_N (same as H1 structure detection), since no
+H4-specific swing-N constant exists in config.py. D1_SWING_N is reserved
+for D1 bias per compute_d1_bias. Revisit if H4 zone counts look off.
 """
 
 import pandas as pd
 
-from src.research import zones, setups, simulate
+from src import config
+from src.research import zones, setups, simulate, primitives
 
 PAIR = "eurusd"
 YEAR = 2023
@@ -37,8 +43,6 @@ def _load(pair, year):
 
     for df in (d1, h4, h1, m15):
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-        df.sort_values("timestamp", inplace=False)
-        df.reset_index(drop=True, inplace=False)
     d1 = d1.sort_values("timestamp").reset_index(drop=True)
     h4 = h4.sort_values("timestamp").reset_index(drop=True)
     h1 = h1.sort_values("timestamp").reset_index(drop=True)
@@ -49,6 +53,8 @@ def _load(pair, year):
         print(f"bad_days_{pair}.parquet columns: {list(bad_days_df.columns)}")
         if "date" in bad_days_df.columns:
             col = "date"
+        elif "ny_date" in bad_days_df.columns:
+            col = "ny_date"
         elif "bad_date" in bad_days_df.columns:
             col = "bad_date"
         elif "timestamp" in bad_days_df.columns:
@@ -61,8 +67,6 @@ def _load(pair, year):
     except FileNotFoundError:
         bad_days = set()
 
-    # Restrict to one year, but keep a lookback buffer on each df so swing/
-    # BOS/zone detection near Jan 1 isn't starved of prior context.
     buffer_start = pd.Timestamp(f"{year}-01-01", tz="UTC") - pd.Timedelta(days=90)
     cutoff_end = pd.Timestamp(f"{year+1}-01-01", tz="UTC")
 
@@ -78,8 +82,14 @@ def run_one_pair(pair=PAIR, year=YEAR):
     d1_df, h4_df, h1_df, m15_df, bad_days = _load(pair, year)
     print(f"Loaded {pair} {year}: d1={len(d1_df)} h4={len(h4_df)} h1={len(h1_df)} m15={len(m15_df)} bad_days={len(bad_days)}")
 
-    d1_zones = zones.find_htf_zones(d1_df, TF_D1, bad_days=bad_days)
-    h4_zones = zones.find_htf_zones(h4_df, TF_H4, bad_days=bad_days)
+    d1_swings = primitives.find_swings(d1_df, config.D1_SWING_N, TF_D1)
+    d1_events = primitives.detect_bos_choch(d1_df, d1_swings, TF_D1)
+    d1_zones = zones.find_htf_zones(d1_df, TF_D1, d1_events, bad_days=bad_days)
+
+    h4_swings = primitives.find_swings(h4_df, config.STRUCTURE_SWING_N, TF_H4)
+    h4_events = primitives.detect_bos_choch(h4_df, h4_swings, TF_H4)
+    h4_zones = zones.find_htf_zones(h4_df, TF_H4, h4_events, bad_days=bad_days)
+
     pools_full = simulate.build_pool_universe(h1_df, h4_df, TF_H1, TF_H4, bad_days=bad_days)
 
     print(f"d1_zones={len(d1_zones)} h4_zones={len(h4_zones)} pools={len(pools_full)}")
@@ -87,12 +97,11 @@ def run_one_pair(pair=PAIR, year=YEAR):
     ps = setups.PairSetup(pair)
     trades = []
     d1_ptr, h1_ptr = 0, 0
-    last_exit_time = None  # for the no-overlap invariant check
+    last_exit_time = None
 
     for m_i in range(len(m15_df)):
         now = m15_df["timestamp"].iloc[m_i] + TF_M15
 
-        # --- D1 closes due by now ---
         while d1_ptr < len(d1_df) and (d1_df["timestamp"].iloc[d1_ptr] + TF_D1) <= now:
             d1_close_time = d1_df["timestamp"].iloc[d1_ptr] + TF_D1
             d1_slice = d1_df.iloc[:d1_ptr + 1]
@@ -107,7 +116,6 @@ def run_one_pair(pair=PAIR, year=YEAR):
             ps.on_d1_close(d1_slice, d1z_slice, h4z_slice, cur_low, cur_high)
             d1_ptr += 1
 
-        # --- H1 closes due by now ---
         while h1_ptr < len(h1_df) and (h1_df["timestamp"].iloc[h1_ptr] + TF_H1) <= now:
             h1_close_time = h1_df["timestamp"].iloc[h1_ptr] + TF_H1
             h1_slice = h1_df.iloc[:h1_ptr + 1]
@@ -115,7 +123,6 @@ def run_one_pair(pair=PAIR, year=YEAR):
             ps.on_h1_close(h1_slice, pools_slice, TF_H1)
             h1_ptr += 1
 
-        # --- M15 close itself ---
         if h1_ptr > 0:
             m15_slice = m15_df.iloc[:m_i + 1]
             h1_known_slice = h1_df.iloc[:h1_ptr]
