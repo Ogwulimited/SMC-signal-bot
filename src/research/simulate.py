@@ -98,3 +98,57 @@ def select_t1_target(pool_universe, entry_time, entry_price, direction, risk_r,
             "chosen_pool_type": chosen["pool_type"], "chosen_pool_price": chosen["pool_price"],
             "chosen_r_gross": chosen["r_gross"], "chosen_r_net": chosen["r_net"],
             "skipped_no_t1": False}
+
+
+def scan_trade_exit(m15_df, tf_m15, tf_h1, entry_time, entry_price, direction,
+                     stop_price, target_price, time_stop_h1_bars=None):
+    """
+    Walk forward M15 bar-by-bar from entry_time until stop, target, or the
+    time-stop window elapses. Same-candle rule: if one bar's range touches
+    both stop and target, stop wins (conservative). time_stop_h1_bars counts
+    in H1-bar units (default config.TIME_STOP_H1_BARS) but scanning itself
+    happens at M15 resolution for precision.
+
+    target_price may be None/NaN (e.g. a skipped-T1 trade being scanned for
+    diagnostic purposes only) -- in that case only stop and time-stop apply.
+
+    Returns dict: exit_reason ("stop"/"target"/"time_stop"), exit_time,
+    exit_price.
+    """
+    if time_stop_h1_bars is None:
+        time_stop_h1_bars = config.TIME_STOP_H1_BARS
+
+    bull = direction == "bullish"
+    cutoff_time = entry_time + time_stop_h1_bars * tf_h1
+    has_target = target_price is not None and pd.notna(target_price)
+
+    after = m15_df[m15_df["timestamp"] + tf_m15 > entry_time].reset_index(drop=False)
+
+    last_bar = None
+    for _, r in after.iterrows():
+        bar_close_time = r["timestamp"] + tf_m15
+        if bar_close_time > cutoff_time:
+            break
+        last_bar = r
+
+        stop_hit = (r["low"] <= stop_price) if bull else (r["high"] >= stop_price)
+        target_hit = False
+        if has_target:
+            target_hit = (r["high"] >= target_price) if bull else (r["low"] <= target_price)
+
+        if stop_hit:
+            return {"exit_reason": "stop", "exit_time": bar_close_time, "exit_price": stop_price}
+        if target_hit:
+            return {"exit_reason": "target", "exit_time": bar_close_time, "exit_price": target_price}
+
+    if last_bar is not None:
+        return {"exit_reason": "time_stop", "exit_time": last_bar["timestamp"] + tf_m15,
+                "exit_price": last_bar["close"]}
+    return {"exit_reason": "time_stop", "exit_time": entry_time, "exit_price": entry_price}
+
+
+def compute_r_result(entry_price, exit_price, direction, risk_r):
+    """Signed R outcome of a closed trade. Positive = profit, negative = loss."""
+    if direction == "bullish":
+        return (exit_price - entry_price) / risk_r
+    return (entry_price - exit_price) / risk_r
