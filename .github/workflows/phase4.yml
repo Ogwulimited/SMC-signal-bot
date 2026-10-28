@@ -13,5 +13,9 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: pip install pandas pyarrow pytest
+      - name: Build processed data
+        run: python -m src.research.build_history
       - name: Run Phase 4 Diagnostics
-        run: python -m pytest tests/diag_phase4_t1_target.py tests/diag_phase4_exit_scan.py tests/diag_phase4_trade_build.py -v -s
+        run: |
+          python -m pytest tests/diag_phase4_t1_target.py tests/diag_phase4_exit_scan.py tests/diag_phase4_trade_build.py -v -s
+          python tests/diag_phase4_walkforward_onepair.py
