@@ -37,12 +37,27 @@ def _load(pair, year):
 
     for df in (d1, h4, h1, m15):
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-        df.sort_values("timestamp", inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        df.sort_values("timestamp", inplace=False)
+        df.reset_index(drop=True, inplace=False)
+    d1 = d1.sort_values("timestamp").reset_index(drop=True)
+    h4 = h4.sort_values("timestamp").reset_index(drop=True)
+    h1 = h1.sort_values("timestamp").reset_index(drop=True)
+    m15 = m15.sort_values("timestamp").reset_index(drop=True)
 
     try:
         bad_days_df = pd.read_parquet(f"data/processed/bad_days_{pair}.parquet")
-        bad_days = set(pd.to_datetime(bad_days_df["date"]).dt.date)
+        print(f"bad_days_{pair}.parquet columns: {list(bad_days_df.columns)}")
+        if "date" in bad_days_df.columns:
+            col = "date"
+        elif "bad_date" in bad_days_df.columns:
+            col = "bad_date"
+        elif "timestamp" in bad_days_df.columns:
+            col = "timestamp"
+        elif "day" in bad_days_df.columns:
+            col = "day"
+        else:
+            col = bad_days_df.columns[0]
+        bad_days = set(pd.to_datetime(bad_days_df[col]).dt.date)
     except FileNotFoundError:
         bad_days = set()
 
