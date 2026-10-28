@@ -152,3 +152,93 @@ def compute_r_result(entry_price, exit_price, direction, risk_r):
     if direction == "bullish":
         return (exit_price - entry_price) / risk_r
     return (entry_price - exit_price) / risk_r
+
+
+def build_trade_from_setup(ps, pair, h1_df, m15_df, pool_universe, tf_h1, tf_m15):
+    """
+    Phase 4: consume a PairSetup instance whose winner has just resolved,
+    compute stop/entry/risk, apply the spread-cost filter, select T1/T2
+    targets, scan both to their exits, then free the pair via close_trade().
+
+    OB winner: entry = fill2_price, realized one M15 bar after touch_time
+    (fill2 executes at the next bar's open after touch -- entry_time is
+    therefore touch_time + tf_m15, so the forward exit-scan starts strictly
+    after the entry bar itself, not from inside it).
+    Stop = far OB edge -+ 0.1*ATR(H1,14), ATR taken at the OB's own H1 bar
+    index, shifted by 1 -- same convention as zones.py's _atr_shifted.
+
+    Breaker winner: entry = limit_price, entry_time = fill_time, stop = the
+    breaker's own precomputed stop field (already zone edge -+0.1 ATR).
+
+    Design decision: T1 and T2 are both evaluated as hypothetical outcomes
+    of the SAME entry -- the trade is still considered "opened" even if T1
+    fails to qualify (skipped_no_t1=True); only the T1 exit fields are left
+    blank in that case. This supports the explicit goal of comparing
+    real-liquidity targeting (T1) against blind fixed-3R (T2) on identical
+    entries, not just on the subset of trades that happen to qualify for T1.
+    """
+    if ps.winner == "ob":
+        ob = ps.candidate_ob
+        direction = ob["direction"]
+        entry_price = ps.fill2_price
+        entry_time = ps.touch_time + tf_m15
+        atr_series = primitives.compute_atr(h1_df, period=config.ATR_PERIOD).shift(1)
+        atr_at_ob = atr_series.iloc[ob["ob_index"]]
+        if direction == "bullish":
+            stop_price = ob["ob_low"] - 0.1 * atr_at_ob
+        else:
+            stop_price = ob["ob_high"] + 0.1 * atr_at_ob
+    elif ps.winner == "breaker":
+        br = ps.breaker
+        direction = br["direction"]
+        entry_price = br["limit_price"]
+        entry_time = br["fill_time"]
+        stop_price = br["stop"]
+    else:
+        raise ValueError(f"build_trade_from_setup called with no winner resolved: {ps.winner}")
+
+    risk_r = abs(entry_price - stop_price)
+    spread = config.SPREAD_PRICE[pair]
+    spread_cost_r = spread / risk_r if risk_r > 0 else np.nan
+
+    record = {"pair": pair, "model": ps.winner, "direction": direction,
+              "entry_time": entry_time, "entry_price": entry_price,
+              "stop_price": stop_price, "risk_r": risk_r,
+              "spread_cost_r": spread_cost_r}
+
+    if pd.isna(spread_cost_r) or spread_cost_r > config.MAX_SPREAD_RISK_RATIO:
+        record["status"] = "skipped_spread"
+        ps.close_trade()
+        return record
+
+    t1 = select_t1_target(pool_universe, entry_time, entry_price, direction, risk_r, spread_cost_r)
+    record.update({"t1_pool_type": t1["chosen_pool_type"],
+                    "t1_target_price": t1["chosen_pool_price"],
+                    "t1_r_gross": t1["chosen_r_gross"], "t1_r_net": t1["chosen_r_net"],
+                    "t1_nearest_pool_type": t1["nearest_pool_type"],
+                    "t1_nearest_r_net": t1["nearest_r_net"],
+                    "skipped_no_t1": t1["skipped_no_t1"]})
+
+    t2_target_price = (entry_price + config.MIN_TARGET_R * risk_r if direction == "bullish"
+                        else entry_price - config.MIN_TARGET_R * risk_r)
+    record["t2_target_price"] = t2_target_price
+
+    if not t1["skipped_no_t1"]:
+        t1_exit = scan_trade_exit(m15_df, tf_m15, tf_h1, entry_time, entry_price, direction,
+                                   stop_price, t1["chosen_pool_price"])
+        record.update({"exit_reason_t1": t1_exit["exit_reason"], "exit_time_t1": t1_exit["exit_time"],
+                        "exit_price_t1": t1_exit["exit_price"],
+                        "r_result_t1": compute_r_result(entry_price, t1_exit["exit_price"], direction, risk_r)})
+    else:
+        record.update({"exit_reason_t1": None, "exit_time_t1": pd.NaT,
+                        "exit_price_t1": np.nan, "r_result_t1": np.nan})
+
+    t2_exit = scan_trade_exit(m15_df, tf_m15, tf_h1, entry_time, entry_price, direction,
+                               stop_price, t2_target_price)
+    record.update({"exit_reason_t2": t2_exit["exit_reason"], "exit_time_t2": t2_exit["exit_time"],
+                    "exit_price_t2": t2_exit["exit_price"],
+                    "r_result_t2": compute_r_result(entry_price, t2_exit["exit_price"], direction, risk_r)})
+
+    record["status"] = "opened"
+    ps.close_trade()
+    return record
