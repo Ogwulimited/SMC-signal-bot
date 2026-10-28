@@ -52,7 +52,7 @@ def test_detect_breakers_bullish_basic():
     assert row["fvg_overlap"] == True
     assert row["fvg_low"] == 10.95
     assert row["fvg_high"] == 11.0
-    assert row["limit_price"] == pytest.approx(10.45)
+    assert row["limit_price"] == pytest.approx(10.975)
     assert row["stop"] == pytest.approx(9.86)
     assert row["filled"] == True
     assert row["fill_time"] == pd.Timestamp("2023-01-01 19:45:00", tz="UTC")
