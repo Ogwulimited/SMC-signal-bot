@@ -54,4 +54,4 @@ jobs:
       - name: Run Phase 4 Diagnostics
         run: |
           python -m pytest tests/diag_phase4_t1_target.py tests/diag_phase4_exit_scan.py tests/diag_phase4_trade_build.py -v -s
-          python tests/diag_phase4_walkforward_onepair.py
+          PYTHONPATH=. python tests/diag_phase4_walkforward_onepair.py
