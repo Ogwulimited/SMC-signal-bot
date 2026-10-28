@@ -1,10 +1,9 @@
 import pandas as pd
-import numpy as np
 from src.research import zones
 from conftest import _mk_df
 
 
-def test_breaker_bearish_cancelled():
+def test_breaker_bearish_no_fvg_rejected():
     tf_h1 = pd.Timedelta(hours=1)
     tf_m15 = pd.Timedelta(minutes=15)
 
@@ -31,20 +30,4 @@ def test_breaker_bearish_cancelled():
 
     result = zones.detect_breakers(h1, tf_h1, m15, tf_m15, bos_choch_events)
 
-    assert len(result) == 1
-    row = result.iloc[0]
-    assert row["direction"] == "bearish"
-    assert row["swing_time"] == pd.Timestamp("2023-01-01 01:00:00", tz="UTC")
-    assert row["swing_price"] == 10.1
-    assert row["bos_time"] == pd.Timestamp("2023-01-01 02:00:00", tz="UTC")
-    assert row["zone_index"] == 1
-    assert row["zone_low"] == 10.1
-    assert row["zone_high"] == 10.3
-    assert row["failed_at"] == pd.Timestamp("2023-01-01 03:00:00", tz="UTC")
-    assert row["fvg_overlap"] == False
-    assert row["limit_price"] == 10.2
-    assert np.isnan(row["stop"])
-    assert row["filled"] == False
-    assert pd.isna(row["fill_time"])
-    assert row["cancelled"] == True
-    assert row["cancel_time"] == pd.Timestamp("2023-01-01 06:00:00", tz="UTC")
+    assert len(result) == 0
