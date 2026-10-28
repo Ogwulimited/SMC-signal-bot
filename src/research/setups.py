@@ -84,11 +84,6 @@ def _scan_sweep_and_touch(m15_df, tf_m15, armed_time, idm_price, ob_low, ob_high
     IDM, then the first bar AT OR AFTER that sweep bar that touches the OB
     zone. If the sweep bar and touch bar are the same bar, that's the
     same-bar-ambiguous case -- no usable touch_time is returned.
-
-    This intentionally mirrors zones.find_inducement's post-arming scan
-    logic exactly (same proven pattern, Phase 2 locked), but is re-run
-    independently here so PairSetup can watch incrementally after the
-    model/IDM have already been frozen, without ever re-deriving the model.
     """
     bull = direction == "bullish"
     m15_after = m15_df[m15_df["timestamp"] + tf_m15 > armed_time].reset_index(drop=False)
@@ -130,19 +125,23 @@ class PairSetup:
     checked via the same zones.find_inducement call (single fallback
     sequence, not two parallel instances).
 
-    Layer 5 (this slice): once ARMED, the model/IDM/OB are frozen and never
-    re-derived. We watch M15 bars for an IDM sweep, then a later touch into
-    the OB zone (TRIGGERED). Same-bar sweep+touch is treated as unusable --
-    the candidate is abandoned and logged via last_cancel_reason, not
-    retried. Cancel checks implemented this slice: H1 close clean through
-    the OB zone, and D1 bias change (via existing _reset_episode wiring).
-    Deferred cancel conditions (logged technical debt, not yet built):
-    newer-sequence-replaces-older, price-runs-to-target-before-touch,
-    bad/missing data days.
+    Layer 5: once ARMED, the model/IDM/OB are frozen and never re-derived.
+    We watch M15 bars for an IDM sweep, then a later touch into the OB zone
+    (TRIGGERED). Same-bar sweep+touch is treated as unusable -- the
+    candidate is abandoned and logged via last_cancel_reason, not retried.
+    Cancel checks implemented: H1 close clean through the OB zone, and D1
+    bias change (via existing _reset_episode wiring). Deferred cancel
+    conditions (logged technical debt, not yet built): newer-sequence-
+    replaces-older, price-runs-to-target-before-touch, bad/missing data
+    days.
 
-    Fill price math (Fill 1 optimistic / Fill 2 conservative) is NOT built
-    this slice -- TRIGGERED only records touch_time and the raw OB edge
-    price. Fill modeling is the next micro-step.
+    Fill modeling: fill1_price is the optimistic OB-edge price recorded at
+    TRIGGERED. fill2_price is the conservative fill -- the OPEN of the M15
+    bar immediately following the touch bar (touch_time == that bar's
+    timestamp, since touch_time is stored as the touch bar's CLOSE time).
+    fill2_price stays None ("pending") until that next bar has actually
+    closed and been observed -- this is not a failure, just not-yet-known,
+    matching how a live bot would experience real alert latency.
     """
 
     def __init__(self, pair):
@@ -163,9 +162,7 @@ class PairSetup:
         self.same_bar_ambiguous = None
         self.invalid_h1_close_through = None
         self.fill1_price = None
-        # Diagnostic breadcrumb only -- deliberately NOT cleared by
-        # _reset_episode, so it survives to explain why the last episode
-        # ended. Overwritten by the next cancellation, if any.
+        self.fill2_price = None
         self.last_cancel_reason = None
 
     def _reset_episode(self):
@@ -183,6 +180,7 @@ class PairSetup:
         self.same_bar_ambiguous = None
         self.invalid_h1_close_through = None
         self.fill1_price = None
+        self.fill2_price = None
 
     def on_d1_close(self, d1_df, d1_zones, h4_zones, current_low, current_high):
         new_bias = compute_d1_bias(d1_df)
@@ -290,9 +288,9 @@ class PairSetup:
                 direction=self.candidate_ob["direction"],
             )
             if result is None:
-                return  # neither model resolved yet; stay in CHOCH_SEEN, retry next M15 close
+                return
 
-            self.model = result["model"]  # "A" or "B" -- kept for research/logging only
+            self.model = result["model"]
             self.m15_bos_time = result["armed_time"]
             self.idm_price = result["idm_price"]
             self.idm_time = result["idm_time"]
@@ -301,9 +299,6 @@ class PairSetup:
             self.same_bar_ambiguous = False
             self.invalid_h1_close_through = False
             self.state = "ARMED"
-            # fall through into the ARMED watch block below, in case the
-            # m15_df snapshot used to resolve arming already contains bars
-            # at or after armed_time
 
         if self.state in ("ARMED", "SWEPT"):
             scan = _scan_sweep_and_touch(
@@ -332,3 +327,9 @@ class PairSetup:
 
             if pd.notna(self.idm_swept_time) and self.state == "ARMED":
                 self.state = "SWEPT"
+            return
+
+        if self.state == "TRIGGERED" and self.fill2_price is None:
+            next_bar = m15_df[m15_df["timestamp"] == self.touch_time]
+            if not next_bar.empty:
+                self.fill2_price = next_bar.iloc[0]["open"]
