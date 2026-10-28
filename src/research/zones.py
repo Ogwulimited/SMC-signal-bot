@@ -629,7 +629,14 @@ def detect_breakers(df, tf, m15_df, tf_m15, bos_choch_events, bad_days=None):
                 fvg_overlap, f_low_m, f_high_m = True, f_low, f_high
                 break
 
-        limit_price = (zone_low + zone_high) / 2.0
+        # FVG is a hard requirement -- without it, this is not a valid
+        # breaker setup at all, not just an unfilled one. Skip entirely.
+        if not fvg_overlap:
+            continue
+
+        # Entry = limit at the midpoint of the FVG, not the breaker zone.
+        limit_price = (f_low_m + f_high_m) / 2.0
+
         filled, fill_time, cancelled, cancel_time = False, pd.NaT, False, pd.NaT
         h1_after = df[df["timestamp"] + tf > failed_at].reset_index(drop=False)
         cancel_ts = None
