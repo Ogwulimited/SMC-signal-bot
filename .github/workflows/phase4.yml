@@ -13,8 +13,44 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: pip install pandas pyarrow pytest
+
+      - name: Restore eurusd
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/eurusd, key: histdata-raw-eurusd-v1, restore-keys: histdata-raw-eurusd- }
+      - name: Restore gbpusd
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/gbpusd, key: histdata-raw-gbpusd-v1, restore-keys: histdata-raw-gbpusd- }
+      - name: Restore usdjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/usdjpy, key: histdata-raw-usdjpy-v1, restore-keys: histdata-raw-usdjpy- }
+      - name: Restore audusd
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/audusd, key: histdata-raw-audusd-v1, restore-keys: histdata-raw-audusd- }
+      - name: Restore usdcad
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/usdcad, key: histdata-raw-usdcad-v1, restore-keys: histdata-raw-usdcad- }
+      - name: Restore usdchf
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/usdchf, key: histdata-raw-usdchf-v1, restore-keys: histdata-raw-usdchf- }
+      - name: Restore nzdusd
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/nzdusd, key: histdata-raw-nzdusd-v1, restore-keys: histdata-raw-nzdusd- }
+      - name: Restore eurjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/eurjpy, key: histdata-raw-eurjpy-v1, restore-keys: histdata-raw-eurjpy- }
+      - name: Restore gbpjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/gbpjpy, key: histdata-raw-gbpjpy-v1, restore-keys: histdata-raw-gbpjpy- }
+      - name: Restore eurgbp
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/eurgbp, key: histdata-raw-eurgbp-v1, restore-keys: histdata-raw-eurgbp- }
+      - name: Restore audjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/raw/audjpy, key: histdata-raw-audjpy-v1, restore-keys: histdata-raw-audjpy- }
+
       - name: Build processed data
         run: python -m src.data.build_history
+
       - name: Run Phase 4 Diagnostics
         run: |
           python -m pytest tests/diag_phase4_t1_target.py tests/diag_phase4_exit_scan.py tests/diag_phase4_trade_build.py -v -s
