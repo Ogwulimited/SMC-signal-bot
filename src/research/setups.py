@@ -79,12 +79,6 @@ def find_candidate_obs(df, tf, bos_choch_events, pools):
 
 
 def _scan_sweep_and_touch(m15_df, tf_m15, armed_time, idm_price, ob_low, ob_high, direction, bad_days=None):
-    """
-    Layer 5 watch logic: once armed, find the first M15 bar that sweeps the
-    IDM, then the first bar AT OR AFTER that sweep bar that touches the OB
-    zone. If the sweep bar and touch bar are the same bar, that's the
-    same-bar-ambiguous case -- no usable touch_time is returned.
-    """
     bull = direction == "bullish"
     m15_after = m15_df[m15_df["timestamp"] + tf_m15 > armed_time].reset_index(drop=False)
 
@@ -116,59 +110,18 @@ def _scan_sweep_and_touch(m15_df, tf_m15, armed_time, idm_price, ob_low, ob_high
 
 class PairSetup:
     """
-    Stateful per-pair state machine implementing the setups spec.
-    States covered: IDLE -> EPISODE -> BOS_SEEN -> CHOCH_SEEN -> ARMED ->
-    SWEPT -> TRIGGERED. IN_TRADE/CLOSED are later slices (need Phase 4
-    stop/target math).
+    State machine states: IDLE -> EPISODE -> BOS_SEEN -> CHOCH_SEEN -> ARMED -> SWEPT -> TRIGGERED.
+    Layer 6 breaker: self.breaker is a dict/None snapshot refreshed every M15 close once
+    BOTH candidate_ob AND h1_bos_event are set. self.winner ("ob"/"breaker"/None) freezes
+    whichever side resolves first; losing side stops updating. Tie-break (untested): OB
+    wins on exact-equal resolution time. Known limitation: h1_bos_event matched by direction
+    only, not label=="BOS" -- if the very first H1 event is "INIT", detect_breakers won't
+    find it and self.breaker stays None for that episode (not fixed -- would touch locked
+    Layer 3 code).
 
-    Arming (Layer 4) tries Model A first, falls back to Model B -- both
-    checked via the same zones.find_inducement call (single fallback
-    sequence, not two parallel instances).
-
-    Layer 5: once ARMED, the model/IDM/OB are frozen and never re-derived.
-    We watch M15 bars for an IDM sweep, then a later touch into the OB zone
-    (TRIGGERED). Same-bar sweep+touch is treated as unusable -- the
-    candidate is abandoned and logged via last_cancel_reason, not retried.
-    Cancel checks implemented: H1 close clean through the OB zone, and D1
-    bias change (via existing _reset_episode wiring). Deferred cancel
-    conditions (logged technical debt, not yet built): newer-sequence-
-    replaces-older, price-runs-to-target-before-touch, bad/missing data
-    days.
-
-    Fill modeling: fill1_price is the optimistic OB-edge price recorded at
-    TRIGGERED. fill2_price is the conservative fill -- the OPEN of the M15
-    bar immediately following the touch bar (touch_time == that bar's
-    timestamp, since touch_time is stored as the touch bar's CLOSE time).
-    fill2_price stays None ("pending") until that next bar has actually
-    closed and been observed.
-
-    Layer 6: a breaker candidate is a SEPARATE, independent entry idea
-    riding on the same original H1 BOS event (self.h1_bos_event) that
-    produced the OB sequence -- not a variant of Model A/B. It becomes
-    eligible only once BOTH candidate_ob AND h1_bos_event are set (the
-    h1_bos_event guard matters for unit tests/callers that construct a
-    PairSetup by directly injecting candidate_ob without going through the
-    full on_h1_close pipeline -- without it, _update_breaker would build a
-    malformed single-row DataFrame from h1_bos_event=None and blow up).
-    It is re-evaluated from scratch every M15 close via
-    zones.detect_breakers(). Conflict rule: whichever side actually
-    resolves FIRST in real time (OB touch_time vs breaker fill_time) wins
-    -- self.winner is then frozen and the LOSING side stops being updated
-    entirely (explicit user choice this round; may be revisited after
-    Phase 5 tuning to track both to completion instead of freezing).
-    Tie-break assumption (untested): if both times are exactly equal, OB
-    wins by default.
-
-    Consumption note for Phase 4: self.state reaching "TRIGGERED" reflects
-    the OB ladder's OWN progress, not necessarily which side won -- always
-    check self.winner to know which trade was actually taken.
-
-    Known limitation (pre-existing Layer 3 behavior, not fixed here):
-    h1_bos_event is matched by direction only, not by label == "BOS". On
-    the rare episode where that event is the very first event in the whole
-    H1 series (label "INIT"), zones.detect_breakers won't find it (it only
-    consumes rows labeled "BOS"), so self.breaker stays None for that one
-    episode. Flagged, not fixed -- would require touching locked Layer 3.
+    Phase 4: close_trade() is the simulator's hook to free this pair for a new episode
+    once an open trade has been closed in the market (stop / T1 / T2 / time-stop hit).
+    It is a thin public wrapper around the existing _reset_episode() -- no new state logic.
     """
 
     def __init__(self, pair):
@@ -214,6 +167,16 @@ class PairSetup:
         self.breaker = None
         self.winner = None
         self.resolved_at = pd.NaT
+
+    def close_trade(self):
+        """
+        Phase 4 hook: called by the simulator once an open trade for this pair
+        has been closed in the market (stop hit, T1/T2 hit, or time-stop hit).
+        Frees the pair to begin hunting for a brand-new episode from IDLE.
+        Does not alter self.bias or self.zone -- those are only touched by
+        on_d1_close, exactly as before.
+        """
+        self._reset_episode()
 
     def on_d1_close(self, d1_df, d1_zones, h4_zones, current_low, current_high):
         new_bias = compute_d1_bias(d1_df)
