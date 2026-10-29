@@ -12,6 +12,24 @@ close that changes anything, to pin down exactly why every episode this
 year stalls at BOS_SEEN and never reaches CHOCH_SEEN (confirmed via the
 prior instrumentation run: state_reach_counts = {EPISODE:6, BOS_SEEN:6,
 IDLE:6}, i.e. 6/6/6 -- every cycle dies at the same wall).
+
+Post-Fix-1/Fix-2 addendum: CHOCH_SEEN is now reachable (confirmed in the
+following run), but zero episodes resolved a winner. This revision adds
+two new logs to distinguish between three competing hypotheses for why:
+(1) candidate_ob was never set for the stalled episode (OB path dead,
+breaker-only), (2) candidate_ob was set but Model A/B never armed it,
+(3) h1_bos_event's label was never actually "BOS" (documented limitation:
+h1_bos_event is matched by direction only, not label -- if it's "INIT" or
+something else, detect_breakers' internal label=="BOS" filter silently
+excludes it, so the breaker path would never even get a chance to fire).
+
+New logs:
+  - choch_seen_entries: snapshot taken the instant each episode first
+    enters CHOCH_SEEN -- candidate_ob_present, h1_bos_label, h1_bos_direction.
+  - breaker_change_log: snapshot taken every time ps.breaker's value changes
+    (None -> dict, or dict -> different dict), with episode context
+    (candidate_ob_present, h1_bos_label) attached, so we can see whether
+    detect_breakers ever produced a candidate at all for the stalled episode.
 """
 
 import pandas as pd
@@ -113,14 +131,28 @@ def run_one_pair(pair=PAIR, year=YEAR):
     zone_change_count = 0
     d1_close_count = 0
 
-    transition_log = []   # (timestamp, source, old_state, new_state)
-    d1_reset_log = []     # zone/bias/state snapshots around D1 closes that change anything
+    transition_log = []       # (timestamp, source, old_state, new_state)
+    d1_reset_log = []         # zone/bias/state snapshots around D1 closes that change anything
+    choch_seen_entries = []   # snapshot the instant each episode first enters CHOCH_SEEN
+    breaker_change_log = []   # snapshot every time ps.breaker's value changes
+
+    prev_breaker_repr = None
 
     def _note_transition(now_ts, source):
         nonlocal prev_state
         if ps.state != prev_state:
             transition_log.append((now_ts, source, prev_state, ps.state))
             state_reach_counts[ps.state] = state_reach_counts.get(ps.state, 0) + 1
+            if ps.state == "CHOCH_SEEN":
+                h1_bos_label = ps.h1_bos_event.get("label") if ps.h1_bos_event is not None else None
+                h1_bos_direction = ps.h1_bos_event.get("direction") if ps.h1_bos_event is not None else None
+                choch_seen_entries.append({
+                    "time": now_ts,
+                    "source": source,
+                    "candidate_ob_present": ps.candidate_ob is not None,
+                    "h1_bos_label": h1_bos_label,
+                    "h1_bos_direction": h1_bos_direction,
+                })
             prev_state = ps.state
 
     for m_i in range(len(m15_df)):
@@ -180,6 +212,19 @@ def run_one_pair(pair=PAIR, year=YEAR):
             ps.on_m15_close(h1_known_slice, m15_slice, TF_H1, TF_M15)
             _note_transition(now, "M15")
 
+            breaker_repr = _zone_repr(ps.breaker) if ps.breaker is not None else None
+            if breaker_repr != prev_breaker_repr:
+                if len(breaker_change_log) < 40:
+                    h1_bos_label = ps.h1_bos_event.get("label") if ps.h1_bos_event is not None else None
+                    breaker_change_log.append({
+                        "time": now,
+                        "candidate_ob_present": ps.candidate_ob is not None,
+                        "h1_bos_label": h1_bos_label,
+                        "winner": ps.winner,
+                        "breaker": breaker_repr,
+                    })
+                prev_breaker_repr = breaker_repr
+
             if ps.winner is not None:
                 entry_time_check = ps.touch_time if ps.winner == "ob" else (
                     ps.breaker.get("fill_time") if ps.breaker else None
@@ -210,6 +255,14 @@ def run_one_pair(pair=PAIR, year=YEAR):
 
     print(f"\n--- D1 ZONE/BIAS CHANGE DETAIL LOG (first {len(d1_reset_log)}) ---")
     for entry in d1_reset_log:
+        print(entry)
+
+    print(f"\n--- CHOCH_SEEN ENTRY LOG ({len(choch_seen_entries)} entries) ---")
+    for entry in choch_seen_entries:
+        print(entry)
+
+    print(f"\n--- BREAKER CHANGE LOG (first {len(breaker_change_log)}) ---")
+    for entry in breaker_change_log:
         print(entry)
 
     return trades
