@@ -6,10 +6,12 @@ to hand-predict). Pass criteria: no exceptions, internal invariants hold
 (no overlapping trades per pair, state resets correctly, counts reconcile),
 and printed trades are plausible on manual inspection.
 
-This revision adds state-transition instrumentation to diagnose why the
-first real run produced zero trades for eurusd/2023 despite d1_zones=0,
-h4_zones=37, pools=2518 -- tracking every state change, every zone change,
-and every _reset_episode-triggering event, to find where episodes stall.
+This revision adds source-tagged state-transition logging (D1 vs H1 vs M15
+call sites) and a detailed zone/bias/state snapshot log around every D1
+close that changes anything, to pin down exactly why every episode this
+year stalls at BOS_SEEN and never reaches CHOCH_SEEN (confirmed via the
+prior instrumentation run: state_reach_counts = {EPISODE:6, BOS_SEEN:6,
+IDLE:6}, i.e. 6/6/6 -- every cycle dies at the same wall).
 """
 
 import pandas as pd
@@ -69,6 +71,17 @@ def _load(pair, year):
     return d1, h4, h1, m15, bad_days
 
 
+def _zone_repr(z):
+    if z is None:
+        return None
+    if hasattr(z, "to_dict"):
+        try:
+            return z.to_dict()
+        except Exception:
+            return str(z)
+    return z
+
+
 def run_one_pair(pair=PAIR, year=YEAR):
     d1_df, h4_df, h1_df, m15_df, bad_days = _load(pair, year)
     print(f"Loaded {pair} {year}: d1={len(d1_df)} h4={len(h4_df)} h1={len(h1_df)} m15={len(m15_df)} bad_days={len(bad_days)}")
@@ -95,14 +108,20 @@ def run_one_pair(pair=PAIR, year=YEAR):
     d1_ptr, h1_ptr = 0, 0
     last_exit_time = None
 
-    # --- instrumentation ---
     prev_state = ps.state
-    prev_zone = None
     state_reach_counts = {}
     zone_change_count = 0
-    bias_change_count = 0
-    reset_due_to_zone_or_bias = 0
     d1_close_count = 0
+
+    transition_log = []   # (timestamp, source, old_state, new_state)
+    d1_reset_log = []     # zone/bias/state snapshots around D1 closes that change anything
+
+    def _note_transition(now_ts, source):
+        nonlocal prev_state
+        if ps.state != prev_state:
+            transition_log.append((now_ts, source, prev_state, ps.state))
+            state_reach_counts[ps.state] = state_reach_counts.get(ps.state, 0) + 1
+            prev_state = ps.state
 
     for m_i in range(len(m15_df)):
         now = m15_df["timestamp"].iloc[m_i] + TF_M15
@@ -121,15 +140,30 @@ def run_one_pair(pair=PAIR, year=YEAR):
 
             zone_before = ps.zone
             state_before = ps.state
+            bias_before = getattr(ps, "bias", "N/A")
+
             ps.on_d1_close(d1_slice, d1z_slice, h4z_slice, cur_low, cur_high)
             d1_close_count += 1
 
             zone_after = ps.zone
+            bias_after = getattr(ps, "bias", "N/A")
+
             if zone_before != zone_after:
                 zone_change_count += 1
-            if state_before != "IDLE" and ps.state == "IDLE" and state_before != ps.state:
-                reset_due_to_zone_or_bias += 1
 
+            if (zone_before != zone_after) or (state_before != ps.state) or (bias_before != bias_after):
+                if len(d1_reset_log) < 40:
+                    d1_reset_log.append({
+                        "d1_close_time": d1_close_time,
+                        "state": f"{state_before}->{ps.state}",
+                        "bias": f"{bias_before}->{bias_after}",
+                        "zone_before": _zone_repr(zone_before),
+                        "zone_after": _zone_repr(zone_after),
+                        "cur_low": cur_low,
+                        "cur_high": cur_high,
+                    })
+
+            _note_transition(d1_close_time, "D1")
             d1_ptr += 1
 
         while h1_ptr < len(h1_df) and (h1_df["timestamp"].iloc[h1_ptr] + TF_H1) <= now:
@@ -138,15 +172,13 @@ def run_one_pair(pair=PAIR, year=YEAR):
             pools_slice = pools_full[pools_full["confirm_time"] <= h1_close_time]
             ps.on_h1_close(h1_slice, pools_slice, TF_H1)
             h1_ptr += 1
+            _note_transition(h1_close_time, "H1")
 
         if h1_ptr > 0:
             m15_slice = m15_df.iloc[:m_i + 1]
             h1_known_slice = h1_df.iloc[:h1_ptr]
             ps.on_m15_close(h1_known_slice, m15_slice, TF_H1, TF_M15)
-
-            if ps.state != prev_state:
-                state_reach_counts[ps.state] = state_reach_counts.get(ps.state, 0) + 1
-                prev_state = ps.state
+            _note_transition(now, "M15")
 
             if ps.winner is not None:
                 entry_time_check = ps.touch_time if ps.winner == "ob" else (
@@ -171,6 +203,14 @@ def run_one_pair(pair=PAIR, year=YEAR):
     print(f"d1_close_count={d1_close_count}")
     print(f"zone_change_count={zone_change_count} (each zone change forces _reset_episode)")
     print(f"state_reach_counts (distinct new-state entries over the run): {state_reach_counts}")
+
+    print(f"\n--- STATE TRANSITION LOG (first 60 of {len(transition_log)}) ---")
+    for ts, source, old, new in transition_log[:60]:
+        print(f"{ts} [{source}] {old} -> {new}")
+
+    print(f"\n--- D1 ZONE/BIAS CHANGE DETAIL LOG (first {len(d1_reset_log)}) ---")
+    for entry in d1_reset_log:
+        print(entry)
 
     return trades
 
