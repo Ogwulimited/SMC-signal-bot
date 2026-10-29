@@ -304,11 +304,8 @@ class PairSetup:
             else:
                 self.winner, self.resolved_at = "breaker", breaker_time
 
-    def on_m15_close(self, h1_df, m15_df, tf_h1, tf_m15):
-        if self.state == "CHOCH_SEEN":
-            if self.candidate_ob is None:
-                return
-
+        def on_m15_close(self, h1_df, m15_df, tf_h1, tf_m15):
+        if self.state == "CHOCH_SEEN" and self.candidate_ob is not None:
             result = zones.find_inducement(
                 h1_df, m15_df, tf_h1, tf_m15,
                 choch_time=self.h1_choch_event["time"],
@@ -317,20 +314,24 @@ class PairSetup:
                 ob_high=self.candidate_ob["ob_high"],
                 direction=self.candidate_ob["direction"],
             )
-            if result is None:
-                return
+            if result is not None:
+                self.model = result["model"]
+                self.m15_bos_time = result["armed_time"]
+                self.idm_price = result["idm_price"]
+                self.idm_time = result["idm_time"]
+                self.idm_swept_time = pd.NaT
+                self.touch_time = pd.NaT
+                self.same_bar_ambiguous = False
+                self.invalid_h1_close_through = False
+                self.state = "ARMED"
 
-            self.model = result["model"]
-            self.m15_bos_time = result["armed_time"]
-            self.idm_price = result["idm_price"]
-            self.idm_time = result["idm_time"]
-            self.idm_swept_time = pd.NaT
-            self.touch_time = pd.NaT
-            self.same_bar_ambiguous = False
-            self.invalid_h1_close_through = False
-            self.state = "ARMED"
-
-        if self.candidate_ob is not None and self.h1_bos_event is not None and self.winner is None:
+        # Fix #1 continued: this used to require self.candidate_ob is not None
+        # too, AND the block above used to `return` the whole function when
+        # candidate_ob was None -- both of which made this line unreachable
+        # for breaker-only episodes. detect_breakers() only needs
+        # h1_bos_event (confirmed from zones.py source); that is now the only
+        # gate here.
+        if self.h1_bos_event is not None and self.winner is None:
             self._update_breaker(h1_df, m15_df, tf_h1, tf_m15)
 
         if self.state in ("ARMED", "SWEPT") and self.winner is None:
