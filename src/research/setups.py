@@ -116,14 +116,14 @@ class PairSetup:
     whichever side resolves first; losing side stops updating. Tie-break (untested): OB
     wins on exact-equal resolution time.
 
-    Fix #3 (this session): h1_bos_event is now only matched against events with
+    Fix #3 (prior session): h1_bos_event is now only matched against events with
     label=="BOS" (previously matched by direction only, which let a CHoCH -- or
     even an INIT -- event masquerade as "the BOS"). Confirmed on real 2023 EURUSD
     data to be the actual cause of candidate_ob always coming back None and
     self.breaker never updating (both downstream consumers correctly require
     label=="BOS", so a mislabeled h1_bos_event silently broke both paths at once).
 
-    Fix #4 (this session): h1_bos_event is now tracked continuously from the
+    Fix #4 (prior session): h1_bos_event is now tracked continuously from the
     moment self.zone is established (self.zone["confirm_time"]) -- including
     before price ever touches the zone, and continuing to update after the
     zone is touched -- rather than latching onto the first direction+label
@@ -138,6 +138,26 @@ class PairSetup:
     returns immediately for CHOCH_SEEN and all later states, so the
     breaker/OB machinery downstream always sees a stable, consistent
     reference.
+
+    Fix #5 (this session): the OB side of the ob-vs-breaker race could
+    previously be declared the winner (self.winner = "ob") the *instant*
+    state flips to TRIGGERED on touch -- a full M15 bar before fill2_price
+    (the OB's actual realized entry, which by design fills one bar after
+    touch) had any chance to be computed. In real walk-forward usage
+    (m15_df as a growing slice, one bar added per loop iteration) this left
+    fill2_price = None at the moment build_trade_from_setup was called,
+    crashing on `entry_price - stop_price` with a None operand. Fixed by
+    (a) computing fill2_price before resolving the winner each call, using
+    a >= timestamp comparison (gap-safe across weekends/holidays, instead
+    of exact equality, which would otherwise fail forever across any such
+    gap), and (b) gating _resolve_winner's OB-side condition on
+    fill2_price being non-None, not just state == TRIGGERED. For any
+    single-call/full-dataframe test usage this produces identical results
+    to before (fill2_price becomes available within the same call, since
+    the future bar already exists in the fixture); it only changes timing
+    for genuinely incremental walk-forward usage, deferring OB-side
+    resolution by exactly one M15 bar, matching the documented fill
+    semantics precisely.
 
     Phase 4: close_trade() is the simulator's hook to free this pair for a new
     episode once an open trade has been closed in the market (stop / T1 / T2 /
@@ -323,7 +343,14 @@ class PairSetup:
         self.breaker = result.iloc[0].to_dict() if not result.empty else None
 
     def _resolve_winner(self):
-        ob_time = self.touch_time if self.state == "TRIGGERED" else pd.NaT
+        # Fix #5: the OB side of the race is only "known" once its actual
+        # fill price (fill2_price, realized one bar after touch) is
+        # available -- not merely once touch_time is set. Without this,
+        # winner could resolve to "ob" immediately on touch, one bar
+        # before fill2_price exists, which crashed build_trade_from_setup
+        # on real data (entry_price=None).
+        ob_time = (self.touch_time if (self.state == "TRIGGERED" and self.fill2_price is not None)
+                   else pd.NaT)
         breaker_time = pd.NaT
         if self.breaker is not None and self.breaker.get("filled"):
             breaker_time = self.breaker.get("fill_time")
@@ -396,10 +423,19 @@ class PairSetup:
             elif pd.notna(self.idm_swept_time) and self.state == "ARMED":
                 self.state = "SWEPT"
 
+        # Fix #5 Part A: compute fill2_price (OB path's actual fill, one
+        # bar after touch) BEFORE resolving the race winner, and look it
+        # up via a >= inequality rather than exact timestamp equality --
+        # exact equality silently fails forever across any weekend/holiday
+        # gap between the touch bar and the next real bar, since no bar's
+        # open time would ever exactly equal touch_time in that case. This
+        # must run before _resolve_winner() so that, in true walk-forward
+        # usage (growing m15_df slice), the OB side of the race cannot be
+        # declared a winner until its entry price is actually known.
+        if self.state == "TRIGGERED" and self.fill2_price is None:
+            next_candidates = m15_df[m15_df["timestamp"] >= self.touch_time]
+            if not next_candidates.empty:
+                self.fill2_price = next_candidates.iloc[0]["open"]
+
         if self.winner is None:
             self._resolve_winner()
-
-        if self.winner == "ob" and self.state == "TRIGGERED" and self.fill2_price is None:
-            next_bar = m15_df[m15_df["timestamp"] == self.touch_time]
-            if not next_bar.empty:
-                self.fill2_price = next_bar.iloc[0]["open"]
