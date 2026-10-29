@@ -210,7 +210,7 @@ class PairSetup:
             if beyond:
                 self._reset_episode()
 
-    def on_h1_close(self, h1_df, pools, tf):
+        def on_h1_close(self, h1_df, pools, tf):
         if self.bias is None or self.bias["state"] not in ("bullish", "bearish") or self.zone is None:
             return
 
@@ -264,11 +264,19 @@ class PairSetup:
                     (candidates["bos_time"] == self.h1_bos_event["time"])
                     & (candidates["choch_time"] == self.h1_choch_event["time"])
                 ]
+                # Fix #1 (diagnostic #4 finding): previously, a failed OB match
+                # here called _reset_episode(), which wiped h1_bos_event -- the
+                # one input detect_breakers() actually needs. That made the
+                # breaker-block path structurally unreachable, regardless of
+                # whether a real breaker setup existed. OB and breaker are
+                # independent, parallel entry candidates (confirmed trading
+                # logic): a failed OB match must not destroy the breaker's
+                # inputs. We now always progress to CHOCH_SEEN once CHoCH
+                # confirms; candidate_ob is populated only if a valid OB was
+                # found, left None otherwise (breaker-only episode).
                 if not match.empty:
                     self.candidate_ob = match.iloc[0].to_dict()
-                    self.state = "CHOCH_SEEN"
-                else:
-                    self._reset_episode()
+                self.state = "CHOCH_SEEN"
 
     def _update_breaker(self, h1_df, m15_df, tf_h1, tf_m15):
         bos_row = pd.DataFrame([self.h1_bos_event])
