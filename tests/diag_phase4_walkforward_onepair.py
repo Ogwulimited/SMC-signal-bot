@@ -1,105 +1,3 @@
-"""
-Phase 4 diagnostic #4: one-pair walk-forward glue.
-
-NOT a hand-derived-exact-number diagnostic (real market data is too complex
-to hand-predict). Pass criteria: no exceptions, internal invariants hold
-(no overlapping trades per pair, state resets correctly, counts reconcile),
-and printed trades are plausible on manual inspection.
-
-This revision adds source-tagged state-transition logging (D1 vs H1 vs M15
-call sites) and a detailed zone/bias/state snapshot log around every D1
-close that changes anything, to pin down exactly why every episode this
-year stalls at BOS_SEEN and never reaches CHOCH_SEEN (confirmed via the
-prior instrumentation run: state_reach_counts = {EPISODE:6, BOS_SEEN:6,
-IDLE:6}, i.e. 6/6/6 -- every cycle dies at the same wall).
-
-Post-Fix-1/Fix-2 addendum: CHOCH_SEEN is now reachable (confirmed in the
-following run), but zero episodes resolved a winner. This revision adds
-two new logs to distinguish between three competing hypotheses for why:
-(1) candidate_ob was never set for the stalled episode (OB path dead,
-breaker-only), (2) candidate_ob was set but Model A/B never armed it,
-(3) h1_bos_event's label was never actually "BOS" (documented limitation:
-h1_bos_event is matched by direction only, not label -- if it's "INIT" or
-something else, detect_breakers' internal label=="BOS" filter silently
-excludes it, so the breaker path would never even get a chance to fire).
-
-New logs:
-  - choch_seen_entries: snapshot taken the instant each episode first
-    enters CHOCH_SEEN -- candidate_ob_present, h1_bos_label, h1_bos_direction.
-  - breaker_change_log: snapshot taken every time ps.breaker's value changes
-    (None -> dict, or dict -> different dict), with episode context
-    (candidate_ob_present, h1_bos_label) attached, so we can see whether
-    detect_breakers ever produced a candidate at all for the stalled episode.
-"""
-
-import pandas as pd
-
-from src import config
-from src.research import zones, setups, simulate, primitives
-
-PAIR = "eurusd"
-YEAR = 2023
-
-TF_D1 = pd.Timedelta(days=1)
-TF_H4 = pd.Timedelta(hours=4)
-TF_H1 = pd.Timedelta(hours=1)
-TF_M15 = pd.Timedelta(minutes=15)
-
-
-def _load(pair, year):
-    base = f"data/processed/{pair}"
-    d1 = pd.read_parquet(f"{base}_d1.parquet")
-    h4 = pd.read_parquet(f"{base}_h4.parquet")
-    h1 = pd.read_parquet(f"{base}_h1.parquet")
-    m15 = pd.read_parquet(f"{base}_m15.parquet")
-
-    for df in (d1, h4, h1, m15):
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    d1 = d1.sort_values("timestamp").reset_index(drop=True)
-    h4 = h4.sort_values("timestamp").reset_index(drop=True)
-    h1 = h1.sort_values("timestamp").reset_index(drop=True)
-    m15 = m15.sort_values("timestamp").reset_index(drop=True)
-
-    try:
-        bad_days_df = pd.read_parquet(f"data/processed/bad_days_{pair}.parquet")
-        if "date" in bad_days_df.columns:
-            col = "date"
-        elif "ny_date" in bad_days_df.columns:
-            col = "ny_date"
-        elif "bad_date" in bad_days_df.columns:
-            col = "bad_date"
-        elif "timestamp" in bad_days_df.columns:
-            col = "timestamp"
-        elif "day" in bad_days_df.columns:
-            col = "day"
-        else:
-            col = bad_days_df.columns[0]
-        bad_days = set(pd.to_datetime(bad_days_df[col]).dt.date)
-    except FileNotFoundError:
-        bad_days = set()
-
-    buffer_start = pd.Timestamp(f"{year}-01-01", tz="UTC") - pd.Timedelta(days=90)
-    cutoff_end = pd.Timestamp(f"{year+1}-01-01", tz="UTC")
-
-    d1 = d1[(d1["timestamp"] >= buffer_start) & (d1["timestamp"] < cutoff_end)].reset_index(drop=True)
-    h4 = h4[(h4["timestamp"] >= buffer_start) & (h4["timestamp"] < cutoff_end)].reset_index(drop=True)
-    h1 = h1[(h1["timestamp"] >= buffer_start) & (h1["timestamp"] < cutoff_end)].reset_index(drop=True)
-    m15 = m15[(m15["timestamp"] >= buffer_start) & (m15["timestamp"] < cutoff_end)].reset_index(drop=True)
-
-    return d1, h4, h1, m15, bad_days
-
-
-def _zone_repr(z):
-    if z is None:
-        return None
-    if hasattr(z, "to_dict"):
-        try:
-            return z.to_dict()
-        except Exception:
-            return str(z)
-    return z
-
-
 def run_one_pair(pair=PAIR, year=YEAR):
     d1_df, h4_df, h1_df, m15_df, bad_days = _load(pair, year)
     print(f"Loaded {pair} {year}: d1={len(d1_df)} h4={len(h4_df)} h1={len(h1_df)} m15={len(m15_df)} bad_days={len(bad_days)}")
@@ -225,7 +123,21 @@ def run_one_pair(pair=PAIR, year=YEAR):
                     })
                 prev_breaker_repr = breaker_repr
 
-            if ps.winner is not None:
+            # Fix 5b: winner resolving to "ob" does NOT mean fill2_price is
+            # ready yet -- by design (Layer 6 contract) winner locks in the
+            # instant touch_time is known, one full M15 bar before fill2_price
+            # (the OB's realized entry, one bar after touch) can possibly
+            # exist. Calling build_trade_from_setup before fill2_price is
+            # populated is exactly what crashed this script previously. The
+            # correct behavior here is simply to wait: do nothing this bar,
+            # try again next bar -- on_m15_close recomputes fill2_price on
+            # every call regardless of winner, so it will populate on the
+            # very next M15 close after touch, and this condition will then
+            # pass naturally. This is NOT an error/skip status -- no record
+            # should be logged for a bar where we're just waiting.
+            winner_ready = ps.winner is not None and not (ps.winner == "ob" and ps.fill2_price is None)
+
+            if winner_ready:
                 entry_time_check = ps.touch_time if ps.winner == "ob" else (
                     ps.breaker.get("fill_time") if ps.breaker else None
                 )
