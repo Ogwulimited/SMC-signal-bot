@@ -153,7 +153,17 @@ def test_pairsetup_model_a_bearish_mirror():
             assert ps.invalid_h1_close_through == False
 
 
-def test_pairsetup_resets_when_no_matching_pool():
+def test_pairsetup_progresses_to_choch_seen_when_no_matching_pool():
+    """
+    Updated for Fix #1 (diagnostic #4 root cause): a failed OB candidate match
+    (no qualifying liquidity pool) must NOT reset the whole episode back to
+    IDLE. OB and breaker are independent, parallel entry candidates -- the
+    episode's h1_bos_event/h1_choch_event must survive so the breaker-block
+    path (which only needs h1_bos_event) still gets a chance to run. The
+    state machine now progresses to CHOCH_SEEN with candidate_ob left None.
+    This replaces the old test_pairsetup_resets_when_no_matching_pool, which
+    locked in the pre-fix (buggy) reset-to-IDLE behavior.
+    """
     d1_df = _build_d1_bullish_happy()
     h1_df = _build_h1_happy()
 
@@ -177,13 +187,13 @@ def test_pairsetup_resets_when_no_matching_pool():
         elif i < 33:
             assert ps.state == "BOS_SEEN"
         elif i == 33:
-            assert ps.state == "IDLE"
-            assert ps.episode_start_time is None
-            assert ps.h1_bos_event is None
-            assert ps.h1_choch_event is None
+            assert ps.state == "CHOCH_SEEN"
+            assert ps.episode_start_time is not None
+            assert ps.h1_bos_event is not None
+            assert ps.h1_choch_event is not None
             assert ps.candidate_ob is None
 
-    assert ps.state == "IDLE"
+    assert ps.state == "CHOCH_SEEN"
 
 
 def test_pairsetup_stuck_in_choch_seen_when_model_a_unresolved():
