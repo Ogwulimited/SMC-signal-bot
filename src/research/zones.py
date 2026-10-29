@@ -315,7 +315,6 @@ def detect_order_blocks(df, tf, bos_choch_events, bad_days=None):
     times = df["timestamp"]
     n = len(df)
     time_to_idx = {t: i for i, t in enumerate(times)}
-
     bos_choch_events = bos_choch_events[bos_choch_events["label"].isin(["BOS", "CHoCH"])]
     bos_rows = bos_choch_events[bos_choch_events["label"] == "BOS"].reset_index(drop=True)
     choch_rows = bos_choch_events[bos_choch_events["label"] == "CHoCH"].reset_index(drop=True)
@@ -333,11 +332,9 @@ def detect_order_blocks(df, tf, bos_choch_events, bad_days=None):
         choch_idx = bar_idx_for_close_time(choch["time"])
         if bos_idx is None or choch_idx is None or bos_idx >= choch_idx:
             continue
-
         leg_ts = times.iloc[bos_idx:choch_idx + 1].tolist()
         if not _is_continuous(leg_ts, tf, bad_days):
             continue
-
         if choch["direction"] == "down":
             setup_direction = "bearish"
             leg = df["high"].iloc[bos_idx:choch_idx + 1]
@@ -348,7 +345,6 @@ def detect_order_blocks(df, tf, bos_choch_events, bad_days=None):
             leg = df["low"].iloc[bos_idx:choch_idx + 1]
             l_base_idx = bos_idx + int(leg.values.argmin())
             l_base_price = leg.iloc[int(leg.values.argmin())]
-
         search_start = max(0, l_base_idx - config.OB_SEARCH_BACK_MAX)
         ob_idx = None
         for k in range(l_base_idx, search_start - 1, -1):
@@ -363,33 +359,45 @@ def detect_order_blocks(df, tf, bos_choch_events, bad_days=None):
                 break
         if ob_idx is None or ob_idx == 0:
             continue
-
         search_ts = times.iloc[ob_idx:l_base_idx + 1].tolist()
         if not _is_continuous(search_ts, tf, bad_days):
             continue
-
         ob_low, ob_high = df["low"].iloc[ob_idx], df["high"].iloc[ob_idx]
-
         if setup_direction == "bullish":
             ob_sweep = bool(df["low"].iloc[ob_idx] < df["low"].iloc[ob_idx - 1])
         else:
             ob_sweep = bool(df["high"].iloc[ob_idx] > df["high"].iloc[ob_idx - 1])
 
+        # Fix #2 (trading-logic correction): the FVG is no longer required to
+        # sit on the fixed 3-bar window immediately after the OB candle. Per
+        # corrected trading logic, the FVG is what later taps price back into
+        # the OB -- it can occur anywhere in the impulsive leg between the OB
+        # candle and the CHoCH confirmation. Scan forward from ob_idx to
+        # choch_idx, nearest-first, take the first qualifying FVG.
         ob_fvg, fvg_size_atr = False, np.nan
-        a, c = ob_idx, ob_idx + 2
-        if c < n:
+        fvg_search_end = min(choch_idx, n - 3)
+        for a in range(ob_idx, fvg_search_end + 1):
+            c = a + 2
+            if c >= n:
+                break
             fvg_ts = times.iloc[a:c + 1].tolist()
-            if _is_continuous(fvg_ts, tf, bad_days):
-                atr_c = atr.iloc[c]
-                if pd.notna(atr_c) and atr_c > 0:
-                    if setup_direction == "bullish" and df["low"].iloc[c] > df["high"].iloc[a]:
-                        size = df["low"].iloc[c] - df["high"].iloc[a]
-                        fvg_size_atr = size / atr_c
-                        ob_fvg = fvg_size_atr >= config.FVG_MIN_SIZE_ATR
-                    elif setup_direction == "bearish" and df["high"].iloc[c] < df["low"].iloc[a]:
-                        size = df["low"].iloc[a] - df["high"].iloc[c]
-                        fvg_size_atr = size / atr_c
-                        ob_fvg = fvg_size_atr >= config.FVG_MIN_SIZE_ATR
+            if not _is_continuous(fvg_ts, tf, bad_days):
+                continue
+            atr_c = atr.iloc[c]
+            if pd.isna(atr_c) or atr_c <= 0:
+                continue
+            if setup_direction == "bullish" and df["low"].iloc[c] > df["high"].iloc[a]:
+                size = df["low"].iloc[c] - df["high"].iloc[a]
+                candidate_size_atr = size / atr_c
+                if candidate_size_atr >= config.FVG_MIN_SIZE_ATR:
+                    ob_fvg, fvg_size_atr = True, candidate_size_atr
+                    break
+            elif setup_direction == "bearish" and df["high"].iloc[c] < df["low"].iloc[a]:
+                size = df["low"].iloc[a] - df["high"].iloc[c]
+                candidate_size_atr = size / atr_c
+                if candidate_size_atr >= config.FVG_MIN_SIZE_ATR:
+                    ob_fvg, fvg_size_atr = True, candidate_size_atr
+                    break
 
         mitigated_at, penetration_depth_frac = pd.NaT, np.nan
         zone_size = ob_high - ob_low
@@ -404,7 +412,6 @@ def detect_order_blocks(df, tf, bos_choch_events, bad_days=None):
                 if zone_size > 0:
                     penetration_depth_frac = max(0.0, (df["high"].iloc[k] - ob_low) / zone_size)
                 break
-
         rows.append({"bos_time": bos["time"], "choch_time": choch["time"], "direction": setup_direction,
                      "l_base_index": l_base_idx, "l_base_time": times.iloc[l_base_idx], "l_base_price": l_base_price,
                      "ob_index": ob_idx, "ob_time": times.iloc[ob_idx], "ob_low": ob_low, "ob_high": ob_high,
@@ -412,7 +419,6 @@ def detect_order_blocks(df, tf, bos_choch_events, bad_days=None):
                      "ob_structure": True, "mitigated_at": mitigated_at,
                      "penetration_depth_frac": penetration_depth_frac,
                      "valid_pretouch": bool(ob_sweep and ob_fvg)})
-
     cols = ["bos_time", "choch_time", "direction", "l_base_index", "l_base_time", "l_base_price",
             "ob_index", "ob_time", "ob_low", "ob_high", "ob_sweep", "ob_fvg", "ob_fvg_size_atr",
             "ob_structure", "mitigated_at", "penetration_depth_frac", "valid_pretouch"]
