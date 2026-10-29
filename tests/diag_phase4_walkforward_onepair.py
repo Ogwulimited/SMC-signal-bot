@@ -6,18 +6,10 @@ to hand-predict). Pass criteria: no exceptions, internal invariants hold
 (no overlapping trades per pair, state resets correctly, counts reconcile),
 and printed trades are plausible on manual inspection.
 
-Restricted to a single pair/year to keep runtime and output manageable.
-Signal-generation calls (on_d1_close/on_h1_close/on_m15_close) always get
-data truncated to "known as of this bar's close" -- no lookahead on the
-entry decision. Trade-outcome scoring (build_trade_from_setup) gets the
-full h1/m15/pool history, because scoring an already-placed historical
-trade by scanning its own forward price path is standard backtesting,
-not lookahead bias.
-
-ASSUMPTION (flagged): H4 bos/choch events for find_htf_zones use
-config.STRUCTURE_SWING_N (same as H1 structure detection), since no
-H4-specific swing-N constant exists in config.py. D1_SWING_N is reserved
-for D1 bias per compute_d1_bias. Revisit if H4 zone counts look off.
+This revision adds state-transition instrumentation to diagnose why the
+first real run produced zero trades for eurusd/2023 despite d1_zones=0,
+h4_zones=37, pools=2518 -- tracking every state change, every zone change,
+and every _reset_episode-triggering event, to find where episodes stall.
 """
 
 import pandas as pd
@@ -50,7 +42,6 @@ def _load(pair, year):
 
     try:
         bad_days_df = pd.read_parquet(f"data/processed/bad_days_{pair}.parquet")
-        print(f"bad_days_{pair}.parquet columns: {list(bad_days_df.columns)}")
         if "date" in bad_days_df.columns:
             col = "date"
         elif "ny_date" in bad_days_df.columns:
@@ -92,12 +83,26 @@ def run_one_pair(pair=PAIR, year=YEAR):
 
     pools_full = simulate.build_pool_universe(h1_df, h4_df, TF_H1, TF_H4, bad_days=bad_days)
 
+    print(f"d1_events={len(d1_events)} h4_events={len(h4_events)}")
     print(f"d1_zones={len(d1_zones)} h4_zones={len(h4_zones)} pools={len(pools_full)}")
+    if not d1_events.empty:
+        print(f"d1_events label counts: {d1_events['label'].value_counts().to_dict()}")
+    if not h4_events.empty:
+        print(f"h4_events label counts: {h4_events['label'].value_counts().to_dict()}")
 
     ps = setups.PairSetup(pair)
     trades = []
     d1_ptr, h1_ptr = 0, 0
     last_exit_time = None
+
+    # --- instrumentation ---
+    prev_state = ps.state
+    prev_zone = None
+    state_reach_counts = {}
+    zone_change_count = 0
+    bias_change_count = 0
+    reset_due_to_zone_or_bias = 0
+    d1_close_count = 0
 
     for m_i in range(len(m15_df)):
         now = m15_df["timestamp"].iloc[m_i] + TF_M15
@@ -113,7 +118,18 @@ def run_one_pair(pair=PAIR, year=YEAR):
             else:
                 cur_low = d1_df["low"].iloc[d1_ptr]
                 cur_high = d1_df["high"].iloc[d1_ptr]
+
+            zone_before = ps.zone
+            state_before = ps.state
             ps.on_d1_close(d1_slice, d1z_slice, h4z_slice, cur_low, cur_high)
+            d1_close_count += 1
+
+            zone_after = ps.zone
+            if zone_before != zone_after:
+                zone_change_count += 1
+            if state_before != "IDLE" and ps.state == "IDLE" and state_before != ps.state:
+                reset_due_to_zone_or_bias += 1
+
             d1_ptr += 1
 
         while h1_ptr < len(h1_df) and (h1_df["timestamp"].iloc[h1_ptr] + TF_H1) <= now:
@@ -127,6 +143,10 @@ def run_one_pair(pair=PAIR, year=YEAR):
             m15_slice = m15_df.iloc[:m_i + 1]
             h1_known_slice = h1_df.iloc[:h1_ptr]
             ps.on_m15_close(h1_known_slice, m15_slice, TF_H1, TF_M15)
+
+            if ps.state != prev_state:
+                state_reach_counts[ps.state] = state_reach_counts.get(ps.state, 0) + 1
+                prev_state = ps.state
 
             if ps.winner is not None:
                 entry_time_check = ps.touch_time if ps.winner == "ob" else (
@@ -146,6 +166,11 @@ def run_one_pair(pair=PAIR, year=YEAR):
                     candidates = [t for t in (t1_exit, t2_exit) if pd.notna(t)]
                     if candidates:
                         last_exit_time = max(candidates)
+
+    print(f"\n--- INSTRUMENTATION ---")
+    print(f"d1_close_count={d1_close_count}")
+    print(f"zone_change_count={zone_change_count} (each zone change forces _reset_episode)")
+    print(f"state_reach_counts (distinct new-state entries over the run): {state_reach_counts}")
 
     return trades
 
