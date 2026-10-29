@@ -210,7 +210,7 @@ class PairSetup:
             if beyond:
                 self._reset_episode()
 
-        def on_h1_close(self, h1_df, pools, tf):
+    def on_h1_close(self, h1_df, pools, tf):
         if self.bias is None or self.bias["state"] not in ("bullish", "bearish") or self.zone is None:
             return
 
@@ -304,7 +304,7 @@ class PairSetup:
             else:
                 self.winner, self.resolved_at = "breaker", breaker_time
 
-        def on_m15_close(self, h1_df, m15_df, tf_h1, tf_m15):
+    def on_m15_close(self, h1_df, m15_df, tf_h1, tf_m15):
         if self.state == "CHOCH_SEEN" and self.candidate_ob is not None:
             result = zones.find_inducement(
                 h1_df, m15_df, tf_h1, tf_m15,
