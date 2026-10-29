@@ -176,6 +176,17 @@ def build_trade_from_setup(ps, pair, h1_df, m15_df, pool_universe, tf_h1, tf_m15
     blank in that case. This supports the explicit goal of comparing
     real-liquidity targeting (T1) against blind fixed-3R (T2) on identical
     entries, not just on the subset of trades that happen to qualify for T1.
+
+    Fix #5 (this session): added a defensive guard immediately after
+    entry_price/stop_price are determined. Under normal operation this
+    should never trigger post-Fix-5 (setups.py now never declares an OB
+    winner before fill2_price exists) -- but as belt-and-suspenders against
+    any future/edge-case path producing a None or NaN entry/stop (e.g. a
+    touch occurring on the very last bar of the loaded dataset, with no
+    further bar ever arriving to realize fill2_price), this logs the
+    attempt as status="skipped_invalid_entry" instead of crashing the
+    entire run, consistent with the existing skipped_spread/skipped_no_t1
+    pattern and the requirement that every episode attempt be logged.
     """
     if ps.winner == "ob":
         ob = ps.candidate_ob
@@ -196,6 +207,17 @@ def build_trade_from_setup(ps, pair, h1_df, m15_df, pool_universe, tf_h1, tf_m15
         stop_price = br["stop"]
     else:
         raise ValueError(f"build_trade_from_setup called with no winner resolved: {ps.winner}")
+
+    # Fix #5 defensive guard: never let a None/NaN entry or stop reach the
+    # risk calculation below -- log and skip cleanly instead of crashing.
+    entry_invalid = entry_price is None or pd.isna(entry_price)
+    stop_invalid = stop_price is None or pd.isna(stop_price)
+    if entry_invalid or stop_invalid:
+        record = {"pair": pair, "model": ps.winner, "direction": direction,
+                  "entry_time": entry_time, "entry_price": entry_price,
+                  "stop_price": stop_price, "status": "skipped_invalid_entry"}
+        ps.close_trade()
+        return record
 
     risk_r = abs(entry_price - stop_price)
     spread = config.SPREAD_PRICE[pair]
