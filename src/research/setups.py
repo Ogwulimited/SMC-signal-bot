@@ -114,14 +114,35 @@ class PairSetup:
     Layer 6 breaker: self.breaker is a dict/None snapshot refreshed every M15 close once
     BOTH candidate_ob AND h1_bos_event are set. self.winner ("ob"/"breaker"/None) freezes
     whichever side resolves first; losing side stops updating. Tie-break (untested): OB
-    wins on exact-equal resolution time. Known limitation: h1_bos_event matched by direction
-    only, not label=="BOS" -- if the very first H1 event is "INIT", detect_breakers won't
-    find it and self.breaker stays None for that episode (not fixed -- would touch locked
-    Layer 3 code).
+    wins on exact-equal resolution time.
 
-    Phase 4: close_trade() is the simulator's hook to free this pair for a new episode
-    once an open trade has been closed in the market (stop / T1 / T2 / time-stop hit).
-    It is a thin public wrapper around the existing _reset_episode() -- no new state logic.
+    Fix #3 (this session): h1_bos_event is now only matched against events with
+    label=="BOS" (previously matched by direction only, which let a CHoCH -- or
+    even an INIT -- event masquerade as "the BOS"). Confirmed on real 2023 EURUSD
+    data to be the actual cause of candidate_ob always coming back None and
+    self.breaker never updating (both downstream consumers correctly require
+    label=="BOS", so a mislabeled h1_bos_event silently broke both paths at once).
+
+    Fix #4 (this session): h1_bos_event is now tracked continuously from the
+    moment self.zone is established (self.zone["confirm_time"]) -- including
+    before price ever touches the zone, and continuing to update after the
+    zone is touched -- rather than latching onto the first direction+label
+    match seen after zone-touch. This matches the intended trading model:
+    numerous countertrend H1 BOS legs can print while price is still
+    approaching a D1/H4 POI (pure bookkeeping, not acted on until price
+    arrives), and a wide HTF zone can easily contain more than one such leg
+    before a genuine CHoCH prints. The system always treats the *most
+    recent* countertrend BOS as "the" BOS right up until a CHoCH breaks it
+    -- never just the first one it happened to notice. Once CHoCH is
+    confirmed (state -> CHOCH_SEEN), h1_bos_event is frozen: on_h1_close
+    returns immediately for CHOCH_SEEN and all later states, so the
+    breaker/OB machinery downstream always sees a stable, consistent
+    reference.
+
+    Phase 4: close_trade() is the simulator's hook to free this pair for a new
+    episode once an open trade has been closed in the market (stop / T1 / T2 /
+    time-stop hit). It is a thin public wrapper around the existing
+    _reset_episode() -- no new state logic.
     """
 
     def __init__(self, pair):
@@ -229,27 +250,48 @@ class PairSetup:
         if self.state in ("ARMED", "SWEPT", "TRIGGERED"):
             return
 
+        # Fix #4: once CHoCH has confirmed, h1_bos_event must stay frozen --
+        # the breaker/OB machinery downstream depends on it being stable.
+        # Nothing below this point should run for CHOCH_SEEN or later.
+        if self.state == "CHOCH_SEEN":
+            return
+
         bias_dir = "up" if self.bias["state"] == "bullish" else "down"
         sweep_dir = "down" if bias_dir == "up" else "up"
+
+        # Fix #3 + Fix #4 combined: track the most recent countertrend BOS
+        # (direction == sweep_dir AND label == "BOS", never a CHoCH or INIT
+        # event mistaken for one) continuously from the moment self.zone was
+        # established (self.zone["confirm_time"]) -- including before price
+        # ever touches the zone, and continuing to update after the zone has
+        # been touched, right up until a CHoCH breaks whichever BOS is
+        # currently held. This mirrors a trader watching the chart update
+        # their "latest pullback leg" reference in real time, rather than
+        # the state machine latching onto the first match it happens to see
+        # only after zone-touch.
+        swings = primitives.find_swings(h1_df, config.STRUCTURE_SWING_N, tf)
+        events = primitives.detect_bos_choch(h1_df, swings, tf)
+        if not events.empty:
+            events = events[events["time"] >= self.zone["confirm_time"]]
+            bos_candidates = events[(events["direction"] == sweep_dir) & (events["label"] == "BOS")]
+            if not bos_candidates.empty:
+                self.h1_bos_event = bos_candidates.iloc[-1]
 
         if self.state == "IDLE":
             overlaps = (last_bar["low"] <= self.zone["zone_high"]) and (last_bar["high"] >= self.zone["zone_low"])
             if overlaps:
-                self.state = "EPISODE"
                 self.episode_start_time = last_bar["timestamp"]
+                # If a countertrend BOS was already being tracked before
+                # price arrived, we already know "the" BOS -- skip straight
+                # to watching for CHoCH. Otherwise wait for the first one.
+                self.state = "BOS_SEEN" if self.h1_bos_event is not None else "EPISODE"
             return
 
-        swings = primitives.find_swings(h1_df, config.STRUCTURE_SWING_N, tf)
-        events = primitives.detect_bos_choch(h1_df, swings, tf)
         if events.empty:
             return
-        events = events[events["time"] >= self.episode_start_time]
 
-        if self.state == "EPISODE":
-            bos_candidates = events[events["direction"] == sweep_dir]
-            if not bos_candidates.empty:
-                self.h1_bos_event = bos_candidates.iloc[0]
-                self.state = "BOS_SEEN"
+        if self.state == "EPISODE" and self.h1_bos_event is not None:
+            self.state = "BOS_SEEN"
 
         if self.state == "BOS_SEEN":
             choch_candidates = events[
@@ -264,16 +306,13 @@ class PairSetup:
                     (candidates["bos_time"] == self.h1_bos_event["time"])
                     & (candidates["choch_time"] == self.h1_choch_event["time"])
                 ]
-                # Fix #1 (diagnostic #4 finding): previously, a failed OB match
-                # here called _reset_episode(), which wiped h1_bos_event -- the
-                # one input detect_breakers() actually needs. That made the
-                # breaker-block path structurally unreachable, regardless of
-                # whether a real breaker setup existed. OB and breaker are
-                # independent, parallel entry candidates (confirmed trading
-                # logic): a failed OB match must not destroy the breaker's
-                # inputs. We now always progress to CHOCH_SEEN once CHoCH
-                # confirms; candidate_ob is populated only if a valid OB was
-                # found, left None otherwise (breaker-only episode).
+                # Fix #1 (diagnostic #4 finding): a failed OB match here must
+                # not reset the episode -- that would wipe h1_bos_event, the
+                # one input detect_breakers() needs. OB and breaker are
+                # independent, parallel entry candidates: we always progress
+                # to CHOCH_SEEN once CHoCH confirms; candidate_ob is
+                # populated only if a valid OB was found, left None
+                # otherwise (breaker-only episode).
                 if not match.empty:
                     self.candidate_ob = match.iloc[0].to_dict()
                 self.state = "CHOCH_SEEN"
@@ -325,12 +364,9 @@ class PairSetup:
                 self.invalid_h1_close_through = False
                 self.state = "ARMED"
 
-        # Fix #1 continued: this used to require self.candidate_ob is not None
-        # too, AND the block above used to `return` the whole function when
-        # candidate_ob was None -- both of which made this line unreachable
-        # for breaker-only episodes. detect_breakers() only needs
-        # h1_bos_event (confirmed from zones.py source); that is now the only
-        # gate here.
+        # Fix #1 continued: this only needs h1_bos_event (confirmed from
+        # zones.py source); that is the only gate here, independent of
+        # candidate_ob or state, so breaker-only episodes remain reachable.
         if self.h1_bos_event is not None and self.winner is None:
             self._update_breaker(h1_df, m15_df, tf_h1, tf_m15)
 
