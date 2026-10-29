@@ -139,25 +139,35 @@ class PairSetup:
     breaker/OB machinery downstream always sees a stable, consistent
     reference.
 
-    Fix #5 (this session): the OB side of the ob-vs-breaker race could
-    previously be declared the winner (self.winner = "ob") the *instant*
-    state flips to TRIGGERED on touch -- a full M15 bar before fill2_price
-    (the OB's actual realized entry, which by design fills one bar after
-    touch) had any chance to be computed. In real walk-forward usage
-    (m15_df as a growing slice, one bar added per loop iteration) this left
-    fill2_price = None at the moment build_trade_from_setup was called,
-    crashing on `entry_price - stop_price` with a None operand. Fixed by
-    (a) computing fill2_price before resolving the winner each call, using
-    a >= timestamp comparison (gap-safe across weekends/holidays, instead
-    of exact equality, which would otherwise fail forever across any such
-    gap), and (b) gating _resolve_winner's OB-side condition on
-    fill2_price being non-None, not just state == TRIGGERED. For any
-    single-call/full-dataframe test usage this produces identical results
-    to before (fill2_price becomes available within the same call, since
-    the future bar already exists in the fixture); it only changes timing
-    for genuinely incremental walk-forward usage, deferring OB-side
-    resolution by exactly one M15 bar, matching the documented fill
-    semantics precisely.
+    Fix #5 (this session, partially reverted by Fix #5b -- see below):
+    the OB side of the ob-vs-breaker race could previously be declared the
+    winner (self.winner = "ob") the *instant* state flips to TRIGGERED on
+    touch -- a full M15 bar before fill2_price (the OB's actual realized
+    entry, which by design fills one bar after touch) had any chance to be
+    computed. In real walk-forward usage (m15_df as a growing slice, one
+    bar added per loop iteration) this left fill2_price = None at the
+    moment build_trade_from_setup was called, crashing on
+    `entry_price - stop_price` with a None operand. Fix #5 addressed this
+    by (a) computing fill2_price before resolving the winner each call,
+    using a >= timestamp comparison (gap-safe across weekends/holidays,
+    instead of exact equality, which would otherwise fail forever across
+    any such gap) -- this part is kept -- and (b) gating _resolve_winner's
+    OB-side condition on fill2_price being non-None, not just
+    state == TRIGGERED -- this part broke the locked Layer 6 contract
+    (test_layer6_ob_wins, test_layer6_no_breaker_regression expect winner
+    to resolve to "ob" the instant state == TRIGGERED, independent of
+    fill2_price, which by design only resolves one bar later -- see
+    test_fill2_resolves_on_next_bar). winner and fill2_price are two
+    separate facts: who is ahead in the race vs. whether their entry price
+    is realized yet.
+
+    Fix #5b (this session): reverted _resolve_winner to depend only on
+    state == TRIGGERED for the OB side, restoring the Layer 6 contract.
+    The actual guard against calling build_trade_from_setup before
+    fill2_price is ready now belongs at the CALL SITE (the simulator/
+    walk-forward driver), not here: callers must check `winner == "ob"
+    and fill2_price is None` and simply wait one more bar, rather than
+    treating an unresolved fill2_price as a reason to alter who won.
 
     Phase 4: close_trade() is the simulator's hook to free this pair for a new
     episode once an open trade has been closed in the market (stop / T1 / T2 /
@@ -343,14 +353,19 @@ class PairSetup:
         self.breaker = result.iloc[0].to_dict() if not result.empty else None
 
     def _resolve_winner(self):
-        # Fix #5: the OB side of the race is only "known" once its actual
-        # fill price (fill2_price, realized one bar after touch) is
-        # available -- not merely once touch_time is set. Without this,
-        # winner could resolve to "ob" immediately on touch, one bar
-        # before fill2_price exists, which crashed build_trade_from_setup
-        # on real data (entry_price=None).
-        ob_time = (self.touch_time if (self.state == "TRIGGERED" and self.fill2_price is not None)
-                   else pd.NaT)
+        # Fix #5b: winner is decided purely by which side has a known
+        # timestamp (touch_time for OB, fill_time for breaker) -- NOT by
+        # whether the OB side's actual fill price (fill2_price) has been
+        # realized yet. Those are separate facts: Layer 6's locked test
+        # contract (test_layer6_ob_wins, test_layer6_no_breaker_regression)
+        # requires winner to resolve the instant state == TRIGGERED, one
+        # full bar before fill2_price can possibly be known
+        # (test_fill2_resolves_on_next_bar). The earlier Fix 5 gated this
+        # on fill2_price, which silently broke that contract (winner stuck
+        # at None). The real guard against building a trade before
+        # fill2_price is ready belongs at the CALL SITE of
+        # build_trade_from_setup, not here.
+        ob_time = self.touch_time if self.state == "TRIGGERED" else pd.NaT
         breaker_time = pd.NaT
         if self.breaker is not None and self.breaker.get("filled"):
             breaker_time = self.breaker.get("fill_time")
@@ -423,15 +438,15 @@ class PairSetup:
             elif pd.notna(self.idm_swept_time) and self.state == "ARMED":
                 self.state = "SWEPT"
 
-        # Fix #5 Part A: compute fill2_price (OB path's actual fill, one
-        # bar after touch) BEFORE resolving the race winner, and look it
-        # up via a >= inequality rather than exact timestamp equality --
-        # exact equality silently fails forever across any weekend/holiday
-        # gap between the touch bar and the next real bar, since no bar's
-        # open time would ever exactly equal touch_time in that case. This
-        # must run before _resolve_winner() so that, in true walk-forward
-        # usage (growing m15_df slice), the OB side of the race cannot be
-        # declared a winner until its entry price is actually known.
+        # Fix #5 Part A (kept): compute fill2_price (OB path's actual fill,
+        # one bar after touch) using a >= inequality rather than exact
+        # timestamp equality -- exact equality silently fails forever
+        # across any weekend/holiday gap between the touch bar and the
+        # next real bar, since no bar's open time would ever exactly equal
+        # touch_time in that case. Computing this before _resolve_winner()
+        # is still correct/harmless (identical result either order, since
+        # _resolve_winner no longer reads fill2_price) and is kept for
+        # clarity and gap-safety.
         if self.state == "TRIGGERED" and self.fill2_price is None:
             next_candidates = m15_df[m15_df["timestamp"] >= self.touch_time]
             if not next_candidates.empty:
