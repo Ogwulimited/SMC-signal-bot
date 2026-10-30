@@ -190,16 +190,23 @@ class PairSetup:
     this: last_traded_bos_time (floors the countertrend-BOS scan so a
     just-traded sweep can never be re-selected -- the actual duplication
     fix) and leg_ceiling_price (the fixed reference price for the
-    leg-ending close-beyond check, captured once from the very first
-    countertrend BOS of the leg, held fixed thereafter regardless of how
-    far h1_bos_event itself drifts during later cycles). A trade closing
-    now triggers the new _cycle_reset() (stay in EPISODE, keep hunting,
-    preserve last_traded_bos_time/leg_ceiling_price) rather than the full
-    _reset_episode() (back to IDLE, forget everything) -- full reset is
-    now reserved for: the leg-ceiling being cleared, a bias flip, a zone
-    change, an OB invalidated by an H1 close-through, or a same-bar-
-    ambiguous cancellation (all unchanged/pre-existing full-reset triggers
-    except the leg-ceiling case, which is new).
+    leg-ending close-beyond check, captured once from the first
+    countertrend BOS of the leg that carries a known swing reference --
+    see cold-start guard note below -- held fixed thereafter regardless of
+    how far h1_bos_event itself drifts during later cycles). A trade
+    closing now triggers the new _cycle_reset() (stay in EPISODE, keep
+    hunting, preserve last_traded_bos_time/leg_ceiling_price) rather than
+    the full _reset_episode() (back to IDLE, forget everything) -- full
+    reset is now reserved for: the leg-ceiling being cleared, a bias flip,
+    a zone change, an OB invalidated by an H1 close-through, or a
+    same-bar-ambiguous cancellation (all unchanged/pre-existing full-reset
+    triggers except the leg-ceiling case, which is new). Cold-start guard
+    (also this session): leg_ceiling_price is only captured from a
+    countertrend BOS whose last_opposite_price is a known (non-NaN) value
+    -- this is only ever blank at true cold-start, before any swing of the
+    opposite kind has ever been confirmed anywhere in the dataset; without
+    this guard a blank value could be locked in permanently for the whole
+    leg, silently disabling the leg-ending check for that entire leg.
 
     Phase 4: close_trade() is the simulator's hook to free this pair for a new
     trade cycle once an open trade has been closed in the market (stop / T1 /
@@ -420,15 +427,28 @@ class PairSetup:
             if not bos_candidates.empty:
                 self.h1_bos_event = bos_candidates.iloc[-1]
                 # Fix #6: capture the leg ceiling exactly once -- the first
-                # time a countertrend BOS is seen since the last full
-                # reset. last_opposite_price is the swing high (sweep_dir
-                # == "down") / swing low (sweep_dir == "up") that price
-                # broke away from to start the pullback -- the dashed
-                # "HTF BOS" ceiling line in the trading diagram. Never
-                # overwritten again until _reset_episode() clears it, even
-                # though h1_bos_event itself keeps drifting to newer,
-                # closer countertrend BOS events on later cycles.
-                if self.leg_ceiling_price is None:
+                # time a countertrend BOS carrying a KNOWN (non-NaN)
+                # last_opposite_price is seen since the last full reset.
+                # last_opposite_price is the swing high (sweep_dir ==
+                # "down") / swing low (sweep_dir == "up") that price broke
+                # away from to start the pullback -- the dashed "HTF BOS"
+                # ceiling line in the trading diagram. This is normally
+                # the very first countertrend BOS of the leg, since every
+                # normal countertrend BOS is only possible because an H1
+                # CHoCH already confirmed the swing it's breaking away
+                # from. The ONLY time last_opposite_price can be NaN is
+                # true cold-start -- before any swing of the opposite kind
+                # has ever been confirmed anywhere in the dataset (only
+                # possible in the very first leg). Guarding on pd.notna()
+                # here prevents permanently locking in an unusable blank
+                # ceiling for the whole leg in that one-time case; instead
+                # the check is simply retried on every later update to
+                # h1_bos_event until one with a real value appears. Once
+                # set, never overwritten again until _reset_episode()
+                # clears it, even though h1_bos_event itself keeps
+                # drifting to newer, closer countertrend BOS events on
+                # later cycles.
+                if self.leg_ceiling_price is None and pd.notna(self.h1_bos_event["last_opposite_price"]):
                     self.leg_ceiling_price = self.h1_bos_event["last_opposite_price"]
 
         if self.state == "IDLE":
