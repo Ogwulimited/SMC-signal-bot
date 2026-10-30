@@ -139,7 +139,7 @@ class PairSetup:
     breaker/OB machinery downstream always sees a stable, consistent
     reference.
 
-    Fix #5 (this session, partially reverted by Fix #5b -- see below):
+    Fix #5 (prior session, partially reverted by Fix #5b -- see below):
     the OB side of the ob-vs-breaker race could previously be declared the
     winner (self.winner = "ob") the *instant* state flips to TRIGGERED on
     touch -- a full M15 bar before fill2_price (the OB's actual realized
@@ -161,18 +161,50 @@ class PairSetup:
     separate facts: who is ahead in the race vs. whether their entry price
     is realized yet.
 
-    Fix #5b (this session): reverted _resolve_winner to depend only on
+    Fix #5b (prior session): reverted _resolve_winner to depend only on
     state == TRIGGERED for the OB side, restoring the Layer 6 contract.
     The actual guard against calling build_trade_from_setup before
-    fill2_price is ready now belongs at the CALL SITE (the simulator/
+    fill2_price is ready belongs at the CALL SITE (the simulator/
     walk-forward driver), not here: callers must check `winner == "ob"
     and fill2_price is None` and simply wait one more bar, rather than
     treating an unresolved fill2_price as a reason to alter who won.
 
+    Fix #6 (this session): persistent-hunting episode lifecycle +
+    anti-duplication guard. Diagnostic walk-forward run exposed that
+    close_trade() was sending the pair all the way back to IDLE while
+    leaving self.zone untouched -- the very next on_h1_close call would
+    then re-scan countertrend BOS history with no floor other than
+    self.zone["confirm_time"], re-find the exact same BOS that fed the
+    trade just closed (since no new countertrend BOS had necessarily
+    printed yet), and replay the entire BOS_SEEN -> CHOCH_SEEN -> ARMED ->
+    TRIGGERED chain off the same historical candles, re-logging the same
+    trade repeatedly. Corrected trading model (confirmed by user,
+    hand-drawn diagrams): after the first CHoCH confirms a pullback is
+    over and the HTF trend is resuming, the episode should NOT go back to
+    requiring a fresh HTF zone touch for every subsequent trade -- it
+    should stay "live", actively hunting for new countertrend-BOS -> CHoCH
+    -> breaker/OB cycles (each with its own fresh local POI, independently
+    validated) for as long as price hasn't yet closed (candle body) beyond
+    the swing high/low that price broke away from to start the original
+    pullback -- or until the HTF bias itself flips. Two new fields support
+    this: last_traded_bos_time (floors the countertrend-BOS scan so a
+    just-traded sweep can never be re-selected -- the actual duplication
+    fix) and leg_ceiling_price (the fixed reference price for the
+    leg-ending close-beyond check, captured once from the very first
+    countertrend BOS of the leg, held fixed thereafter regardless of how
+    far h1_bos_event itself drifts during later cycles). A trade closing
+    now triggers the new _cycle_reset() (stay in EPISODE, keep hunting,
+    preserve last_traded_bos_time/leg_ceiling_price) rather than the full
+    _reset_episode() (back to IDLE, forget everything) -- full reset is
+    now reserved for: the leg-ceiling being cleared, a bias flip, a zone
+    change, an OB invalidated by an H1 close-through, or a same-bar-
+    ambiguous cancellation (all unchanged/pre-existing full-reset triggers
+    except the leg-ceiling case, which is new).
+
     Phase 4: close_trade() is the simulator's hook to free this pair for a new
-    episode once an open trade has been closed in the market (stop / T1 / T2 /
-    time-stop hit). It is a thin public wrapper around the existing
-    _reset_episode() -- no new state logic.
+    trade cycle once an open trade has been closed in the market (stop / T1 /
+    T2 / time-stop hit). As of Fix #6 it calls _cycle_reset(), not
+    _reset_episode() -- see Fix #6 note above.
     """
 
     def __init__(self, pair):
@@ -198,9 +230,57 @@ class PairSetup:
         self.breaker = None
         self.winner = None
         self.resolved_at = pd.NaT
+        # Fix #6: persistent-hunting lifecycle state.
+        self.last_traded_bos_time = pd.NaT
+        self.leg_ceiling_price = None
 
     def _reset_episode(self):
+        """Full reset: forget this leg entirely, go back to IDLE, require a
+        fresh HTF zone touch before anything can arm again. Triggered by:
+        bias flip, zone change, zone invalidation (on_d1_close); an OB
+        invalidated by an H1 close-through; a same-bar-ambiguous
+        cancellation; or (Fix #6, new) the leg ceiling being cleared."""
         self.state = "IDLE"
+        self.episode_start_time = None
+        self.h1_bos_event = None
+        self.h1_choch_event = None
+        self.candidate_ob = None
+        self.model = None
+        self.m15_bos_time = None
+        self.idm_price = None
+        self.idm_time = None
+        self.idm_swept_time = None
+        self.touch_time = None
+        self.same_bar_ambiguous = None
+        self.invalid_h1_close_through = None
+        self.fill1_price = None
+        self.fill2_price = None
+        self.breaker = None
+        self.winner = None
+        self.resolved_at = pd.NaT
+        self.last_traded_bos_time = pd.NaT
+        self.leg_ceiling_price = None
+
+    def _cycle_reset(self):
+        """
+        Fix #6: called when a trade closes but the HTF leg is still active
+        (ceiling not yet cleared, bias not flipped). Unlike _reset_episode,
+        this does NOT go back to IDLE or require a fresh HTF zone touch --
+        per the trading model, once the first CHoCH confirms a leg is
+        underway, the system keeps actively hunting for new
+        countertrend-BOS -> CHoCH -> breaker/OB cycles for as long as the
+        leg is live. Records last_traded_bos_time from the cycle that just
+        closed, so the very next BOS-tracking scan in on_h1_close cannot
+        re-select the sweep that just produced a trade -- this is the fix
+        for the duplicate-trade-counting bug. leg_ceiling_price and
+        last_traded_bos_time are deliberately NOT cleared here -- they
+        persist across cycles within the same leg; only _reset_episode()
+        clears them.
+        """
+        if self.h1_bos_event is not None:
+            self.last_traded_bos_time = self.h1_bos_event["time"]
+
+        self.state = "EPISODE"
         self.episode_start_time = None
         self.h1_bos_event = None
         self.h1_choch_event = None
@@ -222,12 +302,14 @@ class PairSetup:
     def close_trade(self):
         """
         Phase 4 hook: called by the simulator once an open trade for this pair
-        has been closed in the market (stop hit, T1/T2 hit, or time-stop hit).
-        Frees the pair to begin hunting for a brand-new episode from IDLE.
-        Does not alter self.bias or self.zone -- those are only touched by
-        on_d1_close, exactly as before.
+        has been closed in the market (stop hit, T1/T2 hit, or time-stop hit),
+        or an attempt was skipped for cost/data reasons after a real entry
+        point had already been identified in price. Frees the pair to keep
+        hunting for the next cycle within the same HTF leg (Fix #6:
+        _cycle_reset(), not a full reset). Does not alter self.bias or
+        self.zone -- those are only touched by on_d1_close, exactly as before.
         """
-        self._reset_episode()
+        self._cycle_reset()
 
     def on_d1_close(self, d1_df, d1_zones, h4_zones, current_low, current_high):
         new_bias = compute_d1_bias(d1_df)
@@ -267,6 +349,20 @@ class PairSetup:
 
         last_bar = h1_df.iloc[-1]
 
+        # Fix #6: leg-ending ceiling check, takes priority over everything
+        # else. leg_ceiling_price is the swing high (bullish leg) / swing
+        # low (bearish leg) that price broke away from to start the
+        # original pullback -- captured once below, held fixed for the
+        # whole leg. The moment a candle BODY closes beyond it, the HTF
+        # leg is considered complete: full reset, wait for the next
+        # pullback to draw a brand-new POI.
+        if self.leg_ceiling_price is not None:
+            bull = self.bias["state"] == "bullish"
+            cleared = (last_bar["close"] > self.leg_ceiling_price) if bull else (last_bar["close"] < self.leg_ceiling_price)
+            if cleared:
+                self._reset_episode()
+                return
+
         if self.state in ("ARMED", "SWEPT") and self.winner is None:
             ob_low = self.candidate_ob["ob_low"]
             ob_high = self.candidate_ob["ob_high"]
@@ -299,13 +395,41 @@ class PairSetup:
         # their "latest pullback leg" reference in real time, rather than
         # the state machine latching onto the first match it happens to see
         # only after zone-touch.
+        #
+        # Fix #6: the candidate pool is additionally floored at
+        # last_traded_bos_time (if set) -- a countertrend BOS at or before
+        # the sweep that already produced a trade this leg can never be
+        # re-selected. This is the actual fix for the duplicate-trade bug:
+        # without it, immediately after a trade closes and the episode
+        # resumes hunting, this scan would simply re-find the same stale
+        # BOS (since no new one may have printed yet) and replay the whole
+        # chain off the same historical candles. Note this floor is
+        # applied only to the BOS-candidate pool, not to `events` itself --
+        # `events` (zone-floored only) is reused below for CHoCH matching,
+        # and does not need the extra floor since CHoCH candidates are
+        # already required to post-date h1_bos_event's time, which is now
+        # itself guaranteed to post-date last_traded_bos_time.
         swings = primitives.find_swings(h1_df, config.STRUCTURE_SWING_N, tf)
         events = primitives.detect_bos_choch(h1_df, swings, tf)
         if not events.empty:
             events = events[events["time"] >= self.zone["confirm_time"]]
-            bos_candidates = events[(events["direction"] == sweep_dir) & (events["label"] == "BOS")]
+            bos_pool = events
+            if pd.notna(self.last_traded_bos_time):
+                bos_pool = bos_pool[bos_pool["time"] > self.last_traded_bos_time]
+            bos_candidates = bos_pool[(bos_pool["direction"] == sweep_dir) & (bos_pool["label"] == "BOS")]
             if not bos_candidates.empty:
                 self.h1_bos_event = bos_candidates.iloc[-1]
+                # Fix #6: capture the leg ceiling exactly once -- the first
+                # time a countertrend BOS is seen since the last full
+                # reset. last_opposite_price is the swing high (sweep_dir
+                # == "down") / swing low (sweep_dir == "up") that price
+                # broke away from to start the pullback -- the dashed
+                # "HTF BOS" ceiling line in the trading diagram. Never
+                # overwritten again until _reset_episode() clears it, even
+                # though h1_bos_event itself keeps drifting to newer,
+                # closer countertrend BOS events on later cycles.
+                if self.leg_ceiling_price is None:
+                    self.leg_ceiling_price = self.h1_bos_event["last_opposite_price"]
 
         if self.state == "IDLE":
             overlaps = (last_bar["low"] <= self.zone["zone_high"]) and (last_bar["high"] >= self.zone["zone_low"])
