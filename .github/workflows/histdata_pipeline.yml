@@ -1,4 +1,4 @@
-name: HistData Pipeline
+name: HistData Pipeline (11 Pairs - Original)
 
 on:
   workflow_dispatch:
@@ -16,18 +16,18 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - run: pip install histdata pandas pyarrow requests
-      
+
       - name: Restore raw cache ${{ matrix.pair }}
         uses: actions/cache/restore@v4
         with:
           path: data/raw/${{ matrix.pair }}
           key: histdata-raw-${{ matrix.pair }}-v1
           restore-keys: histdata-raw-${{ matrix.pair }}-
-          
+
       - name: Download ${{ matrix.pair }}
-        env: { PAIR: "${{ matrix.pair }}" }
+        env: { PAIR: "${{ matrix.pair }}", TEST_MODE: "false" }
         run: python scripts/download_histdata.py
-        
+
       - name: Save raw cache ${{ matrix.pair }}
         if: success()
         uses: actions/cache/save@v4
@@ -47,7 +47,6 @@ jobs:
         with: { python-version: "3.11" }
       - run: pip install pandas pyarrow pytest
 
-      # Explicitly restore all 11 caches
       - name: Restore eurusd
         uses: actions/cache/restore@v4
         with: { path: data/raw/eurusd, key: "histdata-raw-eurusd-v1-${{ github.run_id }}", restore-keys: histdata-raw-eurusd-v1- }
