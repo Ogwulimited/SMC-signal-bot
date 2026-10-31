@@ -57,8 +57,16 @@ def validate_file(csv_path, pair, year, month=None):
 def download_with_retry(pair, year, month=None, retries=3):
     pair_dir = RAW_DIR / pair
     pair_dir.mkdir(parents=True, exist_ok=True)
-    
-    pattern = str(pair_dir / f"*{year}*" + (f"*{month:02d}*" if month else "*"))
+
+    # Fix: build the glob pattern as a plain string FIRST (both parts are
+    # strings), then join onto pair_dir exactly once. The previous version
+    # did `pair_dir / f"*{year}*" + (...)` -- `pair_dir / "..."` evaluates
+    # to a PosixPath, and Path objects do not support `+` with a plain
+    # string (TypeError), so this crashed unconditionally on every single
+    # call regardless of pair/year/mode.
+    year_part = f"*{year}*"
+    month_part = f"*{month:02d}*" if month else "*"
+    pattern = str(pair_dir / (year_part + month_part))
     existing = glob.glob(pattern)
     for f in existing:
         if os.path.getsize(f) > 0:
@@ -99,7 +107,7 @@ def main():
         return
 
     end_year, end_month = latest_complete_month()
-    
+
     # Check if running in matrix mode (single pair) or all pairs
     target_pairs = [os.environ["PAIR"]] if "PAIR" in os.environ else PAIRS
 
