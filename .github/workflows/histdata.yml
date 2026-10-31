@@ -2,32 +2,58 @@ name: HistData Pipeline (28 Pairs - Expansion)
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke = 7 pairs, report NOT committed; full = all 28 pairs, report committed"
+        type: choice
+        options: [smoke, full]
+        default: smoke
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      pairs: ${{ steps.pick.outputs.pairs }}
+      pairs_csv: ${{ steps.pick.outputs.pairs_csv }}
+    steps:
+      - name: Pick pair list
+        id: pick
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          if [ "$MODE" = "full" ]; then
+            CSV="eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eurgbp,audjpy,eurchf,eurcad,euraud,eurnzd,gbpchf,gbpcad,gbpaud,gbpnzd,audcad,audchf,audnzd,nzdjpy,nzdcad,nzdchf,cadjpy,cadchf,chfjpy"
+          else
+            CSV="eurusd,usdjpy,eurgbp,gbpjpy,eurchf,audcad,eurnzd"
+          fi
+          echo "pairs_csv=$CSV" >> "$GITHUB_OUTPUT"
+          echo "pairs=$(echo "$CSV" | jq -R -c 'split(",")')" >> "$GITHUB_OUTPUT"
+
   download:
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        pair: [eurusd, gbpusd, usdjpy, audusd, usdcad, usdchf, nzdusd, eurjpy, gbpjpy, eurgbp, audjpy, eurchf, eurcad, euraud, eurnzd, gbpchf, gbpcad, gbpaud, gbpnzd, audcad, audchf, audnzd, nzdjpy, nzdcad, nzdchf, cadjpy, cadchf, chfjpy]
+        pair: ${{ fromJSON(needs.plan.outputs.pairs) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - run: pip install histdata pandas pyarrow requests
-      
+
       - name: Restore raw cache ${{ matrix.pair }}
         uses: actions/cache/restore@v4
         with:
           path: data/raw/${{ matrix.pair }}
           key: histdata-raw-${{ matrix.pair }}-v1
           restore-keys: histdata-raw-${{ matrix.pair }}-
-          
+
       - name: Download ${{ matrix.pair }}
-        env: { PAIR: "${{ matrix.pair }}" }
+        env: { PAIR: "${{ matrix.pair }}", TEST_MODE: "false" }
         run: python scripts/download_histdata.py
-        
+
       - name: Save raw cache ${{ matrix.pair }}
         if: success()
         uses: actions/cache/save@v4
@@ -36,19 +62,19 @@ jobs:
           key: histdata-raw-${{ matrix.pair }}-v1-${{ github.run_id }}
 
   build:
-    needs: download
+    needs: [plan, download]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        pair: [eurusd, gbpusd, usdjpy, audusd, usdcad, usdchf, nzdusd, eurjpy, gbpjpy, eurgbp, audjpy, eurchf, eurcad, euraud, eurnzd, gbpchf, gbpcad, gbpaud, gbpnzd, audcad, audchf, audnzd, nzdjpy, nzdcad, nzdchf, cadjpy, cadchf, chfjpy]
+        pair: ${{ fromJSON(needs.plan.outputs.pairs) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - run: pip install pandas pyarrow
-      
+
       - name: Restore raw cache ${{ matrix.pair }}
         uses: actions/cache/restore@v4
         with:
@@ -63,11 +89,11 @@ jobs:
       - name: Save processed cache ${{ matrix.pair }}
         uses: actions/cache/save@v4
         with:
-          path: data/processed/
+          path: data/processed
           key: histdata-processed-${{ matrix.pair }}-${{ github.run_id }}
 
   test_and_report:
-    needs: build
+    needs: [plan, build]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -164,13 +190,20 @@ jobs:
         with: { path: data/processed, key: "histdata-processed-chfjpy-${{ github.run_id }}", restore-keys: histdata-processed-chfjpy- }
 
       - name: Aggregate Report
-        env: { PYTHONPATH: "." }
+        env:
+          PYTHONPATH: "."
+          STRICT: "true"
+          PAIRS_OVERRIDE: ${{ inputs.mode != 'full' && needs.plan.outputs.pairs_csv || '' }}
         run: python scripts/aggregate_report.py
+
+      - name: Show report
+        run: cat reports/data/histdata_validation.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run Tests
         run: python -m pytest tests/test_data.py -v
 
       - name: Commit Report
+        if: inputs.mode == 'full'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
