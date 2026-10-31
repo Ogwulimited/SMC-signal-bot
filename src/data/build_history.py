@@ -2,6 +2,7 @@
 import pandas as pd
 import glob
 import os
+import json
 import time
 from pathlib import Path
 from datetime import datetime, timezone
@@ -61,11 +62,6 @@ def get_bad_days_and_holidays(m15, pair):
     expected = pd.date_range(start, end, freq="15min", tz="UTC")
     
     ny_idx = expected.tz_convert("America/New_York")
-    # Fix (cosmetic, non-blocking): dayofweek -> day_of_week. The old
-    # alias still works today but is deprecated in pandas 4.x and will be
-    # removed in a future version; renamed while this file was already
-    # being edited for the real bug below, to avoid a second edit cycle
-    # later purely for this.
     is_weekend = ((ny_idx.day_of_week == 4) & (ny_idx.hour >= 17)) | (ny_idx.day_of_week == 5) | ((ny_idx.day_of_week == 6) & (ny_idx.hour < 17))
     expected_open = expected[~is_weekend]
     
@@ -113,7 +109,7 @@ def process_pair(pair):
     elapsed = time.time() - start_time
     print(f"Finished {pair} in {elapsed:.2f}s")
     
-    return {
+    report = {
         "pair": pair, "cohort": PAIR_COHORTS[pair],
         "first": df["timestamp"].min().isoformat(), "last": df["timestamp"].max().isoformat(),
         "m1_bars": m1_bars, "m15_bars": m15_bars,
@@ -123,38 +119,38 @@ def process_pair(pair):
         "holidays": holidays, "bad_days_2023": bad_days_2023, "missing_2023": missing_2023
     }
 
+    # NEW (28-pair expansion fix, bug (a)): persist this pair's report row
+    # to disk, unconditionally, every time process_pair() runs. This is
+    # needed because histdata.yml's `build` job runs one pair per matrix
+    # job/runner -- unlike the 11-pair pipeline, no single process ever
+    # loops over all pairs and builds the markdown table in one place.
+    # scripts/aggregate_report.py (new file) reads these rows back in a
+    # later job, once all pairs' processed caches have been restored
+    # together, and builds the same markdown table main() already builds
+    # below for the 11-pair pipeline. This file lives in data/processed/,
+    # which is never committed to git -- only cached between CI jobs --
+    # so this does not violate the "raw data never committed" rule.
+    #
+    # json.dump requires native Python types. A couple of fields here
+    # (missing_2023, holes_per_year) are numpy/pandas scalar types as a
+    # side effect of upstream pandas .sum()/groupby() calls, which the
+    # stdlib json module cannot serialize directly -- hence the explicit
+    # int() casts below. These casts are applied only to the copy written
+    # to disk; the `report` dict returned to existing callers (main()'s
+    # markdown-table loop, used by the already-confirmed-working 11-pair
+    # pipeline) is completely unchanged.
+    report_json_safe = dict(report)
+    for key in ("m1_bars", "m15_bars", "holes_per_year", "dupes", "bad_days", "holidays", "bad_days_2023", "missing_2023"):
+        report_json_safe[key] = int(report_json_safe[key])
+    with open(PROCESSED_DIR / f"{pair}_report_row.json", "w") as f:
+        json.dump(report_json_safe, f)
+
+    return report
+
 def main():
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Fix: pair-selection logic now has three tiers, in priority order:
-    #   1. PAIR env var (single-pair matrix mode, e.g. histdata.yml's
-    #      per-pair build job) -- unchanged from before.
-    #   2. PAIRS_OVERRIDE env var (new) -- a comma-separated explicit list,
-    #      for callers that want "process exactly these N pairs" without
-    #      being silently coupled to however many pairs config.PAIRS
-    #      currently lists. This is what fixed the real bug: the legacy
-    #      11-pair workflow (histdata_pipeline.yml) used to rely on
-    #      "no PAIR env set -> fall back to ALL_PAIRS" meaning "the 11
-    #      pairs this workflow downloads" -- which was only true because
-    #      config.PAIRS happened to also list exactly those 11 at the
-    #      time. Once config.PAIRS was expanded to 28 (for the unrelated
-    #      28-pair expansion work), that fallback silently started
-    #      meaning "all 28" instead, and the legacy workflow crashed
-    #      trying to build pairs it never downloaded/cached
-    #      (FileNotFoundError: No raw data for eurchf). PAIRS_OVERRIDE
-    #      lets the legacy workflow pin its own fixed 11-pair list,
-    #      independent of future config.py changes.
-    #   3. No env var set at all -- fall back to ALL_PAIRS (config.PAIRS),
-    #      same as before. This remains correct for any genuinely
-    #      "process everything currently in config" use case (e.g. local/
-    #      manual runs).
-    #
-    # single_pair_mode (not just "PAIR" in os.environ) now drives the
-    # report-generation gate below, so PAIRS_OVERRIDE runs (multi-pair,
-    # but not "all of config") still produce a histdata_validation.md,
-    # matching the original intent of "only skip the report in true
-    # single-pair matrix mode."
     single_pair_mode = "PAIR" in os.environ
     if single_pair_mode:
         target_pairs = [os.environ["PAIR"]]
