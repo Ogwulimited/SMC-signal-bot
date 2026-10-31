@@ -1,4 +1,4 @@
-name: HistData Pipeline
+name: HistData Pipeline (28 Pairs - Expansion)
 
 on:
   workflow_dispatch:
