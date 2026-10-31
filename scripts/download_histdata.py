@@ -10,9 +10,17 @@ from pathlib import Path
 from histdata import download_hist_data as dl
 from histdata.api import Platform as P, TimeFrame as TF
 
-PAIR = os.environ.get("PAIR")
+# All 28 pairs
+PAIRS = [
+    "eurusd", "gbpusd", "usdjpy", "audusd", "usdcad", "usdchf", "nzdusd", "eurjpy", "gbpjpy", "eurgbp", "audjpy",
+    "eurchf", "eurcad", "euraud", "eurnzd", "gbpchf", "gbpcad", "gbpaud", "gbpnzd",
+    "audcad", "audchf", "audnzd", "nzdjpy", "nzdcad", "nzdchf", "cadjpy", "cadchf", "chfjpy"
+]
 START_YEAR = 2016
 RAW_DIR = Path(__file__).parent.parent / "data" / "raw"
+TEST_MODE = os.environ.get("TEST_MODE", "true").lower() == "true"
+TEST_PAIR = os.environ.get("TEST_PAIR", "eurusd")
+TEST_YEAR = os.environ.get("TEST_YEAR", "2023")
 
 def latest_complete_month():
     now = datetime.now(timezone.utc)
@@ -31,48 +39,77 @@ def extract_zip(zip_path, pair_dir):
         return None
     return None
 
-def download(pair, year, month=None):
+def validate_file(csv_path, pair, year, month=None):
+    if not csv_path or not os.path.exists(csv_path): return False
+    if os.path.getsize(csv_path) == 0: return False
+
+    size_mb = os.path.getsize(csv_path) / (1024 * 1024)
+    with open(csv_path, "r") as f:
+        lines = f.readlines()
+        row_count = len(lines)
+        if row_count == 0: return False
+        first_ts = lines[0].strip().split(";")[0]
+        last_ts = lines[-1].strip().split(";")[0]
+
+    print(f"[OK] {pair} {year}{'-' + str(month) if month else ''}: {size_mb:.2f} MB, {row_count} rows")
+    return True
+
+def download_with_retry(pair, year, month=None, retries=3):
     pair_dir = RAW_DIR / pair
     pair_dir.mkdir(parents=True, exist_ok=True)
     
-    # FIXED: Convert path to string before adding string suffixes
-    if month:
-        pattern = str(pair_dir) + f"/*{year}*{month:02d}*"
-    else:
-        pattern = str(pair_dir) + f"/*{year}*"
-        
-    if glob.glob(pattern):
-        print(f"[SKIP] {pair} {year}-{month if month else 'Full'}")
-        return True
+    pattern = str(pair_dir / f"*{year}*" + (f"*{month:02d}*" if month else "*"))
+    existing = glob.glob(pattern)
+    for f in existing:
+        if os.path.getsize(f) > 0:
+            print(f"[SKIP] {pair} {year}{'-' + str(month) if month else ''} (exists)")
+            return True
+        else:
+            os.remove(f)
 
-    for attempt in range(1, 4):
+    for attempt in range(1, retries + 1):
         try:
             kwargs = {
                 "year": str(year), "pair": pair, "time_frame": TF.ONE_MINUTE,
-                "platform": P.GENERIC_ASCII, "output_directory": str(pair_dir), "verbose": True
+                "platform": P.GENERIC_ASCII, "output_directory": str(pair_dir), "verbose": False
             }
-            if month: kwargs["month"] = str(month)
+            if month is not None: kwargs["month"] = str(month)
             else: kwargs["month"] = None
 
             filename = dl(**kwargs)
-            if filename and os.path.getsize(filename) > 0:
+            if filename and os.path.exists(filename) and os.path.getsize(filename) > 0:
                 csv_path = extract_zip(filename, str(pair_dir))
-                if csv_path and os.path.getsize(csv_path) > 0:
-                    print(f"[OK] {pair} {year}-{month if month else 'Full'}")
+                if validate_file(csv_path, pair, year, month):
                     return True
+        except AssertionError as e:
+            print(f"[FATAL] {pair} {year}: {e}")
+            return False
         except requests.exceptions.RequestException:
             time.sleep(3 * attempt)
         except Exception as e:
-            print(f"[FATAL] {e}")
-            return False
+            print(f"[RETRY] {pair} {year}: {e}")
+        time.sleep(2)
     return False
 
 def main():
+    if TEST_MODE:
+        print(f"TEST MODE: {TEST_PAIR} {TEST_YEAR}")
+        ok = download_with_retry(TEST_PAIR, int(TEST_YEAR), month=None)
+        if not ok: sys.exit(1)
+        return
+
     end_year, end_month = latest_complete_month()
-    for year in range(START_YEAR, end_year):
-        download(PAIR, year, month=None)
-    for month in range(1, end_month + 1):
-        download(PAIR, end_year, month=month)
+    
+    # Check if running in matrix mode (single pair) or all pairs
+    target_pairs = [os.environ["PAIR"]] if "PAIR" in os.environ else PAIRS
+
+    for pair in target_pairs:
+        # Full years
+        for year in range(START_YEAR, end_year):
+            download_with_retry(pair, year, month=None)
+        # Current year months
+        for month in range(1, end_month + 1):
+            download_with_retry(pair, end_year, month=month)
 
 if __name__ == "__main__":
     main()
