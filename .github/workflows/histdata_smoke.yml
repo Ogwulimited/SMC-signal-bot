@@ -1,0 +1,127 @@
+name: HistData Pipeline (SMOKE TEST - 11 + 3 New Pairs)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: [eurusd, gbpusd, usdjpy, audusd, usdcad, usdchf, nzdusd, eurjpy, gbpjpy, eurgbp, audjpy, eurchf, eurcad, euraud]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install histdata pandas pyarrow requests
+
+      - name: Restore raw cache ${{ matrix.pair }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/${{ matrix.pair }}
+          key: histdata-raw-${{ matrix.pair }}-v1
+          restore-keys: histdata-raw-${{ matrix.pair }}-
+
+      - name: Download ${{ matrix.pair }}
+        env: { PAIR: "${{ matrix.pair }}" }
+        run: python scripts/download_histdata.py
+
+      - name: Save raw cache ${{ matrix.pair }}
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: data/raw/${{ matrix.pair }}
+          key: histdata-raw-${{ matrix.pair }}-v1-${{ github.run_id }}
+
+  build:
+    needs: download
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: [eurusd, gbpusd, usdjpy, audusd, usdcad, usdchf, nzdusd, eurjpy, gbpjpy, eurgbp, audjpy, eurchf, eurcad, euraud]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow
+
+      - name: Restore raw cache ${{ matrix.pair }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/${{ matrix.pair }}
+          key: histdata-raw-${{ matrix.pair }}-v1-${{ github.run_id }}
+          restore-keys: histdata-raw-${{ matrix.pair }}-v1-
+
+      - name: Build ${{ matrix.pair }}
+        env: { PAIR: "${{ matrix.pair }}" }
+        run: python -m src.data.build_history
+
+      - name: Save processed cache ${{ matrix.pair }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/processed/
+          key: histdata-processed-${{ matrix.pair }}-${{ github.run_id }}
+
+  test_and_report:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow pytest
+
+      - name: Restore eurusd
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-eurusd-${{ github.run_id }}", restore-keys: histdata-processed-eurusd- }
+      - name: Restore gbpusd
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-gbpusd-${{ github.run_id }}", restore-keys: histdata-processed-gbpusd- }
+      - name: Restore usdjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-usdjpy-${{ github.run_id }}", restore-keys: histdata-processed-usdjpy- }
+      - name: Restore audusd
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-audusd-${{ github.run_id }}", restore-keys: histdata-processed-audusd- }
+      - name: Restore usdcad
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-usdcad-${{ github.run_id }}", restore-keys: histdata-processed-usdcad- }
+      - name: Restore usdchf
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-usdchf-${{ github.run_id }}", restore-keys: histdata-processed-usdchf- }
+      - name: Restore nzdusd
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-nzdusd-${{ github.run_id }}", restore-keys: histdata-processed-nzdusd- }
+      - name: Restore eurjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-eurjpy-${{ github.run_id }}", restore-keys: histdata-processed-eurjpy- }
+      - name: Restore gbpjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-gbpjpy-${{ github.run_id }}", restore-keys: histdata-processed-gbpjpy- }
+      - name: Restore eurgbp
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-eurgbp-${{ github.run_id }}", restore-keys: histdata-processed-eurgbp- }
+      - name: Restore audjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-audjpy-${{ github.run_id }}", restore-keys: histdata-processed-audjpy- }
+      - name: Restore eurchf
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-eurchf-${{ github.run_id }}", restore-keys: histdata-processed-eurchf- }
+      - name: Restore eurcad
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-eurcad-${{ github.run_id }}", restore-keys: histdata-processed-eurcad- }
+      - name: Restore euraud
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-euraud-${{ github.run_id }}", restore-keys: histdata-processed-euraud- }
+
+      - name: Aggregate Report
+        env: { PYTHONPATH: "." }
+        run: python scripts/aggregate_report.py
+
+      - name: Run Tests
+        run: python -m pytest tests/test_data.py -v
