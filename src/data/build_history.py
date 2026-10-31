@@ -61,7 +61,12 @@ def get_bad_days_and_holidays(m15, pair):
     expected = pd.date_range(start, end, freq="15min", tz="UTC")
     
     ny_idx = expected.tz_convert("America/New_York")
-    is_weekend = ((ny_idx.dayofweek == 4) & (ny_idx.hour >= 17)) | (ny_idx.dayofweek == 5) | ((ny_idx.dayofweek == 6) & (ny_idx.hour < 17))
+    # Fix (cosmetic, non-blocking): dayofweek -> day_of_week. The old
+    # alias still works today but is deprecated in pandas 4.x and will be
+    # removed in a future version; renamed while this file was already
+    # being edited for the real bug below, to avoid a second edit cycle
+    # later purely for this.
+    is_weekend = ((ny_idx.day_of_week == 4) & (ny_idx.hour >= 17)) | (ny_idx.day_of_week == 5) | ((ny_idx.day_of_week == 6) & (ny_idx.hour < 17))
     expected_open = expected[~is_weekend]
     
     actual = m15["timestamp"].dt.floor("15min").unique()
@@ -121,15 +126,49 @@ def process_pair(pair):
 def main():
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    
-    target_pairs = [os.environ["PAIR"]] if "PAIR" in os.environ else ALL_PAIRS
-    reports = []
 
+    # Fix: pair-selection logic now has three tiers, in priority order:
+    #   1. PAIR env var (single-pair matrix mode, e.g. histdata.yml's
+    #      per-pair build job) -- unchanged from before.
+    #   2. PAIRS_OVERRIDE env var (new) -- a comma-separated explicit list,
+    #      for callers that want "process exactly these N pairs" without
+    #      being silently coupled to however many pairs config.PAIRS
+    #      currently lists. This is what fixed the real bug: the legacy
+    #      11-pair workflow (histdata_pipeline.yml) used to rely on
+    #      "no PAIR env set -> fall back to ALL_PAIRS" meaning "the 11
+    #      pairs this workflow downloads" -- which was only true because
+    #      config.PAIRS happened to also list exactly those 11 at the
+    #      time. Once config.PAIRS was expanded to 28 (for the unrelated
+    #      28-pair expansion work), that fallback silently started
+    #      meaning "all 28" instead, and the legacy workflow crashed
+    #      trying to build pairs it never downloaded/cached
+    #      (FileNotFoundError: No raw data for eurchf). PAIRS_OVERRIDE
+    #      lets the legacy workflow pin its own fixed 11-pair list,
+    #      independent of future config.py changes.
+    #   3. No env var set at all -- fall back to ALL_PAIRS (config.PAIRS),
+    #      same as before. This remains correct for any genuinely
+    #      "process everything currently in config" use case (e.g. local/
+    #      manual runs).
+    #
+    # single_pair_mode (not just "PAIR" in os.environ) now drives the
+    # report-generation gate below, so PAIRS_OVERRIDE runs (multi-pair,
+    # but not "all of config") still produce a histdata_validation.md,
+    # matching the original intent of "only skip the report in true
+    # single-pair matrix mode."
+    single_pair_mode = "PAIR" in os.environ
+    if single_pair_mode:
+        target_pairs = [os.environ["PAIR"]]
+    elif "PAIRS_OVERRIDE" in os.environ:
+        target_pairs = [p.strip() for p in os.environ["PAIRS_OVERRIDE"].split(",") if p.strip()]
+    else:
+        target_pairs = ALL_PAIRS
+
+    reports = []
     for pair in target_pairs:
         reports.append(process_pair(pair))
 
     # Only generate report if running all pairs (not matrix mode)
-    if "PAIR" not in os.environ:
+    if not single_pair_mode:
         lines = [
             "# HistData Validation Report\n",
             "| Pair | Cohort | First | Last | M1 Bars | M15 Bars | Holes/Yr | Bad Days | 2023 Missing |",
