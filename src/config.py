@@ -1,6 +1,13 @@
 """SMC Research Engine Configuration."""
 
-PAIRS = ["eurusd", "gbpusd", "usdjpy", "audusd", "usdcad", "usdchf", "nzdusd", "eurjpy", "gbpjpy", "eurgbp", "audjpy"]
+# ----- Pairs (28 total: 11 original + 17 crosses) -----
+PAIRS = [
+    # Original 11
+    "eurusd", "gbpusd", "usdjpy", "audusd", "usdcad", "usdchf", "nzdusd", "eurjpy", "gbpjpy", "eurgbp", "audjpy",
+    # New 17 Crosses
+    "eurchf", "eurcad", "euraud", "eurnzd", "gbpchf", "gbpcad", "gbpaud", "gbpnzd",
+    "audcad", "audchf", "audnzd", "nzdjpy", "nzdcad", "nzdchf", "cadjpy", "cadchf", "chfjpy"
+]
 
 GRANULARITY = 900
 ATR_PERIOD = 14
@@ -34,10 +41,8 @@ D1_SWING_N = 3
 # --- Phase 4: assumed typical retail spreads (NOT real broker data) ---
 # Values are in raw price units (already pip-size-adjusted per pair),
 # i.e. directly comparable to price differences in OHLC data.
-# Source: generic mid-tier retail broker approximations, logged as an
-# explicit assumption per Standing Rules. Revisit if real broker spread
-# data becomes available at zero cost.
 SPREAD_PRICE = {
+    # Original 11
     "eurusd": 0.00010,  # 1.0 pip
     "gbpusd": 0.00015,  # 1.5 pip
     "usdjpy": 0.010,    # 1.0 pip (JPY pip = 0.01)
@@ -49,6 +54,24 @@ SPREAD_PRICE = {
     "gbpjpy": 0.030,    # 3.0 pip
     "eurgbp": 0.00018,  # 1.8 pip
     "audjpy": 0.020,    # 2.0 pip
+    # New 17 Crosses (typical retail spread ~2.0 pips)
+    "eurchf": 0.00020,
+    "eurcad": 0.00020,
+    "euraud": 0.00020,
+    "eurnzd": 0.00020,
+    "gbpchf": 0.00020,
+    "gbpcad": 0.00020,
+    "gbpaud": 0.00020,
+    "gbpnzd": 0.00020,
+    "audcad": 0.00020,
+    "audchf": 0.00020,
+    "audnzd": 0.00020,
+    "nzdjpy": 0.020,
+    "nzdcad": 0.00020,
+    "nzdchf": 0.00020,
+    "cadjpy": 0.020,
+    "cadchf": 0.00020,
+    "chfjpy": 0.020,
 }
 
 MAX_SPREAD_RISK_RATIO = 0.15
