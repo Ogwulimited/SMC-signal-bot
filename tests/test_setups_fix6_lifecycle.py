@@ -198,14 +198,17 @@ def test_fix6_leg_ceiling_cross_triggers_full_reset():
 
 
 # ---------------------------------------------------------------------------
-# Test D (DIAGNOSTIC VERSION): cold-start guard. My hand-predicted bar
-# indices for the first countertrend BOS were wrong (predicted i=10, code
-# fired at i=19) -- rather than guess again, this prints the real bar-by-bar
-# trace so the final version of this test can be written against ground
-# truth instead of a third hand-trace attempt.
+# Test D: cold-start guard. Ground truth confirmed via diagnostic CI run:
+# first countertrend BOS fires at i=10 (2023-09-01 11:00) with NaN
+# last_opposite_price -- leg_ceiling_price correctly stays None through
+# i=10..17 while h1_bos_event itself doesn't change. At i=18, h1_bos_event
+# updates to a new BOS (2023-09-01 19:00) carrying a real value (6.5) --
+# leg_ceiling_price locks in at 6.5 here. At i=22, h1_bos_event updates
+# again (2023-09-01 23:00, last_opposite_price still 6.5) but
+# leg_ceiling_price correctly stays fixed at 6.5 (never re-captured once set).
 # ---------------------------------------------------------------------------
 
-def test_fix6_cold_start_ceiling_guard_diagnostic():
+def test_fix6_cold_start_ceiling_guard():
     h1_df = _mk_df(
         opens=[10.0, 10.0, 10.0, 7.5, 7.4, 7.45, 6.5, 6.4, 5.8, 5.75, 5.8,
                5.2, 5.6, 6.3, 6.2, 6.1, 6.0, 5.7, 5.3, 4.9, 5.4, 5.2, 5.1],
@@ -234,9 +237,24 @@ def test_fix6_cold_start_ceiling_guard_diagnostic():
     ps.last_traded_bos_time = pd.NaT
     ps.leg_ceiling_price = None
 
+    expected_states = ["EPISODE"] * 10 + ["BOS_SEEN"] * 13
+
     for i in range(23):
         ps.on_h1_close(h1_df.iloc[:i + 1], pools, tf_h1)
-        bos_time = ps.h1_bos_event["time"] if ps.h1_bos_event is not None else None
-        bos_lop = ps.h1_bos_event["last_opposite_price"] if ps.h1_bos_event is not None else None
-        print(f"i={i:2d} state={ps.state:12s} bos_time={bos_time} last_opp={bos_lop} ceiling={ps.leg_ceiling_price}")
-        assert ps.state in ("EPISODE", "BOS_SEEN", "CHOCH_SEEN")
+        assert ps.state == expected_states[i], f"bar {i}: expected {expected_states[i]}, got {ps.state}"
+
+        if i < 10:
+            assert ps.h1_bos_event is None
+            assert ps.leg_ceiling_price is None
+        elif i <= 17:
+            assert ps.h1_bos_event["time"] == pd.Timestamp("2023-09-01 11:00:00", tz="UTC")
+            assert pd.isna(ps.h1_bos_event["last_opposite_price"])
+            assert ps.leg_ceiling_price is None
+        elif i <= 21:
+            assert ps.h1_bos_event["time"] == pd.Timestamp("2023-09-01 19:00:00", tz="UTC")
+            assert ps.h1_bos_event["last_opposite_price"] == pytest.approx(6.5)
+            assert ps.leg_ceiling_price == pytest.approx(6.5)
+        else:  # i == 22
+            assert ps.h1_bos_event["time"] == pd.Timestamp("2023-09-01 23:00:00", tz="UTC")
+            assert ps.h1_bos_event["last_opposite_price"] == pytest.approx(6.5)
+            assert ps.leg_ceiling_price == pytest.approx(6.5)
