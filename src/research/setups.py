@@ -169,7 +169,7 @@ class PairSetup:
     and fill2_price is None` and simply wait one more bar, rather than
     treating an unresolved fill2_price as a reason to alter who won.
 
-    Fix #6 (this session): persistent-hunting episode lifecycle +
+    Fix #6 (prior session): persistent-hunting episode lifecycle +
     anti-duplication guard. Diagnostic walk-forward run exposed that
     close_trade() was sending the pair all the way back to IDLE while
     leaving self.zone untouched -- the very next on_h1_close call would
@@ -188,9 +188,10 @@ class PairSetup:
     the swing high/low that price broke away from to start the original
     pullback -- or until the HTF bias itself flips. Two new fields support
     this: last_traded_bos_time (floors the countertrend-BOS scan so a
-    just-traded sweep can never be re-selected -- the actual duplication
-    fix) and leg_ceiling_price (the fixed reference price for the
-    leg-ending close-beyond check, captured once from the first
+    just-traded sweep can never be re-selected -- see Fix #7 below, this
+    is now superseded as the actual duplication guard but retained as a
+    diagnostic field) and leg_ceiling_price (the fixed reference price for
+    the leg-ending close-beyond check, captured once from the first
     countertrend BOS of the leg that carries a known swing reference --
     see cold-start guard note below -- held fixed thereafter regardless of
     how far h1_bos_event itself drifts during later cycles). A trade
@@ -207,6 +208,45 @@ class PairSetup:
     opposite kind has ever been confirmed anywhere in the dataset; without
     this guard a blank value could be locked in permanently for the whole
     leg, silently disabling the leg-ending check for that entire leg.
+
+    Fix #7 (this session): Fix #6's duplication guard (last_traded_bos_time,
+    cleared by _reset_episode()) was proven insufficient by a real
+    walk-forward run on EURUSD 2023 (duplicate trade off the same
+    2022-12-22 17:00 BOS, five days apart). Root cause: the leg-ceiling
+    check in on_h1_close is allowed -- correctly, per the trading model --
+    to fire a full reset on a single H1 candle body closing beyond the
+    ceiling, even if that break does not hold and price closes back inside
+    the range on the very next candle. That is not a bug; clause (e)(1) is
+    working exactly as specified, on a strict body-close basis, and is NOT
+    changed by this fix. The bug was that "full reset" also wiped
+    last_traded_bos_time, giving the state machine total amnesia about
+    which sweep had already produced a trade -- so when the exact same
+    historical countertrend BOS re-appeared as "most recent" after the
+    failed ceiling break, it looked brand new and got re-traded.
+
+    Fix: self.traded_bos_times (a set, not a single value) now holds every
+    BOS timestamp that has ever produced a trade in the current leg. It is
+    populated by _cycle_reset() (cumulative -- grows across cycles, never
+    shrinks mid-leg) and is the actual filter used in on_h1_close's
+    countertrend-BOS scan (excludes ANY previously-traded timestamp, not
+    just ones before the most recent). Critically, _reset_episode() does
+    NOT clear it, regardless of which of its trigger sites fired --
+    leg-ceiling clear, OB invalidated by H1 close-through, or same-bar-
+    ambiguous cancellation all leave it untouched. It is cleared in
+    exactly two places, both inside on_d1_close, matching the user's
+    explicit instruction ("only cleared on bias flip or genuine zone
+    change"): when bias leaves bullish/bearish, and when bias_changed or
+    zone_changed is True. The third on_d1_close reset trigger (a D1 close
+    beyond the zone's far edge, with state already active) is deliberately
+    NOT treated as a clearing point -- it is neither a bias flip nor a
+    zone change by the letter of that instruction, even though it is
+    structurally similar to the H1 leg-ceiling check and could in
+    principle carry the same single-candle-noise risk. This is a
+    conscious, narrower scope decision, not an oversight: there is no
+    trade-log evidence (yet) that this specific trigger has ever caused a
+    duplicate. last_traded_bos_time is left in place, still updated the
+    same way as Fix #6, purely as a legacy/diagnostic single-value field;
+    it is no longer read by the duplication-guard filter.
 
     Phase 4: close_trade() is the simulator's hook to free this pair for a new
     trade cycle once an open trade has been closed in the market (stop / T1 /
@@ -240,13 +280,24 @@ class PairSetup:
         # Fix #6: persistent-hunting lifecycle state.
         self.last_traded_bos_time = pd.NaT
         self.leg_ceiling_price = None
+        # Fix #7: the real anti-duplication memory. Grows across cycles
+        # within a leg; survives _reset_episode() entirely; cleared only
+        # by on_d1_close on a genuine bias flip or zone change.
+        self.traded_bos_times = set()
 
     def _reset_episode(self):
         """Full reset: forget this leg entirely, go back to IDLE, require a
         fresh HTF zone touch before anything can arm again. Triggered by:
         bias flip, zone change, zone invalidation (on_d1_close); an OB
         invalidated by an H1 close-through; a same-bar-ambiguous
-        cancellation; or (Fix #6, new) the leg ceiling being cleared."""
+        cancellation; or (Fix #6) the leg ceiling being cleared.
+
+        Fix #7: deliberately does NOT touch self.traded_bos_times, no
+        matter which trigger called this method. That field is only ever
+        cleared from inside on_d1_close, at the specific points matching
+        a genuine bias flip or zone change -- see the Fix #7 class
+        docstring note for why this reset method itself must not be the
+        place that clears it."""
         self.state = "IDLE"
         self.episode_start_time = None
         self.h1_bos_event = None
@@ -276,16 +327,19 @@ class PairSetup:
         per the trading model, once the first CHoCH confirms a leg is
         underway, the system keeps actively hunting for new
         countertrend-BOS -> CHoCH -> breaker/OB cycles for as long as the
-        leg is live. Records last_traded_bos_time from the cycle that just
-        closed, so the very next BOS-tracking scan in on_h1_close cannot
-        re-select the sweep that just produced a trade -- this is the fix
-        for the duplicate-trade-counting bug. leg_ceiling_price and
-        last_traded_bos_time are deliberately NOT cleared here -- they
-        persist across cycles within the same leg; only _reset_episode()
-        clears them.
+        leg is live. leg_ceiling_price and last_traded_bos_time are
+        deliberately NOT cleared here -- they persist across cycles within
+        the same leg; only _reset_episode() clears them.
+
+        Fix #7: also adds the just-closed cycle's BOS timestamp to
+        self.traded_bos_times (cumulative set, never cleared here or by
+        _reset_episode() -- see class docstring). This is now the actual
+        anti-duplication filter used in on_h1_close; last_traded_bos_time
+        above is retained only as a legacy/diagnostic single-value field.
         """
         if self.h1_bos_event is not None:
             self.last_traded_bos_time = self.h1_bos_event["time"]
+            self.traded_bos_times.add(self.h1_bos_event["time"])
 
         self.state = "EPISODE"
         self.episode_start_time = None
@@ -329,6 +383,10 @@ class PairSetup:
 
         if new_bias["state"] not in ("bullish", "bearish"):
             self._reset_episode()
+            # Fix #7: genuine bias flip (leaving bullish/bearish entirely)
+            # is one of the two explicit clearing points for the
+            # persistent anti-duplication memory.
+            self.traded_bos_times = set()
             self.zone = None
             return
 
@@ -341,6 +399,10 @@ class PairSetup:
         )
         if bias_changed or zone_changed:
             self._reset_episode()
+            # Fix #7: genuine bias change or a genuine new HTF zone is the
+            # other explicit clearing point for the persistent
+            # anti-duplication memory.
+            self.traded_bos_times = set()
         self.zone = new_zone
 
         if self.zone is not None and self.state != "IDLE":
@@ -348,6 +410,14 @@ class PairSetup:
             d1_close = d1_df.iloc[-1]["close"]
             beyond = (d1_close < far_edge) if new_bias["state"] == "bullish" else (d1_close > far_edge)
             if beyond:
+                # Fix #7 note: this reset deliberately does NOT clear
+                # self.traded_bos_times. It is neither a bias flip nor a
+                # zone change by the letter of the user's Option 1
+                # instruction, even though it is structurally similar to
+                # the H1 leg-ceiling check. Flagged as a conscious,
+                # narrower scope decision -- revisit if a future
+                # walk-forward run ever shows a duplicate correlated with
+                # this specific trigger.
                 self._reset_episode()
 
     def on_h1_close(self, h1_df, pools, tf):
@@ -363,6 +433,15 @@ class PairSetup:
         # whole leg. The moment a candle BODY closes beyond it, the HTF
         # leg is considered complete: full reset, wait for the next
         # pullback to draw a brand-new POI.
+        #
+        # Fix #7 note: this check is intentionally UNCHANGED -- clause
+        # (e)(1) of the trading model is correct exactly as specified,
+        # including the case where a single candle's close-beyond does
+        # not hold and price closes back inside the range on the very
+        # next candle. _reset_episode() below is allowed to fire on that
+        # basis. What changed is that _reset_episode() no longer wipes
+        # the persistent anti-duplication memory (self.traded_bos_times)
+        # -- see Fix #7 class docstring.
         if self.leg_ceiling_price is not None:
             bull = self.bias["state"] == "bullish"
             cleared = (last_bar["close"] > self.leg_ceiling_price) if bull else (last_bar["close"] < self.leg_ceiling_price)
@@ -403,26 +482,31 @@ class PairSetup:
         # the state machine latching onto the first match it happens to see
         # only after zone-touch.
         #
-        # Fix #6: the candidate pool is additionally floored at
-        # last_traded_bos_time (if set) -- a countertrend BOS at or before
-        # the sweep that already produced a trade this leg can never be
-        # re-selected. This is the actual fix for the duplicate-trade bug:
-        # without it, immediately after a trade closes and the episode
-        # resumes hunting, this scan would simply re-find the same stale
-        # BOS (since no new one may have printed yet) and replay the whole
-        # chain off the same historical candles. Note this floor is
-        # applied only to the BOS-candidate pool, not to `events` itself --
-        # `events` (zone-floored only) is reused below for CHoCH matching,
-        # and does not need the extra floor since CHoCH candidates are
-        # already required to post-date h1_bos_event's time, which is now
-        # itself guaranteed to post-date last_traded_bos_time.
+        # Fix #7 (supersedes the Fix #6 filter): the candidate pool is
+        # floored by excluding every timestamp in self.traded_bos_times --
+        # the full history of sweeps that have already produced a trade
+        # this leg, surviving even a full _reset_episode() (see class
+        # docstring). A countertrend BOS that already produced a trade can
+        # never be re-selected, regardless of how many ceiling-triggered
+        # or OB-invalidation resets happen in between. This is the actual
+        # anti-duplication fix: a real walk-forward run showed the Fix #6
+        # version (floor on last_traded_bos_time, wiped by every full
+        # reset) was insufficient -- a leg-ceiling reset that failed to
+        # hold could wipe the floor entirely and let an already-traded
+        # sweep be rediscovered.
+        #
+        # Note this floor is applied only to the BOS-candidate pool, not
+        # to `events` itself -- `events` (zone-floored only) is reused
+        # below for CHoCH matching, and does not need the extra floor
+        # since CHoCH candidates are already required to post-date
+        # h1_bos_event's time.
         swings = primitives.find_swings(h1_df, config.STRUCTURE_SWING_N, tf)
         events = primitives.detect_bos_choch(h1_df, swings, tf)
         if not events.empty:
             events = events[events["time"] >= self.zone["confirm_time"]]
             bos_pool = events
-            if pd.notna(self.last_traded_bos_time):
-                bos_pool = bos_pool[bos_pool["time"] > self.last_traded_bos_time]
+            if self.traded_bos_times:
+                bos_pool = bos_pool[~bos_pool["time"].isin(self.traded_bos_times)]
             bos_candidates = bos_pool[(bos_pool["direction"] == sweep_dir) & (bos_pool["label"] == "BOS")]
             if not bos_candidates.empty:
                 self.h1_bos_event = bos_candidates.iloc[-1]
