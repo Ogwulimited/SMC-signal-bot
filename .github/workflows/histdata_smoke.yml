@@ -24,8 +24,8 @@ jobs:
           key: histdata-raw-${{ matrix.pair }}-v1
           restore-keys: histdata-raw-${{ matrix.pair }}-
 
-      - name: Download ${{ matrix.pair }}
-        env: { PAIR: "${{ matrix.pair }}" }
+            - name: Download ${{ matrix.pair }}
+        env: { PAIR: "${{ matrix.pair }}", TEST_MODE: "false" }
         run: python scripts/download_histdata.py
 
       - name: Save raw cache ${{ matrix.pair }}
