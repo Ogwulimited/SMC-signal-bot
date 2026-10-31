@@ -9,6 +9,19 @@ PAIRS = [
     "audcad", "audchf", "audnzd", "nzdjpy", "nzdcad", "nzdchf", "cadjpy", "cadchf", "chfjpy"
 ]
 
+PAIR_GROUPS = {
+    "eurusd": "usd_major", "gbpusd": "usd_major", "usdjpy": "usd_major", "audusd": "usd_major",
+    "usdcad": "usd_major", "usdchf": "usd_major", "nzdusd": "usd_major",
+    "eurgbp": "eur_cross", "eurjpy": "eur_cross", "eurchf": "eur_cross", "eurcad": "eur_cross",
+    "euraud": "eur_cross", "eurnzd": "eur_cross",
+    "gbpchf": "gbp_cross", "gbpcad": "gbp_cross", "gbpaud": "gbp_cross", "gbpnzd": "gbp_cross",
+    "audjpy": "jpy_cross", "gbpjpy": "jpy_cross", "nzdjpy": "jpy_cross", "cadjpy": "jpy_cross", "chfjpy": "jpy_cross",
+    "audcad": "commodity_cross", "audchf": "commodity_cross", "audnzd": "commodity_cross",
+    "nzdcad": "commodity_cross", "nzdchf": "commodity_cross", "cadchf": "commodity_cross"
+}
+
+PAIR_COHORTS = {p: ("original_11" if p in PAIRS[:11] else "new_17") for p in PAIRS}
+
 GRANULARITY = 900
 ATR_PERIOD = 14
 
