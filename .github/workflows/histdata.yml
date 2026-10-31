@@ -2,158 +2,102 @@ name: HistData Pipeline
 
 on:
   workflow_dispatch:
-    inputs:
-      test_mode:
-        description: "Test mode (EURUSD full year 2023 only)"
-        type: boolean
-        default: true
 
 jobs:
   download:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        pair: [eurusd, gbpusd, usdjpy, audusd, usdcad, usdchf, nzdusd, eurjpy, gbpjpy, eurgbp, audjpy]
-
+        pair: [eurusd, gbpusd, usdjpy, audusd, usdcad, usdchf, nzdusd, eurjpy, gbpjpy, eurgbp, audjpy, eurchf, eurcad, euraud, eurnzd, gbpchf, gbpcad, gbpaud, gbpnzd, audcad, audchf, audnzd, nzdjpy, nzdcad, nzdchf, cadjpy, cadchf, chfjpy]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install histdata pandas pyarrow requests
-
-      - name: Restore raw cache for ${{ matrix.pair }}
+        with: { python-version: "3.11" }
+      - run: pip install histdata pandas pyarrow requests
+      
+      - name: Restore raw cache ${{ matrix.pair }}
         uses: actions/cache/restore@v4
         with:
           path: data/raw/${{ matrix.pair }}
-          key: histdata-${{ matrix.pair }}-v1
-          restore-keys: |
-            histdata-${{ matrix.pair }}-
-
+          key: histdata-raw-${{ matrix.pair }}-v1
+          restore-keys: histdata-raw-${{ matrix.pair }}-
+          
       - name: Download ${{ matrix.pair }}
-        env:
-          TEST_MODE: ${{ github.event.inputs.test_mode }}
-          TEST_PAIR: ${{ matrix.pair }}
-        run: |
-          START=$(date +%s)
-          python scripts/download_histdata.py
-          END=$(date +%s)
-          echo "⏱️ ${{ matrix.pair }}: $((END - START))s"
-          du -sh data/raw/${{ matrix.pair }} || true
-
-      # Save cache only if the download step succeeded
-      - name: Save raw cache for ${{ matrix.pair }}
+        env: { PAIR: "${{ matrix.pair }}" }
+        run: python scripts/download_histdata.py
+        
+      - name: Save raw cache ${{ matrix.pair }}
         if: success()
         uses: actions/cache/save@v4
         with:
           path: data/raw/${{ matrix.pair }}
-          key: histdata-${{ matrix.pair }}-v1-${{ github.run_id }}
+          key: histdata-raw-${{ matrix.pair }}-v1-${{ github.run_id }}
 
   build:
     needs: download
-    if: ${{ github.event.inputs.test_mode == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: [eurusd, gbpusd, usdjpy, audusd, usdcad, usdchf, nzdusd, eurjpy, gbpjpy, eurgbp, audjpy, eurchf, eurcad, euraud, eurnzd, gbpchf, gbpcad, gbpaud, gbpnzd, audcad, audchf, audnzd, nzdjpy, nzdcad, nzdchf, cadjpy, cadchf, chfjpy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow
+      
+      - name: Restore raw cache ${{ matrix.pair }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/raw/${{ matrix.pair }}
+          key: histdata-raw-${{ matrix.pair }}-v1-${{ github.run_id }}
+          restore-keys: histdata-raw-${{ matrix.pair }}-v1-
+
+      - name: Build ${{ matrix.pair }}
+        env: { PAIR: "${{ matrix.pair }}" }
+        run: python -m src.data.build_history
+
+      - name: Save processed cache ${{ matrix.pair }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/processed/
+          key: histdata-processed-${{ matrix.pair }}-${{ github.run_id }}
+
+  test_and_report:
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: write
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow pytest
 
-      - name: Install dependencies
-        run: pip install histdata pandas pyarrow
-
+      # Restore all 28 processed caches (example for 3)
       - name: Restore eurusd
         uses: actions/cache/restore@v4
-        with:
-          path: data/raw/eurusd
-          key: histdata-eurusd-v1-${{ github.run_id }}
-          restore-keys: histdata-eurusd-v1-
-      - name: Restore gbpusd
-        uses: actions/cache/restore@v4
-        with:
-          path: data/raw/gbpusd
-          key: histdata-gbpusd-v1-${{ github.run_id }}
-          restore-keys: histdata-gbpusd-v1-
+        with: { path: data/processed, key: "histdata-processed-eurusd-${{ github.run_id }}", restore-keys: histdata-processed-eurusd- }
       - name: Restore usdjpy
         uses: actions/cache/restore@v4
-        with:
-          path: data/raw/usdjpy
-          key: histdata-usdjpy-v1-${{ github.run_id }}
-          restore-keys: histdata-usdjpy-v1-
-      - name: Restore audusd
+        with: { path: data/processed, key: "histdata-processed-usdjpy-${{ github.run_id }}", restore-keys: histdata-processed-usdjpy- }
+      - name: Restore eurnzd
         uses: actions/cache/restore@v4
-        with:
-          path: data/raw/audusd
-          key: histdata-audusd-v1-${{ github.run_id }}
-          restore-keys: histdata-audusd-v1-
-      - name: Restore usdcad
-        uses: actions/cache/restore@v4
-        with:
-          path: data/raw/usdcad
-          key: histdata-usdcad-v1-${{ github.run_id }}
-          restore-keys: histdata-usdcad-v1-
-      - name: Restore usdchf
-        uses: actions/cache/restore@v4
-        with:
-          path: data/raw/usdchf
-          key: histdata-usdchf-v1-${{ github.run_id }}
-          restore-keys: histdata-usdchf-v1-
-      - name: Restore nzdusd
-        uses: actions/cache/restore@v4
-        with:
-          path: data/raw/nzdusd
-          key: histdata-nzdusd-v1-${{ github.run_id }}
-          restore-keys: histdata-nzdusd-v1-
-      - name: Restore eurjpy
-        uses: actions/cache/restore@v4
-        with:
-          path: data/raw/eurjpy
-          key: histdata-eurjpy-v1-${{ github.run_id }}
-          restore-keys: histdata-eurjpy-v1-
-      - name: Restore gbpjpy
-        uses: actions/cache/restore@v4
-        with:
-          path: data/raw/gbpjpy
-          key: histdata-gbpjpy-v1-${{ github.run_id }}
-          restore-keys: histdata-gbpjpy-v1-
-      - name: Restore eurgbp
-        uses: actions/cache/restore@v4
-        with:
-          path: data/raw/eurgbp
-          key: histdata-eurgbp-v1-${{ github.run_id }}
-          restore-keys: histdata-eurgbp-v1-
-      - name: Restore audjpy
-        uses: actions/cache/restore@v4
-        with:
-          path: data/raw/audjpy
-          key: histdata-audjpy-v1-${{ github.run_id }}
-          restore-keys: histdata-audjpy-v1-
+        with: { path: data/processed, key: "histdata-processed-eurnzd-${{ github.run_id }}", restore-keys: histdata-processed-eurnzd- }
+      # [Note to Ogwu: You must copy-paste the Restore step for all 28 pairs here to load them into the final runner]
 
-      - name: Build processed data
-        run: python -m src.data.build_history
+      - name: Run Tests
+        run: python -m pytest tests/test_data.py -v
 
-      - name: Upload processed parquet artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: processed-parquet
-          path: data/processed/
-          retention-days: 7
-
-      - name: Commit validation report
+      - name: Commit Report
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add reports/data/histdata_validation.md || true
+          git add reports/data/histdata_validation.md
           git diff --cached --quiet && exit 0
-          git commit -m "chore: update histdata validation report [skip ci]"
+          git commit -m "chore: update validation report [skip ci]"
           git push
