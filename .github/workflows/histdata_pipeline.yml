@@ -82,6 +82,8 @@ jobs:
         with: { path: data/raw/audjpy, key: "histdata-raw-audjpy-v1-${{ github.run_id }}", restore-keys: histdata-raw-audjpy-v1- }
 
       - name: Build Data
+        env:
+          PAIRS_OVERRIDE: "eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eurgbp,audjpy"
         run: python -m src.data.build_history
 
       - name: Run Tests
