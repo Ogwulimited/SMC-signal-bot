@@ -78,17 +78,94 @@ jobs:
         with: { python-version: "3.11" }
       - run: pip install pandas pyarrow pytest
 
-      # Restore all 28 processed caches (example for 3)
       - name: Restore eurusd
         uses: actions/cache/restore@v4
         with: { path: data/processed, key: "histdata-processed-eurusd-${{ github.run_id }}", restore-keys: histdata-processed-eurusd- }
+      - name: Restore gbpusd
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-gbpusd-${{ github.run_id }}", restore-keys: histdata-processed-gbpusd- }
       - name: Restore usdjpy
         uses: actions/cache/restore@v4
         with: { path: data/processed, key: "histdata-processed-usdjpy-${{ github.run_id }}", restore-keys: histdata-processed-usdjpy- }
+      - name: Restore audusd
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-audusd-${{ github.run_id }}", restore-keys: histdata-processed-audusd- }
+      - name: Restore usdcad
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-usdcad-${{ github.run_id }}", restore-keys: histdata-processed-usdcad- }
+      - name: Restore usdchf
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-usdchf-${{ github.run_id }}", restore-keys: histdata-processed-usdchf- }
+      - name: Restore nzdusd
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-nzdusd-${{ github.run_id }}", restore-keys: histdata-processed-nzdusd- }
+      - name: Restore eurjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-eurjpy-${{ github.run_id }}", restore-keys: histdata-processed-eurjpy- }
+      - name: Restore gbpjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-gbpjpy-${{ github.run_id }}", restore-keys: histdata-processed-gbpjpy- }
+      - name: Restore eurgbp
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-eurgbp-${{ github.run_id }}", restore-keys: histdata-processed-eurgbp- }
+      - name: Restore audjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-audjpy-${{ github.run_id }}", restore-keys: histdata-processed-audjpy- }
+      - name: Restore eurchf
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-eurchf-${{ github.run_id }}", restore-keys: histdata-processed-eurchf- }
+      - name: Restore eurcad
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-eurcad-${{ github.run_id }}", restore-keys: histdata-processed-eurcad- }
+      - name: Restore euraud
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-euraud-${{ github.run_id }}", restore-keys: histdata-processed-euraud- }
       - name: Restore eurnzd
         uses: actions/cache/restore@v4
         with: { path: data/processed, key: "histdata-processed-eurnzd-${{ github.run_id }}", restore-keys: histdata-processed-eurnzd- }
-      # [Note to Ogwu: You must copy-paste the Restore step for all 28 pairs here to load them into the final runner]
+      - name: Restore gbpchf
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-gbpchf-${{ github.run_id }}", restore-keys: histdata-processed-gbpchf- }
+      - name: Restore gbpcad
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-gbpcad-${{ github.run_id }}", restore-keys: histdata-processed-gbpcad- }
+      - name: Restore gbpaud
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-gbpaud-${{ github.run_id }}", restore-keys: histdata-processed-gbpaud- }
+      - name: Restore gbpnzd
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-gbpnzd-${{ github.run_id }}", restore-keys: histdata-processed-gbpnzd- }
+      - name: Restore audcad
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-audcad-${{ github.run_id }}", restore-keys: histdata-processed-audcad- }
+      - name: Restore audchf
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-audchf-${{ github.run_id }}", restore-keys: histdata-processed-audchf- }
+      - name: Restore audnzd
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-audnzd-${{ github.run_id }}", restore-keys: histdata-processed-audnzd- }
+      - name: Restore nzdjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-nzdjpy-${{ github.run_id }}", restore-keys: histdata-processed-nzdjpy- }
+      - name: Restore nzdcad
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-nzdcad-${{ github.run_id }}", restore-keys: histdata-processed-nzdcad- }
+      - name: Restore nzdchf
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-nzdchf-${{ github.run_id }}", restore-keys: histdata-processed-nzdchf- }
+      - name: Restore cadjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-cadjpy-${{ github.run_id }}", restore-keys: histdata-processed-cadjpy- }
+      - name: Restore cadchf
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-cadchf-${{ github.run_id }}", restore-keys: histdata-processed-cadchf- }
+      - name: Restore chfjpy
+        uses: actions/cache/restore@v4
+        with: { path: data/processed, key: "histdata-processed-chfjpy-${{ github.run_id }}", restore-keys: histdata-processed-chfjpy- }
+
+      - name: Aggregate Report
+        env: { PYTHONPATH: "." }
+        run: python scripts/aggregate_report.py
 
       - name: Run Tests
         run: python -m pytest tests/test_data.py -v
