@@ -86,6 +86,9 @@ jobs:
           PAIRS_OVERRIDE: "eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eurgbp,audjpy"
         run: python -m src.data.build_history
 
+      - name: Diagnose 2023 Gap (temporary)
+        run: python scripts/diag_2023_gap.py
+
       - name: Run Tests
         run: pytest tests/test_data.py -v
 
