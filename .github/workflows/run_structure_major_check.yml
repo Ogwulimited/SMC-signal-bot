@@ -1,0 +1,23 @@
+name: Structure major check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install packages
+        run: pip install pandas numpy pytest
+
+      - name: Run structure_major tests
+        env:
+          PYTHONPATH: .
+        run: python -m pytest tests/test_structure_major.py -v
