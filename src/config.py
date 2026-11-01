@@ -51,6 +51,12 @@ SWEEP_RECLAIM_WINDOW = 3
 REPORTS_DIR = "reports"
 D1_SWING_N = 3
 
+# --- Practice / exam split (LOCKED, never move) ---
+# Practice years: 2016-01-03 up to (not including) PRACTICE_END -- free tuning.
+# Exam years: PRACTICE_END onward -- sealed, run once per locked strategy version.
+# The Phase 4 practice runner only loads bars that have fully CLOSED by this time.
+PRACTICE_END = "2022-07-01"
+
 # --- Phase 4: assumed typical retail spreads (NOT real broker data) ---
 # Values are in raw price units (already pip-size-adjusted per pair),
 # i.e. directly comparable to price differences in OHLC data.
