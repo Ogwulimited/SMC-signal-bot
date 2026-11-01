@@ -3,18 +3,26 @@ Phase 4 per-pair runner (PRACTICE YEARS ONLY).
 
 Walks one pair from the start of its data up to config.PRACTICE_END, driving
 PairSetup exactly as tests/diag_phase4_walkforward_onepair.py does, and writes
-the full attempt log (every resolved episode, tagged with status) to
-data/phase4/{pair}_trades.csv.
+the full attempt log to data/phase4/{pair}_trades.csv.
 
 Rules baked in:
   - Practice window only: a bar is loaded only if it has fully CLOSED by
-    PRACTICE_END (so no D1/H4/H1 bar ever contains exam-period data).
-  - Stacking: a new setup is taken even if an earlier trade on the pair is
-    still open. Each trade runs to its own stop / T1 / T2 / time stop.
-    `open_at_entry` records how many earlier trades were still running.
-  - Net R = gross R - spread_cost_r (spread paid on every trade).
-  - Trades whose 48-bar time stop would run past PRACTICE_END are flagged
-    `truncated_by_cutoff` (closed early by the data edge, not by the rules).
+    PRACTICE_END, so no bar ever contains exam-period data.
+  - Stacking simulation: every valid setup is taken, even if an earlier trade
+    on the pair is still open. One-at-a-time scorecards are derived from the
+    same trades via kept_1at_t1 / kept_1at_t2 flags (kept = no earlier KEPT
+    trade on that track was still open at entry).
+  - NO TIME STOP (practice experiment): each trade is followed until stop or
+    target, or until the practice cutoff. A trade unresolved at the cutoff is
+    labelled open_at_cutoff and excluded from win rate / R (we never peek
+    past the cutoff). The old 48-bar time-stop results are kept as ts48_*
+    side columns for comparison.
+  - T1 track = trades with a qualifying T1 (headline). T2 track = all opened
+    trades, fixed 3R target.
+  - Net R = gross R - spread_cost_r.
+  - Same-candle rule: stop wins if stop and target are touched on one bar.
+  - Bias-flip tag: open trades are NOT managed. Each trade is tagged with
+    whether the HTF bias flipped while it was open (flip_while_open_t1/t2).
 
 Usage (repo root):  PAIR=eurusd python -m src.research.run_phase4
 """
@@ -37,6 +45,25 @@ TF_M15 = pd.Timedelta(minutes=15)
 ROOT = Path(__file__).resolve().parent.parent.parent
 PROCESSED_DIR = ROOT / "data" / "processed"
 OUT_DIR = ROOT / "data" / "phase4"
+
+FAR = pd.Timestamp("2262-01-01", tz="UTC")  # "still open" sentinel for overlap math
+
+_BIAS_ATTRS = ("bias", "htf_bias", "d1_bias", "bias_direction")
+
+
+def _get_bias(ps):
+    for a in _BIAS_ATTRS:
+        v = getattr(ps, a, None)
+        if v is not None:
+            return v
+    return None
+
+
+def _bias_attr_name(ps):
+    for a in _BIAS_ATTRS:
+        if getattr(ps, a, None) is not None:
+            return a
+    return None
 
 
 def _closed_before(df, tf, cutoff):
@@ -62,11 +89,92 @@ def _load(pair, cutoff):
     return frames["d1"], frames["h4"], frames["h1"], frames["m15"], bad_days
 
 
-def _held_until(t):
-    """When this trade stops being open: T1 exit if T1 qualified, else T2 exit."""
-    if not t.get("skipped_no_t1") and pd.notna(t.get("exit_time_t1")):
-        return t["exit_time_t1"]
-    return t.get("exit_time_t2")
+def _scan_to_resolution(m15_close_idx, m15_high, m15_low, entry_time, direction,
+                        stop_price, target_price):
+    """
+    Follow a trade bar by bar (M15) from just after entry until stop or target.
+    No time stop. Same-candle rule: stop wins ties.
+    Returns dict(exit_reason, exit_time, exit_price) or None if unresolved by
+    the end of the loaded (practice-window) data.
+    """
+    bull = direction == "bullish"
+    start = int(m15_close_idx.searchsorted(entry_time, side="right"))
+    if start >= len(m15_high):
+        return None
+    h = m15_high[start:]
+    l = m15_low[start:]
+    stop_mask = (l <= stop_price) if bull else (h >= stop_price)
+    has_target = target_price is not None and pd.notna(target_price)
+    if has_target:
+        tgt_mask = (h >= target_price) if bull else (l <= target_price)
+    else:
+        tgt_mask = np.zeros(len(h), dtype=bool)
+
+    s_i = int(np.argmax(stop_mask)) if stop_mask.any() else None
+    t_i = int(np.argmax(tgt_mask)) if tgt_mask.any() else None
+    if s_i is None and t_i is None:
+        return None
+    if t_i is None or (s_i is not None and s_i <= t_i):
+        return {"exit_reason": "stop", "exit_time": m15_close_idx[start + s_i], "exit_price": stop_price}
+    return {"exit_reason": "target", "exit_time": m15_close_idx[start + t_i], "exit_price": target_price}
+
+
+def _rescan_no_time_stop(rec, m15_close_idx, m15_high, m15_low):
+    """
+    Move the 48-bar results from build_trade_from_setup to ts48_* columns,
+    then compute the no-time-stop outcome for each track.
+    """
+    sc = rec.get("spread_cost_r")
+    entry_time = rec["entry_time"]
+    entry_price = rec["entry_price"]
+    stop_price = rec["stop_price"]
+    risk_r = rec["risk_r"]
+    direction = rec["direction"]
+
+    for k in ("t1", "t2"):
+        for f in ("exit_reason", "exit_time", "exit_price", "r_result"):
+            rec[f"ts48_{f}_{k}"] = rec.pop(f"{f}_{k}", None)
+        r48 = rec.get(f"ts48_r_result_{k}")
+        ok48 = r48 is not None and pd.notna(r48) and sc is not None and pd.notna(sc)
+        rec[f"ts48_net_r_{k}"] = (r48 - sc) if ok48 else np.nan
+
+        # defaults (also used when the track does not apply)
+        rec[f"outcome_{k}"] = None
+        rec[f"exit_reason_{k}"] = None
+        rec[f"exit_time_{k}"] = pd.NaT
+        rec[f"exit_price_{k}"] = np.nan
+        rec[f"r_result_{k}"] = np.nan
+        rec[f"net_r_{k}"] = np.nan
+        rec[f"dur_hours_{k}"] = np.nan
+
+        if k == "t1" and rec.get("skipped_no_t1"):
+            continue
+        target = rec.get("t1_target_price") if k == "t1" else rec.get("t2_target_price")
+        res = _scan_to_resolution(m15_close_idx, m15_high, m15_low, entry_time,
+                                  direction, stop_price, target)
+        if res is None:
+            rec[f"outcome_{k}"] = "open_at_cutoff"
+            rec[f"exit_reason_{k}"] = "open_at_cutoff"
+            continue
+        r = simulate.compute_r_result(entry_price, res["exit_price"], direction, risk_r)
+        rec[f"outcome_{k}"] = res["exit_reason"]
+        rec[f"exit_reason_{k}"] = res["exit_reason"]
+        rec[f"exit_time_{k}"] = res["exit_time"]
+        rec[f"exit_price_{k}"] = res["exit_price"]
+        rec[f"r_result_{k}"] = r
+        rec[f"net_r_{k}"] = (r - sc) if (sc is not None and pd.notna(sc)) else np.nan
+        rec[f"dur_hours_{k}"] = (res["exit_time"] - entry_time).total_seconds() / 3600.0
+
+
+def _held_until(t, k):
+    """When this trade stops being open on track k. None = trade not on this track."""
+    out = t.get(f"outcome_{k}")
+    if out is None:
+        return None
+    if out == "open_at_cutoff":
+        return FAR
+    et = t.get(f"exit_time_{k}")
+    return FAR if (et is None or pd.isna(et)) else et
 
 
 def run_pair(pair):
@@ -99,7 +207,14 @@ def run_pair(pair):
     h1_high = h1_df["high"].to_numpy()
     d1_low = d1_df["low"].to_numpy()
     d1_high = d1_df["high"].to_numpy()
+    m15_high = m15_df["high"].to_numpy()
+    m15_low = m15_df["low"].to_numpy()
+    m15_close_idx = pd.DatetimeIndex(m15_df["timestamp"] + TF_M15)
     n_d1, n_h1, n_m15 = len(d1_ts), len(h1_ts), len(m15_ts)
+
+    bias_events = []          # D1 close times at which bias changed between two real values
+    prev_bias = _get_bias(ps)
+    bias_attr_seen = None
 
     d1_ptr, h1_ptr = 0, 0
     progress_every = 20000
@@ -117,6 +232,14 @@ def run_pair(pair):
             else:
                 cur_low, cur_high = d1_low[d1_ptr], d1_high[d1_ptr]
             ps.on_d1_close(d1_slice, d1z_slice, h4z_slice, cur_low, cur_high)
+
+            b = _get_bias(ps)
+            if bias_attr_seen is None:
+                bias_attr_seen = _bias_attr_name(ps)
+            if b != prev_bias:
+                if prev_bias is not None and b is not None:
+                    bias_events.append(d1_close_time)
+                prev_bias = b
             d1_ptr += 1
 
         while h1_ptr < n_h1 and (h1_ts[h1_ptr] + TF_H1) <= now:
@@ -137,31 +260,42 @@ def run_pair(pair):
                 rec = simulate.build_trade_from_setup(
                     ps, pair, h1_df, m15_df, pools_full, TF_H1, TF_M15
                 )
-                # Net R = gross R - spread paid (in R)
-                sc = rec.get("spread_cost_r")
-                for k in ("t1", "t2"):
-                    r = rec.get(f"r_result_{k}")
-                    ok = r is not None and pd.notna(r) and sc is not None and pd.notna(sc)
-                    rec[f"net_r_{k}"] = (r - sc) if ok else np.nan
-                et = rec.get("entry_time")
-                rec["truncated_by_cutoff"] = bool(
-                    et is not None and pd.notna(et) and et + config.TIME_STOP_H1_BARS * TF_H1 > cutoff
-                )
+                if rec.get("status") == "opened":
+                    _rescan_no_time_stop(rec, m15_close_idx, m15_high, m15_low)
                 trades.append(rec)
 
         if m_i and m_i % progress_every == 0:
             print(f"[{pair}] {m_i}/{n_m15} m15 bars, {len(trades)} attempts, "
                   f"{time.time() - t0:.0f}s elapsed", flush=True)
 
-    # Stacking diagnostic: how many earlier trades were still open at each entry
-    opened = [t for t in trades if t.get("status") == "opened"]
-    for i, t in enumerate(opened):
-        n = 0
-        for j in range(i):
-            held = _held_until(opened[j])
-            if held is not None and pd.notna(held) and held > t["entry_time"]:
-                n += 1
-        t["open_at_entry"] = n
+    if bias_attr_seen is None:
+        print(f"[{pair}] WARNING: no bias attribute found on PairSetup "
+              f"(tried {_BIAS_ATTRS}); flip tags will be empty.", flush=True)
+    else:
+        print(f"[{pair}] bias attribute: ps.{bias_attr_seen}; bias flips seen: {len(bias_events)}", flush=True)
+
+    # ---- Per-track stacking / one-at-a-time / flip tagging ----
+    opened = sorted([t for t in trades if t.get("status") == "opened"],
+                    key=lambda t: t["entry_time"])
+    for k in ("t1", "t2"):
+        track = [t for t in opened if _held_until(t, k) is not None]
+        last_free = None
+        for i, t in enumerate(track):
+            et = t["entry_time"]
+            held = _held_until(t, k)
+            n_open = sum(1 for j in range(i) if _held_until(track[j], k) > et)
+            t[f"open_at_entry_{k}"] = n_open
+            if last_free is None or et >= last_free:
+                t[f"kept_1at_{k}"] = True
+                last_free = held
+            else:
+                t[f"kept_1at_{k}"] = False
+            t[f"flip_while_open_{k}"] = bool(any(et < e <= held for e in bias_events)) if bias_attr_seen else None
+        for t in opened:
+            if _held_until(t, k) is None:
+                t[f"open_at_entry_{k}"] = None
+                t[f"kept_1at_{k}"] = False
+                t[f"flip_while_open_{k}"] = None
 
     elapsed = time.time() - t0
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -169,35 +303,37 @@ def run_pair(pair):
     df.to_csv(OUT_DIR / f"{pair}_trades.csv", index=False)
 
     statuses = df["status"].value_counts().to_dict() if len(df) else {}
-    t1_ok = 0
-    mean_t1 = mean_t2 = float("nan")
-    max_stack = 0
-    trunc = 0
+    lines = [
+        f"### Phase 4 practice run: {pair}",
+        f"- Window: start of data to {config.PRACTICE_END} (bars fully closed only), NO time stop",
+        f"- Attempts logged: {len(df)}  |  Status: {statuses}",
+        f"- Bias attribute: {bias_attr_seen}  |  bias flips seen: {len(bias_events)}",
+    ]
     if opened:
         od = pd.DataFrame(opened)
-        q = od[od["skipped_no_t1"] == False]
-        t1_ok = len(q)
-        if t1_ok:
-            mean_t1 = q["net_r_t1"].mean()
-        mean_t2 = od["net_r_t2"].mean()
-        max_stack = int(od["open_at_entry"].max())
-        trunc = int(od["truncated_by_cutoff"].sum())
-
-    summary = (
-        f"### Phase 4 practice run: {pair}\n"
-        f"- Window: start of data to {config.PRACTICE_END} (bars fully closed only)\n"
-        f"- Attempts logged: {len(df)}  |  Status: {statuses}\n"
-        f"- Opened with a qualifying T1: {t1_ok}\n"
-        f"- Mean net R per trade: T1 headline = {mean_t1:.3f}, T2 (fixed 3R) = {mean_t2:.3f}\n"
-        f"- Max trades already open at an entry (stacking): {max_stack}\n"
-        f"- Trades truncated by the cutoff: {trunc}\n"
-        f"- Run time: {elapsed:.0f}s\n"
-    )
+        for k, label in (("t1", "T1 (headline, qualifying T1 only)"), ("t2", "T2 (fixed 3R, all opened)")):
+            tr = od[od[f"outcome_{k}"].notna()]
+            res = tr[tr[f"outcome_{k}"].isin(["target", "stop"])]
+            n_win = int((res[f"outcome_{k}"] == "target").sum())
+            kept = res[res[f"kept_1at_{k}"].fillna(False).astype(bool)]
+            lines += [
+                f"- **{label}**: trades={len(tr)}, resolved={len(res)}, "
+                f"open_at_cutoff={int((tr[f'outcome_{k}'] == 'open_at_cutoff').sum())}",
+                f"  - Stacking: wins={n_win}, mean net R={res[f'net_r_{k}'].mean():.3f}, "
+                f"sum net R={res[f'net_r_{k}'].sum():.2f}, max already-open at entry="
+                f"{int(tr[f'open_at_entry_{k}'].max())}",
+                f"  - One-at-a-time: trades={len(kept)}, mean net R={kept[f'net_r_{k}'].mean():.3f}, "
+                f"sum net R={kept[f'net_r_{k}'].sum():.2f}",
+                f"  - Duration (hours): median={res[f'dur_hours_{k}'].median():.1f}, "
+                f"mean={res[f'dur_hours_{k}'].mean():.1f}, max={res[f'dur_hours_{k}'].max():.1f}",
+            ]
+    lines.append(f"- Run time: {elapsed:.0f}s\n")
+    summary = "\n".join(lines)
     print("\n" + summary, flush=True)
     gh = os.environ.get("GITHUB_STEP_SUMMARY")
     if gh:
         with open(gh, "a") as f:
-            f.write(summary)
+            f.write(summary + "\n")
     return df
 
 
