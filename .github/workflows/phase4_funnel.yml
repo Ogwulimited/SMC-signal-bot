@@ -1,0 +1,49 @@
+name: Phase 4 Funnel Diagnostic (Practice Years)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pair:
+        description: "Pair to diagnose"
+        type: string
+        default: "eurusd"
+      start_year:
+        description: "Window start year (must be 2016-2021)"
+        type: string
+        default: "2019"
+      years:
+        description: "Number of years in window (window must end by 2022-07-01)"
+        type: string
+        default: "1"
+
+jobs:
+  funnel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow numpy
+
+      - name: Restore processed data
+        uses: actions/cache/restore@v4
+        with:
+          path: data/processed
+          key: histdata-processed-${{ inputs.pair }}-nomatch
+          restore-keys: histdata-processed-${{ inputs.pair }}-
+
+      - name: Verify data present
+        env: { PAIR: "${{ inputs.pair }}" }
+        run: |
+          for f in d1 h4 h1 m15; do
+            test -f "data/processed/${PAIR}_${f}.parquet" || { echo "MISSING processed data: ${PAIR}_${f}.parquet (cache expired? re-run the data pipeline)"; exit 1; }
+          done
+
+      - name: Run funnel diagnostic
+        env:
+          PYTHONPATH: "."
+          PAIR: ${{ inputs.pair }}
+          START_YEAR: ${{ inputs.start_year }}
+          YEARS: ${{ inputs.years }}
+        run: python tests/diag_phase4_funnel.py
