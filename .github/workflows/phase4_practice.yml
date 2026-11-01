@@ -1,0 +1,67 @@
+name: Phase 4 Practice Run (Stacking, No Time Stop)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke = eurusd only (timing check); full = all 28 pairs"
+        type: choice
+        options: [smoke, full]
+        default: smoke
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      pairs: ${{ steps.pick.outputs.pairs }}
+    steps:
+      - name: Pick pair list
+        id: pick
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          if [ "$MODE" = "full" ]; then
+            CSV="eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eurgbp,audjpy,eurchf,eurcad,euraud,eurnzd,gbpchf,gbpcad,gbpaud,gbpnzd,audcad,audchf,audnzd,nzdjpy,nzdcad,nzdchf,cadjpy,cadchf,chfjpy"
+          else
+            CSV="eurusd"
+          fi
+          echo "pairs=$(echo "$CSV" | jq -R -c 'split(",")')" >> "$GITHUB_OUTPUT"
+
+  simulate:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: ${{ fromJSON(needs.plan.outputs.pairs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow numpy
+
+      - name: Restore processed data ${{ matrix.pair }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/processed
+          key: histdata-processed-${{ matrix.pair }}-nomatch
+          restore-keys: histdata-processed-${{ matrix.pair }}-
+
+      - name: Verify data present ${{ matrix.pair }}
+        run: |
+          for f in d1 h4 h1 m15; do
+            test -f "data/processed/${{ matrix.pair }}_${f}.parquet" || { echo "MISSING processed data: ${{ matrix.pair }}_${f}.parquet (cache expired? re-run the data pipeline)"; exit 1; }
+          done
+
+      - name: Run Phase 4 ${{ matrix.pair }}
+        env: { PAIR: "${{ matrix.pair }}" }
+        run: python -m src.research.run_phase4
+
+      - name: Upload trade log ${{ matrix.pair }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: trades-${{ matrix.pair }}
+          path: data/phase4/${{ matrix.pair }}_trades.csv
+          retention-days: 14
+          if-no-files-found: error
