@@ -96,3 +96,21 @@ SPREAD_PRICE = {
 MAX_SPREAD_RISK_RATIO = 0.15
 MIN_TARGET_R = 3.0
 TIME_STOP_H1_BARS = 48
+
+# ======================================================================
+# Phase 4 rebuild (SMC cycle engine) -- ADDITIONS ONLY, nothing above changed
+# ======================================================================
+STOP_BUFFER_ATR = 0.2          # stop = far edge -/+ 0.2 x ATR(H1,14) (replaces the old 0.1)
+H4_SWING_N = 2                 # candles each side for H4 swings
+LTF_TF = "M15"                 # lower timeframe of the cycle
+LTF_SWING_N = 2                # candles each side for M15 swings
+BIAS_FIRST_READ_SWINGS = 5     # counted swings for the first read of bias
+RR_STATIC = 3.0                # static target = 3R
+
+# --- Switches (defaults; each one is measured, not guessed) ---
+TRADE_USED_POIS = False            # False = fresh POIs only; True = used POIs may trade too
+PULLBACK_SELL_REQUIRES_FVG = False # FVG not needed for the pullback sell
+OB_NO_IDM_REQUIRES_FVG = True      # OB entry without inducement needs an FVG in the CHoCH leg
+LTF_STACK_ENTRIES = False          # LTF stack-breaker buys: off by default, measured
+ALLOW_STACKING = True              # several zone buys may be open at once
+WRONG_COLOUR_SEARCH_DIRECTION = "back"  # assumption 21: look back for the right-colour candle
