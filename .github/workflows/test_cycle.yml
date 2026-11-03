@@ -1,0 +1,29 @@
+name: test_cycle
+
+on:
+  workflow_dispatch:
+
+jobs:
+  guard-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install pandas pyarrow numpy pytest
+
+      - name: Lookahead ban (grep)
+        run: python scripts/check_lookahead_ban.py
+
+      - name: Guard tests (prints the poison and canary results)
+        run: >
+          python -m pytest -v -s
+          tests/test_lookahead_guard.py
+          tests/test_structure_incremental.py
+          tests/test_poison_canary.py
+          tests/test_ban_script.py
