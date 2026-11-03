@@ -17,13 +17,17 @@ jobs:
       - name: Install
         run: pip install pandas pyarrow numpy pytest
 
-      - name: Lookahead ban (grep)
+      - name: Lookahead ban scan
         run: python scripts/check_lookahead_ban.py
 
-      - name: Guard tests (prints the poison and canary results)
+      - name: Engine tests
         run: >
           python -m pytest -v -s
           tests/test_lookahead_guard.py
           tests/test_structure_incremental.py
           tests/test_poison_canary.py
           tests/test_ban_script.py
+          tests/test_poi.py
+          tests/test_fvg_atr.py
+          tests/test_bias.py
+          tests/test_map_pipeline.py
