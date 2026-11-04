@@ -39,6 +39,12 @@ def base_bars(mir):
             bar(2, 11.8, 12.0, 10.0, 10.2, mir), bar(3, 10.4, 13.0, 10.3, 12.9, mir)]
 
 
+def sell_a_bars(mir):
+    # bar 2 closed up (right colour for a sell), box 19.5 - 22.0; bar 3 is the BOS-down bar
+    return [bar(0, 23.0, 23.2, 22.4, 22.5, mir), bar(1, 22.5, 22.6, 21.4, 21.5, mir),
+            bar(2, 19.8, 22.0, 19.5, 21.0, mir), bar(3, 21.0, 21.2, 18.0, 18.2, mir)]
+
+
 @pytest.mark.parametrize("mir", [False, True])
 def test_box_is_the_swing_candle_wick_to_wick(mir):
     book = PoiBook("M15")
@@ -150,9 +156,12 @@ def test_the_breaker_stack_breakers_and_choch_poi(mir):
     assert a.state == "dead" and b.state == "dead"
     assert a.dead_time == b.dead_time == choch["time"]
     assert b.role == "the" and a.role == "stack"
+    assert b.breaker_for == choch["time"] and a.breaker_for is None
+    assert book.choch_breaker[choch["time"]] is b
     assert q.origin == "CHoCH" and q.role is None and q.state == "fresh"
     assert (q.low, q.high) == ((85.5, 87.0) if mir else (13.0, 14.5))
     assert book.counts["the_breaker"] == 1 and book.counts["no_the_breaker"] == 0
+    assert book.counts["breaker_dead_at"] == 1
     book.on_bar_close(bar(9, 22.5, 22.6, 12.0, 12.5, mir))       # the CHoCH's own POI breaks
     assert q.state == "dead" and q.is_breaker is False
     assert {p.id for p in book.breakers} == {a.id, b.id}
@@ -160,6 +169,85 @@ def test_the_breaker_stack_breakers_and_choch_poi(mir):
     assert kinds.count("poi_born") == 3 and kinds.count("poi_dead") == 3
     assert kinds.count("poi_the_breaker") == 1
     print("POI breakers: last BOS before the CHoCH = the breaker, other = stack, CHoCH POI = no entry")
+
+
+@pytest.mark.parametrize("mir", [False, True])
+def test_breaker_that_died_several_bars_before_the_choch(mir):
+    book = PoiBook("M15")
+    feed(book, sell_a_bars(mir))
+    a = book.on_event(ev("BOS", "down", 3, opp_i=2, mir=mir))
+    feed(book, [bar(4, 18.2, 23.0, 18.0, 22.5, mir),             # body closes above the box: dead
+                bar(5, 22.5, 22.6, 20.0, 20.5, mir)])            # closed down: right colour for a buy
+    book.on_bar_close(bar(6, 20.5, 23.5, 20.4, 23.0, mir))
+    choch = ev("CHoCH", "up", 6, opp_i=5, mir=mir)
+    q = book.on_event(choch)
+    assert a.state == "dead" and a.dead_time == T0 + 5 * M15
+    assert a.dead_time < choch["time"]
+    assert a.role == "the" and a.breaker_for == choch["time"]
+    assert book.choch_breaker[choch["time"]] is a
+    assert book.counts["breaker_dead_before"] == 1 and book.counts["the_breaker"] == 1
+    assert q is not None and q.origin == "CHoCH"
+
+
+@pytest.mark.parametrize("mir", [False, True])
+def test_breaker_still_alive_at_the_choch_keeps_the_role_when_it_dies(mir):
+    book = PoiBook("M15")
+    feed(book, sell_a_bars(mir))
+    a = book.on_event(ev("BOS", "down", 3, opp_i=2, mir=mir))
+    book.on_bar_close(bar(4, 18.2, 21.8, 18.1, 21.5, mir))       # body closes inside the box
+    choch = ev("CHoCH", "up", 4, opp_i=3, mir=mir)
+    book.on_event(choch)
+    assert a.state == "used" and a.role == "the"
+    assert book.counts["breaker_alive"] == 1 and a not in book.breakers
+    book.on_bar_close(bar(5, 21.5, 23.0, 21.4, 22.5, mir))       # body closes beyond the far edge
+    assert a.state == "dead" and a.role == "the"
+    assert a in book.breakers and a.breaker_for == choch["time"]
+
+
+@pytest.mark.parametrize("mir", [False, True])
+def test_choch_with_no_bos_box_before_it_has_no_breaker(mir):
+    book = PoiBook("M15")
+    feed(book, base_bars(mir))
+    choch = ev("CHoCH", "up", 3, opp_i=2, mir=mir)
+    q = book.on_event(choch)
+    assert q is not None and q.origin == "CHoCH"
+    assert book.choch_breaker[choch["time"]] is None
+    assert book.counts["no_the_breaker"] == 1 and book.counts["the_breaker"] == 0
+
+
+@pytest.mark.parametrize("mir", [False, True])
+def test_last_bos_without_a_box_means_no_breaker_not_an_older_box(mir):
+    book = PoiBook("M15")
+    feed(book, sell_a_bars(mir))
+    a = book.on_event(ev("BOS", "down", 3, opp_i=2, mir=mir))
+    book.on_bar_close(bar(4, 18.2, 18.5, 16.0, 16.2, mir))
+    assert book.on_event(ev("BOS", "down", 4, opp_i=None, mir=mir)) is None
+    book.on_bar_close(bar(5, 16.2, 23.0, 16.1, 22.5, mir))       # kills A
+    choch = ev("CHoCH", "up", 5, opp_i=4, mir=mir)
+    book.on_event(choch)
+    assert book.choch_breaker[choch["time"]] is None
+    assert a.role == "stack"
+    assert book.counts["no_opposite"] == 1 and book.counts["no_the_breaker"] == 1
+
+
+@pytest.mark.parametrize("mir", [False, True])
+def test_one_box_is_the_breaker_for_one_choch_only(mir):
+    book = PoiBook("M15")
+    feed(book, sell_a_bars(mir))
+    a = book.on_event(ev("BOS", "down", 3, opp_i=2, mir=mir))
+    book.on_bar_close(bar(4, 18.2, 23.0, 18.0, 22.5, mir))       # kills A
+    c1 = ev("CHoCH", "up", 4, opp_i=3, mir=mir)
+    book.on_event(c1)
+    book.on_bar_close(bar(5, 22.5, 22.6, 20.0, 20.5, mir))
+    c2 = ev("CHoCH", "down", 5, opp_i=4, mir=mir)                # no BOS up before it
+    book.on_event(c2)
+    book.on_bar_close(bar(6, 20.5, 24.0, 20.4, 23.5, mir))
+    c3 = ev("CHoCH", "up", 6, opp_i=5, mir=mir)                  # A is already used up
+    book.on_event(c3)
+    assert book.choch_breaker[c1["time"]] is a
+    assert book.choch_breaker[c2["time"]] is None
+    assert book.choch_breaker[c3["time"]] is None
+    assert book.counts["the_breaker"] == 1 and book.counts["no_the_breaker"] == 2
 
 
 def test_init_and_missing_opposite_make_no_poi():
