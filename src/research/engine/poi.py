@@ -9,9 +9,18 @@ States follow body closes only:
   fresh: no body has closed inside the box
   used:  a body closed inside the box (edges included)
   dead:  a body closed beyond the far edge (buy: below the low, sell: above the high)
-A dead BOS POI is a breaker. The BOS POI that dies on the same bar as a CHoCH
-(the last BOS before it) is "the" breaker, the others are "stack" breakers.
-A dead CHoCH-born POI is not a breaker.
+
+Breakers:
+  A dead BOS POI is a breaker.
+  Every CHoCH has "the" breaker: the POI of the last BOS before it, on the
+  opposite side (CHoCH down -> buy box of the last BOS up; CHoCH up -> sell box
+  of the last BOS down). The box may have died before the CHoCH bar, on it, or
+  may still be alive (the colour rule moved the box). Only a body close through
+  the box counts, never a wick. One box is "the" breaker for one CHoCH only.
+  Every other dead BOS POI is a "stack" breaker.
+  If the last BOS has no box, or its box was already used by an earlier CHoCH,
+  the CHoCH has no breaker (counted, never replaced by an older box).
+  A dead CHoCH-born POI is not a breaker.
 """
 from bisect import bisect_left
 from dataclasses import dataclass
@@ -43,7 +52,8 @@ class Poi:
     state: str = "fresh"
     used_time: object = None
     dead_time: object = None
-    role: object = None  # None, "the" or "stack" (breakers only)
+    role: object = None  # None, "the" or "stack" (BOS boxes only)
+    breaker_for: object = None  # time of the CHoCH this box is "the" breaker for
 
     @property
     def is_breaker(self):
@@ -69,14 +79,18 @@ class PoiBook:
         self.log = log
         self.pois = []
         self.breakers = []
+        self.choch_breaker = {}   # CHoCH event time -> Poi ("the" breaker) or None
         self.counts = {"born": 0, "init_skipped": 0, "no_opposite": 0,
                        "colour_shifted": 0, "cap_hit": 0,
-                       "the_breaker": 0, "no_the_breaker": 0}
+                       "the_breaker": 0, "no_the_breaker": 0,
+                       "breaker_dead_before": 0, "breaker_dead_at": 0,
+                       "breaker_alive": 0}
         self._live = []
         self._times = []
         self._bars = {}
         self._idx = {}
-        self._died_now = []
+        self._last_bos = {"up": None, "down": None}   # Poi of the last BOS, or None
+        self._claimed = set()
         self._buy_top = -_INF
         self._sell_bot = _INF
         self._n = 0
@@ -95,7 +109,6 @@ class PoiBook:
         self._idx[bar.open_time] = len(self._times)
         self._times.append(bar.open_time)
         self._bars[bar.open_time] = (o, h, l, c, bar.close_time)
-        self._died_now = []
         changes = []
         # nothing can change if the close is above every live buy box and
         # below every live sell box
@@ -136,9 +149,9 @@ class PoiBook:
         p.state = "dead"
         p.dead_time = bar.close_time
         if p.origin == "BOS":
-            p.role = "stack"
+            if p.role is None:
+                p.role = "stack"
             self.breakers.append(p)
-        self._died_now.append(p)
         self._log("poi_dead", bar.close_time, bar.close_time,
                   id=p.id, side=p.side, origin=p.origin)
 
@@ -155,10 +168,19 @@ class PoiBook:
         if label == "INIT":
             self.counts["init_skipped"] += 1
             return None
-        opp_t = ev["last_opposite_time"]
-        if pd.isna(opp_t):
+        if pd.isna(ev["last_opposite_time"]):
             self.counts["no_opposite"] += 1
-            return None
+            poi = None
+        else:
+            poi = self._make_poi(ev, label)
+        if label == "CHoCH":
+            self._tag_the_breaker(ev)
+        elif label == "BOS":
+            self._last_bos[ev["direction"]] = poi
+        return poi
+
+    def _make_poi(self, ev, label):
+        opp_t = ev["last_opposite_time"]
         side = "buy" if ev["direction"] == "up" else "sell"
         k, shifted, cap_hit = self._pick_candle(opp_t, side)
         t = self._times[k]
@@ -181,23 +203,31 @@ class PoiBook:
         self._log("poi_born", ev["time"], ev["known_at"], id=poi.id, side=side,
                   origin=label, low=l, high=h, candle_time=t,
                   shifted=shifted, cap_hit=cap_hit)
-        if label == "CHoCH":
-            self._tag_the_breaker(ev)
         return poi
 
     def _tag_the_breaker(self, ev):
-        opposite = "sell" if ev["direction"] == "up" else "buy"
-        cands = [p for p in self._died_now
-                 if p.origin == "BOS" and p.side == opposite
-                 and p.dead_time == ev["time"]]
-        if not cands:
+        """Every CHoCH: 'the' breaker = POI of the last BOS before it (opposite side)."""
+        prior_dir = "up" if ev["direction"] == "down" else "down"
+        cand = self._last_bos[prior_dir]
+        if cand is None or cand.id in self._claimed:
             self.counts["no_the_breaker"] += 1
+            self.choch_breaker[ev["time"]] = None
+            self._log("poi_no_breaker", ev["time"], ev["known_at"],
+                      reason="no_box" if cand is None else "already_used")
             return
-        the = max(cands, key=lambda p: p.born_time)
-        the.role = "the"
+        self._claimed.add(cand.id)
+        cand.role = "the"
+        cand.breaker_for = ev["time"]
+        self.choch_breaker[ev["time"]] = cand
+        if cand.state == "dead":
+            when = "at" if cand.dead_time == ev["time"] else "before"
+        else:
+            when = "alive"
         self.counts["the_breaker"] += 1
+        self.counts[{"at": "breaker_dead_at", "before": "breaker_dead_before",
+                     "alive": "breaker_alive"}[when]] += 1
         self._log("poi_the_breaker", ev["time"], ev["known_at"],
-                  id=the.id, side=the.side)
+                  id=cand.id, side=cand.side, when=when)
 
     def _right_colour(self, k, side):
         o, _h, _l, c, _ct = self._bars[self._times[k]]
