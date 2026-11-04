@@ -1,0 +1,100 @@
+name: Phase 4 Cycle Run (practice years)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke = eurusd only (correctness check); full = all 28 pairs"
+        type: choice
+        options: [smoke, full]
+        default: smoke
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      pairs: ${{ steps.pick.outputs.pairs }}
+      csv: ${{ steps.pick.outputs.csv }}
+    steps:
+      - name: Pick pair list
+        id: pick
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          if [ "$MODE" = "full" ]; then
+            CSV="eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eurgbp,audjpy,eurchf,eurcad,euraud,eurnzd,gbpchf,gbpcad,gbpaud,gbpnzd,audcad,audchf,audnzd,nzdjpy,nzdcad,nzdchf,cadjpy,cadchf,chfjpy"
+          else
+            CSV="eurusd"
+          fi
+          echo "csv=$CSV" >> "$GITHUB_OUTPUT"
+          echo "pairs=$(echo "$CSV" | jq -R -c 'split(",")')" >> "$GITHUB_OUTPUT"
+
+  simulate:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: ${{ fromJSON(needs.plan.outputs.pairs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow numpy
+
+      - name: Restore processed data ${{ matrix.pair }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/processed
+          key: histdata-processed-${{ matrix.pair }}-nomatch
+          restore-keys: histdata-processed-${{ matrix.pair }}-
+
+      - name: Verify data present ${{ matrix.pair }}
+        run: |
+          test -f "data/processed/${{ matrix.pair }}_m15.parquet" || { echo "MISSING processed data: ${{ matrix.pair }}_m15.parquet (cache expired? re-run histdata.yml in full mode)"; exit 1; }
+
+      - name: Run cycle ${{ matrix.pair }}
+        env:
+          PAIR: ${{ matrix.pair }}
+          LOOKAHEAD_CUTS: "10"
+        run: python -m src.research.engine.run_cycle
+
+      - name: Upload cycle output ${{ matrix.pair }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cycle-${{ matrix.pair }}
+          path: data/phase4_cycle/${{ matrix.pair }}_*
+          retention-days: 14
+          if-no-files-found: error
+
+  report:
+    needs: [plan, simulate]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas numpy
+
+      - name: Download all pair outputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cycle-*
+          merge-multiple: true
+          path: data/phase4_cycle
+
+      - name: Build report
+        env:
+          REPORT_LABEL: ${{ inputs.mode }}
+          EXPECT_PAIRS: ${{ needs.plan.outputs.csv }}
+        run: python -m src.research.engine.report_cycle
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-cycle-${{ inputs.mode }}
+          path: reports/phase4/report_cycle_*.md
+          retention-days: 30
+          if-no-files-found: error
