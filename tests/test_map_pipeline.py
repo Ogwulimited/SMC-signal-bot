@@ -38,7 +38,8 @@ def test_poi_invariants_on_synthetic_data():
         if p.role == "the":
             assert p.origin == "BOS" and p.breaker_for is not None
 
-    choch_events = [e for e in rec.events if e["tf"] == "M15" and e["label"] == "CHoCH"]
+    m15_events = [e for e in rec.events if e["tf"] == "M15"]
+    choch_events = [e for e in m15_events if e["label"] == "CHoCH"]
     c = book.counts
     assert c["the_breaker"] + c["no_the_breaker"] == len(choch_events)
     assert len(book.choch_breaker) == len(choch_events)
@@ -47,6 +48,26 @@ def test_poi_invariants_on_synthetic_data():
     # one box serves one CHoCH only
     used_boxes = [p.id for p in book.choch_breaker.values() if p is not None]
     assert len(used_boxes) == len(set(used_boxes))
+
+    # why a CHoCH has no breaker (rebuilt from the events, in time order)
+    box_times = {p.born_time for p in book.pois if p.origin == "BOS"}
+    last_bos = {"up": None, "down": None}
+    why = {"no BOS yet": 0, "last BOS had no box": 0, "box already used": 0}
+    for e in m15_events:
+        if e["label"] == "BOS":
+            last_bos[e["direction"]] = e["time"]
+        elif e["label"] == "CHoCH":
+            if book.choch_breaker.get(e["time"]) is not None:
+                continue
+            prior = "up" if e["direction"] == "down" else "down"
+            t = last_bos[prior]
+            if t is None:
+                why["no BOS yet"] += 1
+            elif t not in box_times:
+                why["last BOS had no box"] += 1
+            else:
+                why["box already used"] += 1
+    assert sum(why.values()) == c["no_the_breaker"]
 
     choch_pois = {p.born_time: p for p in book.pois if p.origin == "CHoCH"}
     fvg_found = 0
@@ -72,6 +93,10 @@ def test_poi_invariants_on_synthetic_data():
           f"(box dead before the CHoCH bar {c['breaker_dead_before']}, "
           f"on it {c['breaker_dead_at']}, still alive {c['breaker_alive']}); "
           f"FVG variant has a gap for {fvg_found} of {with_breaker}")
+    print(f"NO BREAKER: {c['no_the_breaker']} CHoCH had none: "
+          f"no BOS yet {why['no BOS yet']}, "
+          f"last BOS had no box {why['last BOS had no box']}, "
+          f"box already used {why['box already used']}")
     for tf in ("H4", "D1"):
         t = rec.bias[tf]
         print(f"BIAS {tf}: {len(t.history)} changes, final state {t.state}")
