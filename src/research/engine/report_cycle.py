@@ -41,6 +41,12 @@ def fmt(x, d=2):
     return f"{x:.{d}f}"
 
 
+def ftime(x):
+    if x is None or pd.isna(x):
+        return "n/a"
+    return x.strftime("%Y-%m-%d %H:%M")
+
+
 def table(head, rows):
     out = ["| " + " | ".join(head) + " |", "|" + "|".join("---" for _ in head) + "|"]
     for r in rows:
@@ -327,6 +333,24 @@ def main():
         for k, v in fj.get("counts", {}).items():
             tot[k] += v
     L += table(["Counter", "Count"], [[k, tot[k]] for k in sorted(tot)])
+    L.append("")
+
+    L += ["### Trade sheet (first 10 resolved trades by fill time, to check against your charts)"]
+    L.append("Times are UTC. Open the M15 chart at the placed time and look for the CHoCH, "
+             "the box and the entry.")
+    L.append("")
+    sheet = res.sort_values("fill_time").head(10)
+    trow = []
+    for _, r in sheet.iterrows():
+        trow.append([r["pair"], r["kind"], r["side"], ftime(r["placed_time"]),
+                     ftime(r["fill_time"]), fmt(r["entry"], 5), fmt(r["stop"], 5),
+                     fmt(r["target_price"], 5), r["outcome"], ftime(r["exit_time"]),
+                     fmt(r["net_r"], 2)])
+    if trow:
+        L += table(["Pair", "Model", "Side", "Placed", "Fill", "Entry", "Stop", "Target",
+                    "Outcome", "Exit", "Net R"], trow)
+    else:
+        L.append("No resolved trades.")
     L.append("")
 
     md = "\n".join(L)
