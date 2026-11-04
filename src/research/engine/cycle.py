@@ -325,8 +325,9 @@ class CycleRecorder(MapRecorder):
         self.orders.append(order)
         pb["orders"].append(order)
         self.counts["orders_" + kind] += 1
-        self._log("pb_order", now, id=order["id"], kind=kind, side=order["side"],
-                  entry=order["entry"], stop=order["stop"], setup=setup["id"])
+        self._log("pb_order", now, id=order["id"], order_kind=kind,
+                  side=order["side"], entry=order["entry"], stop=order["stop"],
+                  setup=setup["id"])
         return order
 
     def _pull_step(self, bar, ev, now):
