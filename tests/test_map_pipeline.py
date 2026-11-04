@@ -35,16 +35,26 @@ def test_poi_invariants_on_synthetic_data():
             assert p.role is None
         if p.origin == "BOS" and p.state == "dead":
             assert p.role in ("the", "stack")
+        if p.role == "the":
+            assert p.origin == "BOS" and p.breaker_for is not None
 
-    choch_pois = [p for p in book.pois if p.origin == "CHoCH"]
-    assert book.counts["the_breaker"] + book.counts["no_the_breaker"] == len(choch_pois)
+    choch_events = [e for e in rec.events if e["tf"] == "M15" and e["label"] == "CHoCH"]
+    c = book.counts
+    assert c["the_breaker"] + c["no_the_breaker"] == len(choch_events)
+    assert len(book.choch_breaker) == len(choch_events)
+    assert c["breaker_dead_before"] + c["breaker_dead_at"] + c["breaker_alive"] == c["the_breaker"]
+    assert c["the_breaker"] > 0
+    # one box serves one CHoCH only
+    used_boxes = [p.id for p in book.choch_breaker.values() if p is not None]
+    assert len(used_boxes) == len(set(used_boxes))
 
-    the_by_time = {p.dead_time: p for p in book.pois if p.role == "the"}
+    choch_pois = {p.born_time: p for p in book.pois if p.origin == "CHoCH"}
     fvg_found = 0
     with_breaker = 0
-    for q in choch_pois:
-        the = the_by_time.get(q.born_time)
-        if the is None:
+    for e in choch_events:
+        the = book.choch_breaker.get(e["time"])
+        q = choch_pois.get(e["time"])
+        if the is None or q is None:
             continue
         with_breaker += 1
         leg = book.window(q.swing_time, q.born_time)
@@ -55,10 +65,12 @@ def test_poi_invariants_on_synthetic_data():
 
     states = {s: len([p for p in book.pois if p.state == s]) for s in ("fresh", "used", "dead")}
     print(f"POI M15: {len(book.pois)} boxes, {states['fresh']} fresh, {states['used']} used, "
-          f"{states['dead']} dead; colour moved {book.counts['colour_shifted']}, "
-          f"cap hit {book.counts['cap_hit']}, INIT skipped {book.counts['init_skipped']}, "
-          f"no opposite swing {book.counts['no_opposite']}")
-    print(f"BREAKER: 'the breaker' found for {book.counts['the_breaker']} of {len(choch_pois)} CHoCH; "
+          f"{states['dead']} dead; colour moved {c['colour_shifted']}, "
+          f"cap hit {c['cap_hit']}, INIT skipped {c['init_skipped']}, "
+          f"no opposite swing {c['no_opposite']}")
+    print(f"BREAKER: found for {c['the_breaker']} of {len(choch_events)} CHoCH "
+          f"(box dead before the CHoCH bar {c['breaker_dead_before']}, "
+          f"on it {c['breaker_dead_at']}, still alive {c['breaker_alive']}); "
           f"FVG variant has a gap for {fvg_found} of {with_breaker}")
     for tf in ("H4", "D1"):
         t = rec.bias[tf]
