@@ -7,6 +7,9 @@ decisions. Writes data/phase4_cycle/{pair}_trades.csv, _funnel.json,
 _lookahead.json, _pullbacks.csv.
 
 Bad days are NOT excluded in this run.
+Bars outside the trading week (New York clock: Saturday, Sunday before 17:00,
+Friday from 17:00) are dropped at load time. This uses only each bar's own
+timestamp. The count is reported.
 
 Usage (repo root):  PAIR=eurusd python -m src.research.engine.run_cycle
 """
@@ -28,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[3]
 PROCESSED_DIR = ROOT / "data" / "processed"
 OUT_DIR = ROOT / "data" / "phase4_cycle"
 TF_M15 = pd.Timedelta(minutes=15)
+NY = "America/New_York"
 
 
 class FlipRecorder(cy.CycleRecorder):
@@ -55,13 +59,26 @@ def run_engine(m15):
     return rec, log
 
 
+def drop_weekend(df):
+    """Drop bars outside the trading week on the New York clock.
+    Uses only the bar's own open time. Returns (frame, number dropped)."""
+    loc = df["timestamp"].dt.tz_convert(NY)
+    dow = loc.dt.dayofweek
+    hr = loc.dt.hour
+    outside = (dow == 5) | ((dow == 6) & (hr < 17)) | ((dow == 4) & (hr >= 17))
+    n = int(outside.sum())
+    return df[~outside].reset_index(drop=True), n
+
+
 def load_m15(pair, cutoff):
     df = pd.read_parquet(PROCESSED_DIR / f"{pair}_m15.parquet")
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.sort_values("timestamp").drop_duplicates("timestamp").reset_index(drop=True)
     df = df[df["timestamp"] + TF_M15 <= cutoff]
     df = df[["timestamp", "open", "high", "low", "close"]].reset_index(drop=True)
+    df, dropped = drop_weekend(df)
     df["timestamp"] = df["timestamp"].astype("datetime64[ns, UTC]")
+    df.attrs["dropped_weekend"] = dropped
     return df
 
 
@@ -94,8 +111,10 @@ def run_pair(pair):
     t0 = time.time()
     cutoff = pd.Timestamp(config.PRACTICE_END, tz="UTC")
     m15 = load_m15(pair, cutoff)
+    dropped = int(m15.attrs.get("dropped_weekend", 0))
     print(f"[{pair}] m15 bars: {len(m15)}  first {m15['timestamp'].iloc[0]}  "
-          f"last close {m15['timestamp'].iloc[-1] + TF_M15}", flush=True)
+          f"last close {m15['timestamp'].iloc[-1] + TF_M15}  "
+          f"dropped weekend-window bars: {dropped}", flush=True)
 
     rec, log = run_engine(m15)
     print(f"[{pair}] main run done in {time.time() - t0:.0f}s: "
@@ -116,7 +135,8 @@ def run_pair(pair):
     funnel = {"counts": {k_: int(v) for k_, v in rec.counts.items()},
               "orders": len(rec.orders), "statuses": statuses,
               "pullbacks": len(rec.pullbacks), "flips": len(rec.flips),
-              "decisions": len(log.items)}
+              "decisions": len(log.items), "bars": len(m15),
+              "dropped_weekend_bars": dropped}
     (OUT_DIR / f"{pair}_funnel.json").write_text(json.dumps(funnel, indent=1, default=str))
     (OUT_DIR / f"{pair}_lookahead.json").write_text(json.dumps(look, indent=1, default=str))
 
@@ -124,6 +144,7 @@ def run_pair(pair):
     lines = [
         f"### Phase 4 cycle run: {pair}",
         f"- Window: start of data to {config.PRACTICE_END}; bad days NOT excluded",
+        f"- Bars used: {len(m15)}; dropped outside trading week (NY clock): {dropped}",
         f"- Orders: {len(df)}  |  Status: {statuses}",
         f"- Resolved trades: {len(res)}, net R sum {res['net_r'].astype(float).sum():.2f}, "
         f"open_at_cutoff {int((df['outcome'] == 'open_at_cutoff').sum())}",
