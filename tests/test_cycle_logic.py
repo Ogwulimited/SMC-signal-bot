@@ -267,6 +267,9 @@ def test_d1_without_h4_candles_keeps_d1_box():
 
 # ---- synthetic run -----------------------------------------------------
 def synth(n=26000, seed=3):
+    """Synthetic M15 series that is closed on weekends like real forex:
+    shut from Friday 17:00 to Sunday 17:00 New York time (so the US clock
+    changes fall inside the gap, as they do on real data)."""
     rng = np.random.default_rng(seed)
     t = np.arange(n)
     base = (100 + 4 * np.sin(2 * np.pi * t / (96 * 28)) + 1.5 * np.sin(2 * np.pi * t / (96 * 6))
@@ -275,8 +278,16 @@ def synth(n=26000, seed=3):
     open_ = np.concatenate([[close[0]], close[:-1]])
     high = np.maximum(open_, close) + np.abs(rng.normal(0, 0.05, n))
     low = np.minimum(open_, close) - np.abs(rng.normal(0, 0.05, n))
-    return pd.DataFrame({"timestamp": pd.date_range("2020-01-06", periods=n, freq="15min", tz="UTC"),
-                         "open": open_, "high": high, "low": low, "close": close})
+    ts = pd.date_range("2020-01-05 22:00", periods=int(n * 1.5) + 700,
+                       freq="15min", tz="UTC")
+    ny = ts.tz_convert("America/New_York")
+    wd = np.asarray(ny.day_of_week)
+    hr = np.asarray(ny.hour)
+    closed = ((wd == 4) & (hr >= 17)) | (wd == 5) | ((wd == 6) & (hr < 17))
+    ts = ts[~closed][:n]
+    assert len(ts) == n
+    return pd.DataFrame({"timestamp": ts, "open": open_, "high": high,
+                         "low": low, "close": close})
 
 
 def test_synthetic_orders_are_well_formed():
