@@ -18,6 +18,7 @@ from src.research.engine import simulate_orders as so
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "data" / "phase4_cycle"
+DATA_START = "2016-01-03"
 ALL_PAIRS = ("eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eurgbp,"
              "audjpy,eurchf,eurcad,euraud,eurnzd,gbpchf,gbpcad,gbpaud,gbpnzd,audcad,"
              "audchf,audnzd,nzdjpy,nzdcad,nzdchf,cadjpy,cadchf,chfjpy").split(",")
@@ -173,15 +174,27 @@ def main():
     L.append("")
 
     L += ["## 4. Signal Frequency"]
+    t_start = pd.Timestamp(DATA_START, tz="UTC")
+    t_end = pd.Timestamp(config.PRACTICE_END, tz="UTC")
+    win_months = (t_end - t_start).days / 30.44
     if len(res):
-        span = (res["fill_time"].max() - res["fill_time"].min()).days / 30.44
-        months = max(span, 1.0)
-        per_month = len(res) / months
+        per_month = len(res) / win_months
+        per_pair = per_month / max(len(expect), 1)
+        first_fill = res["fill_time"].min()
+        since_months = max((t_end - first_fill).days / 30.44, 1.0)
+        per_month_since = len(res) / since_months
+        first_txt = first_fill.strftime("%Y-%m-%d")
         within = float((res["dur_hours"] <= 24).mean() * 100)
     else:
-        per_month = within = np.nan
-    L += table(["Metric", "Value"], [["Trades per month", fmt(per_month, 1)],
-                                      ["% closed within 24h", fmt(within, 1)]])
+        per_month = per_pair = per_month_since = within = np.nan
+        first_txt = "n/a"
+    L += table(["Metric", "Value"], [
+        [f"Trades per month, all pairs, whole practice window ({fmt(win_months, 0)} months)",
+         fmt(per_month, 2)],
+        [f"Trades per month, all pairs, since the first trade ({first_txt})",
+         fmt(per_month_since, 2)],
+        [f"Trades per month per pair ({len(expect)} pair(s))", fmt(per_pair, 2)],
+        ["% closed within 24h", fmt(within, 1)]])
     L.append("")
 
     rows, pair_net = [], {}
@@ -222,11 +235,13 @@ def main():
     for p in expect:
         t = res[res["pair"] == p]
         a = allr[allr["pair"] == p]
+        filled_p = a[a["status"] == "filled"]
+        n_skip_sp = int((a["status"] == "skipped_spread").sum())
         st = stats(t)
-        sp = a["spread_cost_r"].dropna()
+        sp = filled_p["spread_cost_r"].dropna()
         avg_sp = float(sp.mean()) if len(sp) else np.nan
         lab = "assumed" if p in NEW_PAIRS else "measured"
-        prow.append([p, lab, len(a), int((a["status"] == "filled").sum()), st["n"],
+        prow.append([p, lab, len(a), int((a["status"] == "filled").sum()), n_skip_sp, st["n"],
                      fmt(st["wr"], 1), fmt(st["net"]), fmt(st["pf"]), fmt(avg_sp, 3)])
         if p in NEW_PAIRS and st["n"] and st["net"] > 0:
             doubled = st["net"] - float(t["spread_cost_r"].sum())
@@ -237,12 +252,24 @@ def main():
             elif p in top:
                 warns.append(f"Note {p}: assumed-spread pair in the Top 3 "
                              f"(doubled-spread net {fmt(doubled)} R).")
-    L += table(["Pair", "Spread", "Orders", "Filled", "Resolved", "Win %", "Net R", "PF",
-                "Avg spread cost (R)"], prow)
+    L += table(["Pair", "Spread", "Orders", "Filled", "Skipped (spread)", "Resolved", "Win %",
+                "Net R", "PF", "Avg spread cost, filled trades (R)"], prow)
     L.append("")
     for w in warns:
         L.append(f"- {w}")
     if warns:
+        L.append("")
+
+    filled_all = allr[allr["status"] == "filled"]
+    limit = float(config.MAX_SPREAD_RISK_RATIO)
+    if len(filled_all):
+        mx = float(filled_all["spread_cost_r"].max())
+        if mx > limit + 1e-9:
+            L.append(f"- CHECK FAILED: a filled trade has spread cost {fmt(mx, 3)} R, above the "
+                     f"{fmt(limit, 2)} limit. This is a bug. Do not trust the numbers.")
+        else:
+            L.append(f"- Check passed: highest spread cost among filled trades is "
+                     f"{fmt(mx, 3)} R (limit {fmt(limit, 2)}).")
         L.append("")
 
     L += ["### Stacking vs one-at-a-time (kept per pair)"]
