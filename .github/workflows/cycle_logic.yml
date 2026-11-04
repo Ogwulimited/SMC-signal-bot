@@ -1,0 +1,14 @@
+name: cycle_logic
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pandas pyarrow numpy pytest
+      - run: python -m pytest tests/test_cycle_logic.py -q -s
