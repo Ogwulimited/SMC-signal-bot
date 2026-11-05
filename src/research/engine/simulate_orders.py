@@ -3,13 +3,20 @@
 Takes the orders the cycle produced and plays them on M15 bars.
   * Touch: a bar after placement reaches the entry price.
   * Fill: at the NEXT M15 open (Fill 2). Stop/target are checked from the fill
-    bar's open. 1R = |fill - stop|. Target = fill -/+ RR_STATIC x R.
+    bar's open. 1R = |fill - stop|.
+  * Targets: "static" = fill -/+ RR_STATIC x R (all orders).
+             "liquidity" (zone orders only) = the nearest unswept swing at least
+             LIQ_MIN_R x R away (list carried by the order, nearest first); if
+             none, the order's ceiling; if the ceiling is not beyond the fill,
+             status skipped_no_target.
+    A zone order is played twice (static and liquidity) with the same entry and
+    stop. Each row carries leg (pullback/zone) and target_mode.
   * Next open already beyond the stop -> fill_beyond_stop (no trade).
   * Spread cost = SPREAD_PRICE[pair] / risk. Above MAX_SPREAD_RISK_RATIO -> skipped_spread.
   * Stop wins a same-bar tie. A bar that OPENS beyond the stop fills the loss
     at that open (loss can exceed 1R).
-  * Order ended by zone / attempt_failed / bias_lost: the ending bar cannot touch.
-    Ended by ceiling_break: the ending bar can touch.
+  * Order ended by zone / attempt_failed / bias_lost / zone_far_break: the ending
+    bar cannot touch. Ended by ceiling_break: the ending bar can touch.
   * No management after entry, no time stop. Unresolved = open_at_cutoff.
   * Net R = gross R - spread_cost_r.
 """
@@ -20,6 +27,7 @@ from src import config
 
 STEP = pd.Timedelta(minutes=15)
 FAR = pd.Timestamp("2262-01-01", tz="UTC")
+LIQ_MIN_R = 3.0
 
 TRADE_COLS = [
     "pair", "order_id", "pullback", "setup", "variant", "kind", "side",
@@ -28,10 +36,15 @@ TRADE_COLS = [
     "risk_r", "spread_cost_r", "target_price", "outcome", "exit_time",
     "exit_price", "r_gross", "net_r", "dur_hours",
     "open_at_entry", "kept_1at", "flip_while_open",
+    "leg", "target_mode", "target_kind", "target_r", "bos_time",
+    "zone_touch_time", "zone_tf", "zone_low", "zone_high", "choch_time",
+    "choch_level",
 ]
 
 _COPY = ("pullback", "setup", "variant", "kind", "side", "placed_time", "end_time",
          "end_reason", "ceiling", "ceiling_locked", "entry", "stop")
+_ZONE_COPY = ("bos_time", "zone_touch_time", "zone_tf", "zone_low", "zone_high",
+              "choch_time", "choch_level")
 
 
 def prepare(m15):
@@ -41,13 +54,33 @@ def prepare(m15):
             "l": m15["low"].to_numpy(float)}
 
 
-def simulate_order(o, a, spread, pair):
+def _liq_target(o, fill, risk, sell):
+    """Liquidity target: nearest listed swing >= LIQ_MIN_R away, else the ceiling."""
+    need = float(LIQ_MIN_R) * risk
+    for p in o.get("liq") or []:
+        if sell and p <= fill - need:
+            return float(p), "swing"
+        if (not sell) and p >= fill + need:
+            return float(p), "swing"
+    c = o.get("ceiling")
+    if c is not None:
+        c = float(c)
+        if (sell and c < fill) or ((not sell) and c > fill):
+            return c, "ceiling"
+    return None, None
+
+
+def simulate_order(o, a, spread, pair, mode="static"):
     sell = o["side"] == "sell"
     rec = {c: None for c in TRADE_COLS}
     rec["pair"] = pair
     rec["order_id"] = o["id"]
     for k in _COPY:
         rec[k] = o[k]
+    rec["leg"] = o.get("leg", "pullback")
+    rec["target_mode"] = mode
+    for k in _ZONE_COPY:
+        rec[k] = o.get(k)
     n = len(a["o"])
     entry = float(o["entry"])
     stop = float(o["stop"])
@@ -92,9 +125,18 @@ def simulate_order(o, a, spread, pair):
         rec["status"] = "skipped_spread"
         return rec
 
-    rr = float(config.RR_STATIC)
-    target = fill - rr * risk if sell else fill + rr * risk
+    if mode == "liquidity":
+        target, tkind = _liq_target(o, fill, risk, sell)
+        if target is None:
+            rec["status"] = "skipped_no_target"
+            return rec
+    else:
+        rr = float(config.RR_STATIC)
+        target = fill - rr * risk if sell else fill + rr * risk
+        tkind = "static"
     rec["target_price"] = target
+    rec["target_kind"] = tkind
+    rec["target_r"] = abs(target - fill) / risk
     rec["status"] = "filled"
 
     h = a["h"][f:]
@@ -140,7 +182,8 @@ def simulate_order(o, a, spread, pair):
 
 
 def tag_trades(recs, flips):
-    """open_at_entry, kept_1at (one-at-a-time per pair), flip_while_open."""
+    """open_at_entry, kept_1at (one-at-a-time per pair), flip_while_open.
+    Call once per scorecard group (leg + target_mode)."""
     filled = [r for r in recs if r["status"] == "filled"]
     filled.sort(key=lambda r: r["fill_time"])
 
@@ -165,6 +208,12 @@ def tag_trades(recs, flips):
 
 
 def simulate_all(orders, m15, pair):
+    """Pullback orders: one play (static). Zone orders: two plays."""
     a = prepare(m15)
     spread = config.SPREAD_PRICE[pair]
-    return [simulate_order(o, a, spread, pair) for o in orders]
+    out = []
+    for o in orders:
+        out.append(simulate_order(o, a, spread, pair, "static"))
+        if o.get("leg") == "zone":
+            out.append(simulate_order(o, a, spread, pair, "liquidity"))
+    return out
