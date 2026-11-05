@@ -9,10 +9,10 @@ on:
         options: [smoke, full]
         default: smoke
       variants:
-        description: "v1 = 5 swings, D1+H4 (first build); v2 = 3 swings, D1+H4; v3 = 3 swings, H4 only"
+        description: "v1 = 5 sw, D1+H4; v2 = 3 sw, D1+H4; v3 = 3 sw, H4 only; v4 = v1 with OB entries only"
         type: choice
-        options: [v2_and_v3, v1, v2, v3]
-        default: v2_and_v3
+        options: [v4, v1, v2, v3, v2_and_v3]
+        default: v4
 
 jobs:
   plan:
@@ -37,6 +37,7 @@ jobs:
             v1) VJ='["v1"]' ;;
             v2) VJ='["v2"]' ;;
             v3) VJ='["v3"]' ;;
+            v4) VJ='["v4"]' ;;
             *)  VJ='["v2","v3"]' ;;
           esac
           echo "csv=$CSV" >> "$GITHUB_OUTPUT"
