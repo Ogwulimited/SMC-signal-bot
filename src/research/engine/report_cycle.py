@@ -252,9 +252,9 @@ def main():
         if p in NEW_PAIRS and st["n"] and st["net"] > 0:
             doubled = st["net"] - float(t["spread_cost_r"].sum())
             if doubled <= 0:
-                warns.append(f"WARNING {p}: assumed-spread pair, positive only because of its "
-                             f"assumed spread (net {fmt(st['net'])} R, with doubled spread "
-                             f"{fmt(doubled)} R).")
+                warns.append(f"WARNING {p}: assumed-spread pair. Net {fmt(st['net'])} R with the "
+                             f"assumed spread, but {fmt(doubled)} R if the spread were twice as "
+                             f"wide. Do not trust this pair's result.")
             elif p in top:
                 warns.append(f"Note {p}: assumed-spread pair in the Top 3 "
                              f"(doubled-spread net {fmt(doubled)} R).")
@@ -277,6 +277,21 @@ def main():
             L.append(f"- Check passed: highest spread cost among filled trades is "
                      f"{fmt(mx, 3)} R (limit {fmt(limit, 2)}).")
         L.append("")
+
+    L += ["### Pair funnel (why some pairs have few or no orders)"]
+    frows = []
+    for p in expect:
+        fj = funnels.get(p)
+        if fj is None:
+            frows.append([p, "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a"])
+            continue
+        c = fj.get("counts", {})
+        frows.append([p, fj.get("bars", "n/a"), fj.get("decisions", "n/a"),
+                      fj.get("flips", "n/a"), c.get("htf_arm", 0), c.get("pullbacks", 0),
+                      c.get("setups", 0), fj.get("orders", 0)])
+    L += table(["Pair", "Bars", "Decisions", "Bias flips", "HTF arms", "Pullbacks", "Setups",
+                "Orders"], frows)
+    L.append("")
 
     L += ["### Stacking vs one-at-a-time (kept per pair)"]
     kept = res[res["kept_1at"]]
@@ -336,19 +351,17 @@ def main():
     L.append("")
 
     L += ["### Trade sheet (first 10 resolved trades by fill time, to check against your charts)"]
-    L.append("Times are UTC. Open the M15 chart at the placed time and look for the CHoCH, "
-             "the box and the entry.")
+    L.append("Times are UTC. Open the M15 chart of the pair at the placed time and look for "
+             "the CHoCH, the box and the entry.")
     L.append("")
     sheet = res.sort_values("fill_time").head(10)
-    trow = []
-    for _, r in sheet.iterrows():
-        trow.append([r["pair"], r["kind"], r["side"], ftime(r["placed_time"]),
-                     ftime(r["fill_time"]), fmt(r["entry"], 5), fmt(r["stop"], 5),
-                     fmt(r["target_price"], 5), r["outcome"], ftime(r["exit_time"]),
-                     fmt(r["net_r"], 2)])
-    if trow:
-        L += table(["Pair", "Model", "Side", "Placed", "Fill", "Entry", "Stop", "Target",
-                    "Outcome", "Exit", "Net R"], trow)
+    if len(sheet):
+        for i, (_, r) in enumerate(sheet.iterrows(), 1):
+            L.append(f"{i}. **{r['pair']}** {r['kind']} {r['side']} - placed "
+                     f"{ftime(r['placed_time'])}, filled {ftime(r['fill_time'])}, "
+                     f"entry {fmt(r['entry'], 5)}, stop {fmt(r['stop'], 5)}, "
+                     f"target {fmt(r['target_price'], 5)} -> {r['outcome']} at "
+                     f"{ftime(r['exit_time'])}, net R {fmt(r['net_r'], 2)}")
     else:
         L.append("No resolved trades.")
     L.append("")
