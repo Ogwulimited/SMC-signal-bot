@@ -114,3 +114,7 @@ OB_NO_IDM_REQUIRES_FVG = True      # OB entry without inducement needs an FVG in
 LTF_STACK_ENTRIES = False          # LTF stack-breaker buys: off by default, measured
 ALLOW_STACKING = True              # several zone buys may be open at once
 WRONG_COLOUR_SEARCH_DIRECTION = "back"  # assumption 21: look back for the right-colour candle
+
+# --- Bias timeframes (V3 test; default keeps V1 behaviour) ---
+# "both" = D1 and H4 must agree.  "h4" = H4 alone decides the bias.
+BIAS_TIMEFRAMES = "both"
