@@ -1,0 +1,63 @@
+name: Diag Bias Pairs 4
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: [eurusd, usdjpy, eurgbp, audnzd, cadjpy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow numpy
+
+      - name: Restore processed data ${{ matrix.pair }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/processed
+          key: histdata-processed-${{ matrix.pair }}-nomatch
+          restore-keys: histdata-processed-${{ matrix.pair }}-
+
+      - name: Verify data present ${{ matrix.pair }}
+        run: |
+          test -f "data/processed/${{ matrix.pair }}_m15.parquet" || { echo "MISSING processed data: ${{ matrix.pair }}_m15.parquet (cache expired? re-run histdata.yml in full mode)"; exit 1; }
+
+      - name: Diagnose ${{ matrix.pair }}
+        env:
+          PAIR: ${{ matrix.pair }}
+        run: python -m src.research.engine.diag_bias
+
+      - name: Upload diag ${{ matrix.pair }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagbias-${{ matrix.pair }}
+          path: data/diag_bias/${{ matrix.pair }}.txt
+          retention-days: 14
+          if-no-files-found: error
+
+  collect:
+    needs: diag
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all diag text
+        uses: actions/download-artifact@v4
+        with:
+          pattern: diagbias-*
+          merge-multiple: true
+          path: diag_out
+
+      - name: Print everything in one place
+        run: |
+          for p in eurusd usdjpy eurgbp audnzd cadjpy; do
+            echo "=================== $p"
+            cat "diag_out/$p.txt" || echo "(missing $p)"
+            echo
+          done | tee all_diag.txt
+          { echo '```'; cat all_diag.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
