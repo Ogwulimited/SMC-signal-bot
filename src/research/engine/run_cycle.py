@@ -15,15 +15,17 @@ Variants (env VARIANT, default v1 = as first built):
   v1: first read 5 counted swings, D1 and H4 must agree, breaker + OB orders
   v2: first read 3 counted swings, D1 and H4 must agree
   v3: first read 3 counted swings, H4 alone decides the bias
-  v4: as v1, but only OB entries are simulated (breaker orders are dropped
-      after the engine run, so the decision log and lookahead check are the
-      same as v1)
+  v4: as v1, but only OB entries are simulated (pullbacks)
+  zt: as v1 (pullbacks, breaker + OB) PLUS zone trades (with the trend):
+      breaker and OB entries, each played with a static 1:3 target and a
+      liquidity target. Zone and pullback trades are separate scorecards.
 The lookahead re-runs use the same variant.
 
 Pullback trades are always counter-trend: sells in a bull HTF bias, buys in a
-bear HTF bias. With-trend zone trades are not built yet.
+bear HTF bias. Zone trades go with the trend: buys in a bull bias, sells in a
+bear bias.
 
-Usage (repo root):  PAIR=eurusd VARIANT=v4 python -m src.research.engine.run_cycle
+Usage (repo root):  PAIR=eurusd VARIANT=zt python -m src.research.engine.run_cycle
 """
 import json
 import os
@@ -34,8 +36,8 @@ import numpy as np
 import pandas as pd
 
 from src import config
-from src.research.engine import cycle as cy
 from src.research.engine import simulate_orders as so
+from src.research.engine import zone as zn
 from src.research.engine.bias import htf_bias
 from src.research.lookahead_guard import DataFeed, DecisionLog
 
@@ -49,16 +51,19 @@ BOTH = ("breaker", "ob")
 
 # first_read None = use config.BIAS_FIRST_READ_SWINGS (5)
 VARIANTS = {
-    "v1": {"first_read": None, "bias_tfs": "both", "kinds": BOTH,
+    "v1": {"first_read": None, "bias_tfs": "both", "kinds": BOTH, "zone": False,
            "text": "first read 5 swings (config default), D1 and H4 must agree, breaker + OB"},
-    "v2": {"first_read": 3, "bias_tfs": "both", "kinds": BOTH,
+    "v2": {"first_read": 3, "bias_tfs": "both", "kinds": BOTH, "zone": False,
            "text": "first read 3 swings, D1 and H4 must agree, breaker + OB"},
-    "v3": {"first_read": 3, "bias_tfs": "h4", "kinds": BOTH,
+    "v3": {"first_read": 3, "bias_tfs": "h4", "kinds": BOTH, "zone": False,
            "text": "first read 3 swings, H4 alone decides the bias, breaker + OB"},
-    "v4": {"first_read": None, "bias_tfs": "both", "kinds": ("ob",),
+    "v4": {"first_read": None, "bias_tfs": "both", "kinds": ("ob",), "zone": False,
            "text": "as v1 (5 swings, D1 and H4 agree) but OB entries only, breaker orders dropped"},
+    "zt": {"first_read": None, "bias_tfs": "both", "kinds": BOTH, "zone": True,
+           "text": "as v1 (5 swings, D1 and H4 agree) plus zone trades (with the trend), "
+                   "breaker + OB, static and liquidity targets"},
 }
-ACTIVE = {"name": "v1", "first_read": None, "kinds": BOTH,
+ACTIVE = {"name": "v1", "first_read": None, "kinds": BOTH, "zone": False,
           "text": VARIANTS["v1"]["text"]}
 
 
@@ -68,15 +73,17 @@ def set_variant(name):
         raise SystemExit(f"Unknown VARIANT '{name}'. Use one of {sorted(VARIANTS)}")
     v = VARIANTS[name]
     config.BIAS_TIMEFRAMES = v["bias_tfs"]
+    zn.SETTINGS["enabled"] = bool(v["zone"])
     ACTIVE["name"] = name
     ACTIVE["first_read"] = v["first_read"]
     ACTIVE["kinds"] = v["kinds"]
+    ACTIVE["zone"] = bool(v["zone"])
     ACTIVE["text"] = v["text"]
     return name
 
 
-class FlipRecorder(cy.CycleRecorder):
-    """CycleRecorder + a read-only list of HTF bias flips (bull<->bear)."""
+class FlipRecorder(zn.ZoneRecorder):
+    """ZoneRecorder + a read-only list of HTF bias flips (bull<->bear)."""
 
     def __init__(self, log, first_read=None):
         super().__init__(log, first_read)
@@ -163,13 +170,18 @@ def run_pair(pair):
     n_all = len(rec.orders)
     kinds = tuple(ACTIVE["kinds"])
     orders = [o for o in rec.orders if o["kind"] in kinds]
+    zorders = list(rec.zorders) if ACTIVE["zone"] else []
     print(f"[{pair}] main run done in {time.time() - t0:.0f}s: "
           f"{len(log.items)} decisions, {len(rec.pullbacks)} pullbacks, "
-          f"{n_all} orders made, {len(orders)} kept ({'+'.join(kinds)}), "
-          f"{len(rec.flips)} bias flips", flush=True)
+          f"{n_all} pullback orders made, {len(orders)} kept ({'+'.join(kinds)}), "
+          f"{len(zorders)} zone orders, {len(rec.flips)} bias flips", flush=True)
 
-    recs = so.simulate_all(orders, m15, pair)
-    so.tag_trades(recs, rec.flips)
+    recs = so.simulate_all(orders + zorders, m15, pair)
+    groups = {}
+    for r in recs:
+        groups.setdefault((r["leg"], r["target_mode"]), []).append(r)
+    for g in groups.values():
+        so.tag_trades(g, rec.flips)
     df = pd.DataFrame(recs, columns=so.TRADE_COLS)
 
     k = int(os.environ.get("LOOKAHEAD_CUTS", "10"))
@@ -180,22 +192,31 @@ def run_pair(pair):
     pd.DataFrame(rec.pullback_rows()).to_csv(OUT_DIR / f"{pair}_pullbacks.csv", index=False)
     statuses = df["status"].value_counts().to_dict() if len(df) else {}
     funnel = {"counts": {k_: int(v) for k_, v in rec.counts.items()},
-              "orders": len(orders), "orders_made": n_all, "statuses": statuses,
+              "orders": len(orders), "orders_made": n_all, "zone_orders": len(zorders),
+              "statuses": statuses,
               "pullbacks": len(rec.pullbacks), "flips": len(rec.flips),
               "decisions": len(log.items), "bars": len(m15),
               "dropped_weekend_bars": dropped}
     (OUT_DIR / f"{pair}_funnel.json").write_text(json.dumps(funnel, indent=1, default=str))
     (OUT_DIR / f"{pair}_lookahead.json").write_text(json.dumps(look, indent=1, default=str))
 
-    res = df[df["outcome"].isin(["target", "stop", "stop_gap"])]
+    done = ["target", "stop", "stop_gap"]
+    res = df[df["outcome"].isin(done)]
+
+    def card(leg, mode):
+        t = res[(res["leg"] == leg) & (res["target_mode"] == mode)]
+        return f"{len(t)} trades, net R {t['net_r'].astype(float).sum():.2f}"
+
     lines = [
         f"### Phase 4 cycle run: {pair}  [variant {vname}]",
         f"- Variant: {vname} ({ACTIVE['text']})",
         f"- Window: start of data to {config.PRACTICE_END}; bad days NOT excluded",
         f"- Bars used: {len(m15)}; dropped outside trading week (NY clock): {dropped}",
-        f"- Orders made {n_all}, simulated {len(df)} ({'+'.join(kinds)})  |  Status: {statuses}",
-        f"- Resolved trades: {len(res)}, net R sum {res['net_r'].astype(float).sum():.2f}, "
-        f"open_at_cutoff {int((df['outcome'] == 'open_at_cutoff').sum())}",
+        f"- Pullback orders made {n_all}, simulated {len(orders)} ({'+'.join(kinds)}); "
+        f"zone orders {len(zorders)}  |  Status: {statuses}",
+        f"- Resolved: pullback {card('pullback', 'static')}; "
+        f"zone static {card('zone', 'static')}; zone liquidity {card('zone', 'liquidity')}",
+        f"- open_at_cutoff {int((df['outcome'] == 'open_at_cutoff').sum())}",
         f"- Lookahead: {'PASS' if look['pass'] else 'FAIL'} "
         f"({look['cuts']} cuts, {look['decisions']} decisions compared)",
         f"- Run time: {time.time() - t0:.0f}s\n",
