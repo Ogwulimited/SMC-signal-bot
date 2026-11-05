@@ -11,7 +11,13 @@ Bars outside the trading week (New York clock: Saturday, Sunday before 17:00,
 Friday from 17:00) are dropped at load time. This uses only each bar's own
 timestamp. The count is reported.
 
-Usage (repo root):  PAIR=eurusd python -m src.research.engine.run_cycle
+Variants (env VARIANT, default v1 = as first built):
+  v1: first read 5 counted swings, D1 and H4 must agree
+  v2: first read 3 counted swings, D1 and H4 must agree
+  v3: first read 3 counted swings, H4 alone decides the bias
+The lookahead re-runs use the same variant.
+
+Usage (repo root):  PAIR=eurusd VARIANT=v2 python -m src.research.engine.run_cycle
 """
 import json
 import os
@@ -32,6 +38,29 @@ PROCESSED_DIR = ROOT / "data" / "processed"
 OUT_DIR = ROOT / "data" / "phase4_cycle"
 TF_M15 = pd.Timedelta(minutes=15)
 NY = "America/New_York"
+
+# first_read None = use config.BIAS_FIRST_READ_SWINGS (5)
+VARIANTS = {
+    "v1": {"first_read": None, "bias_tfs": "both",
+           "text": "first read 5 swings (config default), D1 and H4 must agree"},
+    "v2": {"first_read": 3, "bias_tfs": "both",
+           "text": "first read 3 swings, D1 and H4 must agree"},
+    "v3": {"first_read": 3, "bias_tfs": "h4",
+           "text": "first read 3 swings, H4 alone decides the bias"},
+}
+ACTIVE = {"name": "v1", "first_read": None, "text": VARIANTS["v1"]["text"]}
+
+
+def set_variant(name):
+    name = (name or "v1").strip().lower()
+    if name not in VARIANTS:
+        raise SystemExit(f"Unknown VARIANT '{name}'. Use one of {sorted(VARIANTS)}")
+    v = VARIANTS[name]
+    config.BIAS_TIMEFRAMES = v["bias_tfs"]
+    ACTIVE["name"] = name
+    ACTIVE["first_read"] = v["first_read"]
+    ACTIVE["text"] = v["text"]
+    return name
 
 
 class FlipRecorder(cy.CycleRecorder):
@@ -54,7 +83,7 @@ class FlipRecorder(cy.CycleRecorder):
 
 def run_engine(m15):
     log = DecisionLog()
-    rec = FlipRecorder(log)
+    rec = FlipRecorder(log, ACTIVE["first_read"])
     DataFeed(m15, htf=("H1", "H4", "D1")).run(rec)
     return rec, log
 
@@ -109,6 +138,8 @@ def lookahead_check(m15, full_log, k):
 
 def run_pair(pair):
     t0 = time.time()
+    vname = set_variant(os.environ.get("VARIANT", "v1"))
+    print(f"[{pair}] variant {vname}: {ACTIVE['text']}", flush=True)
     cutoff = pd.Timestamp(config.PRACTICE_END, tz="UTC")
     m15 = load_m15(pair, cutoff)
     dropped = int(m15.attrs.get("dropped_weekend", 0))
@@ -142,7 +173,8 @@ def run_pair(pair):
 
     res = df[df["outcome"].isin(["target", "stop", "stop_gap"])]
     lines = [
-        f"### Phase 4 cycle run: {pair}",
+        f"### Phase 4 cycle run: {pair}  [variant {vname}]",
+        f"- Variant: {vname} ({ACTIVE['text']})",
         f"- Window: start of data to {config.PRACTICE_END}; bad days NOT excluded",
         f"- Bars used: {len(m15)}; dropped outside trading week (NY clock): {dropped}",
         f"- Orders: {len(df)}  |  Status: {statuses}",
