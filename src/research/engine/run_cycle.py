@@ -12,12 +12,18 @@ Friday from 17:00) are dropped at load time. This uses only each bar's own
 timestamp. The count is reported.
 
 Variants (env VARIANT, default v1 = as first built):
-  v1: first read 5 counted swings, D1 and H4 must agree
+  v1: first read 5 counted swings, D1 and H4 must agree, breaker + OB orders
   v2: first read 3 counted swings, D1 and H4 must agree
   v3: first read 3 counted swings, H4 alone decides the bias
+  v4: as v1, but only OB entries are simulated (breaker orders are dropped
+      after the engine run, so the decision log and lookahead check are the
+      same as v1)
 The lookahead re-runs use the same variant.
 
-Usage (repo root):  PAIR=eurusd VARIANT=v2 python -m src.research.engine.run_cycle
+Pullback trades are always counter-trend: sells in a bull HTF bias, buys in a
+bear HTF bias. With-trend zone trades are not built yet.
+
+Usage (repo root):  PAIR=eurusd VARIANT=v4 python -m src.research.engine.run_cycle
 """
 import json
 import os
@@ -39,16 +45,21 @@ OUT_DIR = ROOT / "data" / "phase4_cycle"
 TF_M15 = pd.Timedelta(minutes=15)
 NY = "America/New_York"
 
+BOTH = ("breaker", "ob")
+
 # first_read None = use config.BIAS_FIRST_READ_SWINGS (5)
 VARIANTS = {
-    "v1": {"first_read": None, "bias_tfs": "both",
-           "text": "first read 5 swings (config default), D1 and H4 must agree"},
-    "v2": {"first_read": 3, "bias_tfs": "both",
-           "text": "first read 3 swings, D1 and H4 must agree"},
-    "v3": {"first_read": 3, "bias_tfs": "h4",
-           "text": "first read 3 swings, H4 alone decides the bias"},
+    "v1": {"first_read": None, "bias_tfs": "both", "kinds": BOTH,
+           "text": "first read 5 swings (config default), D1 and H4 must agree, breaker + OB"},
+    "v2": {"first_read": 3, "bias_tfs": "both", "kinds": BOTH,
+           "text": "first read 3 swings, D1 and H4 must agree, breaker + OB"},
+    "v3": {"first_read": 3, "bias_tfs": "h4", "kinds": BOTH,
+           "text": "first read 3 swings, H4 alone decides the bias, breaker + OB"},
+    "v4": {"first_read": None, "bias_tfs": "both", "kinds": ("ob",),
+           "text": "as v1 (5 swings, D1 and H4 agree) but OB entries only, breaker orders dropped"},
 }
-ACTIVE = {"name": "v1", "first_read": None, "text": VARIANTS["v1"]["text"]}
+ACTIVE = {"name": "v1", "first_read": None, "kinds": BOTH,
+          "text": VARIANTS["v1"]["text"]}
 
 
 def set_variant(name):
@@ -59,6 +70,7 @@ def set_variant(name):
     config.BIAS_TIMEFRAMES = v["bias_tfs"]
     ACTIVE["name"] = name
     ACTIVE["first_read"] = v["first_read"]
+    ACTIVE["kinds"] = v["kinds"]
     ACTIVE["text"] = v["text"]
     return name
 
@@ -148,11 +160,15 @@ def run_pair(pair):
           f"dropped weekend-window bars: {dropped}", flush=True)
 
     rec, log = run_engine(m15)
+    n_all = len(rec.orders)
+    kinds = tuple(ACTIVE["kinds"])
+    orders = [o for o in rec.orders if o["kind"] in kinds]
     print(f"[{pair}] main run done in {time.time() - t0:.0f}s: "
           f"{len(log.items)} decisions, {len(rec.pullbacks)} pullbacks, "
-          f"{len(rec.orders)} orders, {len(rec.flips)} bias flips", flush=True)
+          f"{n_all} orders made, {len(orders)} kept ({'+'.join(kinds)}), "
+          f"{len(rec.flips)} bias flips", flush=True)
 
-    recs = so.simulate_all(rec.orders, m15, pair)
+    recs = so.simulate_all(orders, m15, pair)
     so.tag_trades(recs, rec.flips)
     df = pd.DataFrame(recs, columns=so.TRADE_COLS)
 
@@ -164,7 +180,7 @@ def run_pair(pair):
     pd.DataFrame(rec.pullback_rows()).to_csv(OUT_DIR / f"{pair}_pullbacks.csv", index=False)
     statuses = df["status"].value_counts().to_dict() if len(df) else {}
     funnel = {"counts": {k_: int(v) for k_, v in rec.counts.items()},
-              "orders": len(rec.orders), "statuses": statuses,
+              "orders": len(orders), "orders_made": n_all, "statuses": statuses,
               "pullbacks": len(rec.pullbacks), "flips": len(rec.flips),
               "decisions": len(log.items), "bars": len(m15),
               "dropped_weekend_bars": dropped}
@@ -177,7 +193,7 @@ def run_pair(pair):
         f"- Variant: {vname} ({ACTIVE['text']})",
         f"- Window: start of data to {config.PRACTICE_END}; bad days NOT excluded",
         f"- Bars used: {len(m15)}; dropped outside trading week (NY clock): {dropped}",
-        f"- Orders: {len(df)}  |  Status: {statuses}",
+        f"- Orders made {n_all}, simulated {len(df)} ({'+'.join(kinds)})  |  Status: {statuses}",
         f"- Resolved trades: {len(res)}, net R sum {res['net_r'].astype(float).sum():.2f}, "
         f"open_at_cutoff {int((df['outcome'] == 'open_at_cutoff').sum())}",
         f"- Lookahead: {'PASS' if look['pass'] else 'FAIL'} "
