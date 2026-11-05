@@ -11,7 +11,7 @@ Terms
 - Pullback trade = counter-trend, always: a sell in a bull HTF bias, a buy in a
   bear HTF bias. Entry models: breaker and OB.
 - Zone trade = with the trend: a buy at an HTF buy zone in an uptrend, a sell at
-  an HTF sell zone in a downtrend. NOT built yet.
+  an HTF sell zone in a downtrend. His MAIN trades. Being built (entry ZT below).
 
 ## V1 - pullback system as built (baseline, nothing tuned)
 
@@ -19,7 +19,7 @@ Scope
 - Pullback (counter-trend) trades only, breaker model and OB model, plain
   variant (no FVG). In a bull HTF bias these are sells; in a bear HTF bias
   they are buys (exact mirror).
-- Zone trades (with the trend) are NOT built. The result below is only the
+- Zone trades (with the trend) were not built then. The result below is only the
   pullback half of the system.
 
 Rules
@@ -91,16 +91,61 @@ Change from V1 (nothing else changes)
 - Only OB-model pullback orders are simulated. Breaker orders are dropped after
   the engine run, so the decision log and the lookahead check are as in V1.
 - Bias: 5 swings, D1 and H4 agree (as V1).
-Expected (from reading the code, not yet run): stacking numbers equal the OB row
-of V1 (436 trades, -> +8.22R, win 27.8%). One-at-a-time numbers will differ.
-Scope: pullback trades only; zone trades not built.
-Run: all 28 pairs, practice years, LOOKAHEAD_CUTS=10.
+Result (28 pairs, practice years, lookahead PASS)
+- 436 resolved trades, Net R +8.22, win 27.8%, PF 1.02, expectancy +0.019R,
+  max drawdown 39.20R, longest losing streak 15. Equals the V1 OB row exactly.
+- One-at-a-time: 429 trades, +3.87R, PF 1.01.
+- By year: 2016 +0.90, 2017 +12.08, 2018 +7.07, 2019 -20.70, 2020 -9.05,
+  2021 +15.04, 2022 (Jan-Jun) +2.89.
+- Verdict: WEAK / NOT PROVEN. The gain over V1 is inside the noise
+  (about +/-40R for 436 trades) and mostly comes from dropping the breaker rows.
+- His decision: breaker and OB both on standby, to come back to. V4 is NOT
+  adopted; V1 stays the base.
+
+## ZT - zone trades built on V1 (variant "zt")  [not a tuning version]
+
+Why: zone trades (with the trend) are his MAIN trades and were not built. This
+is his rule being built on the V1 base he chose, not a switch adopted because a
+measurement favoured it. Versions used stays 4 of 6.
+Bias and pullback rules: exactly V1 (5 swings, D1 and H4 agree, breaker + OB).
+Zone buy, in order (sells are the mirror):
+1. Bias up. HTF BOS arms the cycle, an M15 CHoCH down starts the pullback.
+2. An M15 BOS down forms (before the zone, on the touch, or inside the zone).
+3. A wick touches a remembered fresh HTF buy zone (touch is MANDATORY and must
+   come before the CHoCH up closes).
+4. A body closes above the high of the BOS-down leg = CHoCH up.
+5. Breaker buy: "the" breaker of that CHoCH, limit at its near edge once dead.
+   OB buy: the CHoCH's own box; a BOS up after it gives the inducement; a wick
+   clears it; limit at the box near edge. Stop = far edge -/+ 0.2 x ATR.
+6. Scan ends on a body close beyond the ceiling, through the zone's far edge,
+   or bias lost. Pending orders are cancelled; filled trades keep running.
+Targets (two scorecards, same entry and stop):
+- Static 1:3.
+- Liquidity: nearest unswept M15 swing at least 3R away (between entry and the
+  ceiling); if none, the ceiling.
+Assumptions (not confirmed by him)
+- Z1 touch = any wick reaching the zone near edge.
+- Z2 fresh zones only; the zone list is frozen at pullback start (a live read at
+  the touch was dropped because it would change the pullback numbers).
+- Z3 CHoCH = the M15 structure's own CHoCH; its level is printed on the sheet.
+- Z4 touch and CHoCH-close on the same bar is valid.
+- Z5 a CHoCH with the trend before the touch clears the BOS memory.
+- Z7 more attempts in the same scan are allowed.
+- Z8 no CHoCH-down gate needed (read from structure.py).
+- Z9 zone trades only inside the cycle flow (HTF BOS, M15 CHoCH against, touch).
+  A touch without that pullback is not traded.
+- Z10 BOS memory = a BOS against the trend since the last CHoCH with the trend.
+- T1 liquidity = unswept M15 swing (N=2), known at its confirm bar, up to the ceiling.
+- T2 no swing at least 3R away: target = ceiling even if closer than 3R.
+Checks for the run
+- Lookahead PASS (zone steps are in the decision log).
+- Pullback scorecard equals V1 exactly: 1,455 trades, -21.13R.
+Run: all 28 pairs, practice years, LOOKAHEAD_CUTS=10, variant zt.
 Status: written before the run. Result: pending.
 
 ## How versions are judged
-- Pullbacks are the side trade. His main trades are zone trades, which are not
-  built yet. These tests only decide whether the reversal half is worth keeping
-  and in what form.
+- Pullbacks are the side trade. His main trades are zone trades. The ZT run
+  measures them; it is not a tuning choice.
 - A variant counts as better only with lookahead PASS and a better expectancy
   and profit factor than V1 on the same practice years.
-- Nothing is locked yet. Zone trades come first.
+- Nothing is locked yet.
