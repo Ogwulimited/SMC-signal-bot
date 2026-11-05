@@ -8,6 +8,11 @@ on:
         type: choice
         options: [smoke, full]
         default: smoke
+      variants:
+        description: "v1 = 5 swings, D1+H4 (first build); v2 = 3 swings, D1+H4; v3 = 3 swings, H4 only"
+        type: choice
+        options: [v2_and_v3, v1, v2, v3]
+        default: v2_and_v3
 
 jobs:
   plan:
@@ -15,19 +20,28 @@ jobs:
     outputs:
       pairs: ${{ steps.pick.outputs.pairs }}
       csv: ${{ steps.pick.outputs.csv }}
+      variants: ${{ steps.pick.outputs.variants }}
     steps:
-      - name: Pick pair list
+      - name: Pick pair list and variants
         id: pick
         env:
           MODE: ${{ inputs.mode }}
+          VARIANTS: ${{ inputs.variants }}
         run: |
           if [ "$MODE" = "full" ]; then
             CSV="eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eurgbp,audjpy,eurchf,eurcad,euraud,eurnzd,gbpchf,gbpcad,gbpaud,gbpnzd,audcad,audchf,audnzd,nzdjpy,nzdcad,nzdchf,cadjpy,cadchf,chfjpy"
           else
             CSV="eurusd"
           fi
+          case "$VARIANTS" in
+            v1) VJ='["v1"]' ;;
+            v2) VJ='["v2"]' ;;
+            v3) VJ='["v3"]' ;;
+            *)  VJ='["v2","v3"]' ;;
+          esac
           echo "csv=$CSV" >> "$GITHUB_OUTPUT"
           echo "pairs=$(echo "$CSV" | jq -R -c 'split(",")')" >> "$GITHUB_OUTPUT"
+          echo "variants=$VJ" >> "$GITHUB_OUTPUT"
 
   simulate:
     needs: plan
@@ -37,6 +51,7 @@ jobs:
       fail-fast: false
       matrix:
         pair: ${{ fromJSON(needs.plan.outputs.pairs) }}
+        variant: ${{ fromJSON(needs.plan.outputs.variants) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -54,16 +69,17 @@ jobs:
         run: |
           test -f "data/processed/${{ matrix.pair }}_m15.parquet" || { echo "MISSING processed data: ${{ matrix.pair }}_m15.parquet (cache expired? re-run histdata.yml in full mode)"; exit 1; }
 
-      - name: Run cycle ${{ matrix.pair }}
+      - name: Run cycle ${{ matrix.pair }} ${{ matrix.variant }}
         env:
           PAIR: ${{ matrix.pair }}
+          VARIANT: ${{ matrix.variant }}
           LOOKAHEAD_CUTS: "10"
         run: python -m src.research.engine.run_cycle
 
-      - name: Upload cycle output ${{ matrix.pair }}
+      - name: Upload cycle output ${{ matrix.pair }} ${{ matrix.variant }}
         uses: actions/upload-artifact@v4
         with:
-          name: cycle-${{ matrix.pair }}
+          name: cycle-${{ matrix.pair }}-${{ matrix.variant }}
           path: data/phase4_cycle/${{ matrix.pair }}_*
           retention-days: 14
           if-no-files-found: error
@@ -72,29 +88,33 @@ jobs:
     needs: [plan, simulate]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.plan.outputs.variants) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - run: pip install pandas numpy
 
-      - name: Download all pair outputs
+      - name: Download pair outputs ${{ matrix.variant }}
         uses: actions/download-artifact@v4
         with:
-          pattern: cycle-*
+          pattern: cycle-*-${{ matrix.variant }}
           merge-multiple: true
           path: data/phase4_cycle
 
-      - name: Build report
+      - name: Build report ${{ matrix.variant }}
         env:
           REPORT_LABEL: ${{ inputs.mode }}
           EXPECT_PAIRS: ${{ needs.plan.outputs.csv }}
         run: python -m src.research.engine.report_cycle
 
-      - name: Upload report
+      - name: Upload report ${{ matrix.variant }}
         uses: actions/upload-artifact@v4
         with:
-          name: report-cycle-${{ inputs.mode }}
+          name: report-cycle-${{ inputs.mode }}-${{ matrix.variant }}
           path: reports/phase4/report_cycle_*.md
           retention-days: 30
           if-no-files-found: error
