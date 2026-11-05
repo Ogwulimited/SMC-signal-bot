@@ -9,10 +9,10 @@ on:
         options: [smoke, full]
         default: smoke
       variants:
-        description: "v1 = 5 sw, D1+H4; v2 = 3 sw, D1+H4; v3 = 3 sw, H4 only; v4 = v1 with OB entries only"
+        description: "zt = v1 + zone trades; v1 = 5 sw, D1+H4; v2 = 3 sw, D1+H4; v3 = 3 sw, H4 only; v4 = v1 with OB entries only"
         type: choice
-        options: [v4, v1, v2, v3, v2_and_v3]
-        default: v4
+        options: [zt, v4, v1, v2, v3, v2_and_v3]
+        default: zt
 
 jobs:
   plan:
@@ -34,6 +34,7 @@ jobs:
             CSV="eurusd"
           fi
           case "$VARIANTS" in
+            zt) VJ='["zt"]' ;;
             v1) VJ='["v1"]' ;;
             v2) VJ='["v2"]' ;;
             v3) VJ='["v3"]' ;;
