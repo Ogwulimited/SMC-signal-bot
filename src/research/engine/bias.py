@@ -7,6 +7,9 @@ First read: BIAS_FIRST_READ_SWINGS counted swings in one direction.
 After that: a CHoCH against the bias puts it on warning (the CHoCH high is the
   warning level). A BOS in the new direction while on warning flips the bias.
   A close back beyond the warning level clears the warning, bias unchanged.
+
+htf_bias() combines the timeframes. config.BIAS_TIMEFRAMES = "both" (default):
+D1 and H4 must agree. "h4": H4 alone decides.
 """
 import math
 
@@ -119,7 +122,13 @@ class BiasTracker:
 
 
 def htf_bias(d1, h4):
-    """'bull' or 'bear' when D1 and H4 agree, otherwise None (nothing trades)."""
+    """'bull' or 'bear' or None (nothing trades).
+
+    "both" (default): D1 and H4 must agree.
+    "h4": H4 alone decides (D1 is ignored).
+    """
+    if getattr(config, "BIAS_TIMEFRAMES", "both") == "h4":
+        return h4.bias if h4.bias != "none" else None
     if d1.bias != "none" and d1.bias == h4.bias:
         return d1.bias
     return None
