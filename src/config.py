@@ -118,3 +118,14 @@ WRONG_COLOUR_SEARCH_DIRECTION = "back"  # assumption 21: look back for the right
 # --- Bias timeframes (V3 test; default keeps V1 behaviour) ---
 # "both" = D1 and H4 must agree.  "h4" = H4 alone decides the bias.
 BIAS_TIMEFRAMES = "both"
+
+# ======================================================================
+# MAJOR-SWING REBUILD (his chart rules) -- ADDITIONS ONLY
+# MAJOR_HTF is False by default, so every old variant and old test behaves
+# exactly as before. A new variant in run_cycle.py turns it on.
+# ======================================================================
+MAJOR_HTF = False              # True = H4/D1 use Major swings (N below) and the 3-swing first read
+MAJOR_H4_SWING_N = 8           # same N as his approved TradingView chart
+MAJOR_D1_SWING_N = 8
+MAJOR_BIAS_FIRST_READ = 3      # his choice A: 3 counted Major swings for the first read
+ZONE_CANCEL_PIPS = 150         # cancel a pending zone order if price runs this far from entry
