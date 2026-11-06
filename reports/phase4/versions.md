@@ -6,12 +6,13 @@ because a measurement favoured it costs one version.
 Exam years (2022-07-01 to 2026-10-01) stay sealed until one version is locked.
 
 Versions used: 4 of 6 (V1, V2, V3, V4).
+ZT and MZ are rebuilds from his rules and chart checks, not tuning versions.
 
 Terms
 - Pullback trade = counter-trend, always: a sell in a bull HTF bias, a buy in a
   bear HTF bias. Entry models: breaker and OB.
 - Zone trade = with the trend: a buy at an HTF buy zone in an uptrend, a sell at
-  an HTF sell zone in a downtrend. His MAIN trades. Being built (entry ZT below).
+  an HTF sell zone in a downtrend. His MAIN trades (built in ZT, rebuilt in MZ).
 
 ## V1 - pullback system as built (baseline, nothing tuned)
 
@@ -141,11 +142,93 @@ Checks for the run
 - Lookahead PASS (zone steps are in the decision log).
 - Pullback scorecard equals V1 exactly: 1,455 trades, -21.13R.
 Run: all 28 pairs, practice years, LOOKAHEAD_CUTS=10, variant zt.
+Result (28 pairs, practice years; a measurement, not a tuning signal)
+- Lookahead PASS (3,196,569 decisions, 10 cuts per pair).
+- Pullback card equals V1 exactly: 1,455 trades, -21.13R (check passed).
+- MAIN card (zone, static 1:3): 284 trades, Net R +10.00, win 28.2%, PF 1.04,
+  expectancy +0.035R, avg R:R 2.66, max drawdown 23.69R, longest losing
+  streak 14, about 3.65 trades per month. Verdict: WEAK / NOT PROVEN.
+- Zone liquidity card: 283 trades, +3.04R, PF 1.01.
+- Buys 125 trades -11.73R; sells 159 trades +21.74R.
+- Orders: filled 284, skipped_spread 358, fill_beyond_stop 25, unfilled_cancelled 57.
+- By year (MAIN): 2016 +12.98, 2017 +0.93, 2018 +1.28, 2019 -4.11,
+  2020 +9.61, 2021 -15.27, 2022 (Jan-Jun) +4.59.
+- His chart check of the first 10 zone trades (all sells): trade 1 (CHFJPY)
+  perfect; trades 2-9 all GBPCAD from one zone and one touch (7 losses, 1 win),
+  with trade 2 left unfilled while price fell about 275 pips, then filled on a
+  spike back and stopped; trade 10 (EURNZD) used an internal H4 zone while the
+  next major D1 low was still unbroken. These three findings led to MZ.
+
+## MZ - rebuild from his chart rules (variant "mz")  [not a tuning version]
+
+Why: his chart check of the ZT trades showed three things the system did wrong.
+These are his rules corrected, not a switch adopted because a number favoured it.
+Versions used stays 4 of 6. V1-V4 and ZT become history (they used N=2/3 swings).
+
+Change 1 - Major swings for H4 and D1 (bias and HTF zones)
+- H4 and D1 use N=8 swings (config MAJOR_H4_SWING_N, MAJOR_D1_SWING_N), matching
+  his approved TradingView script.
+- A major low is the lowest point of a whole leg; a major high is the highest
+  point of the pullback between two major lows. Smaller swings are internal.
+- BOS = body close beyond the last major swing; only then is a POI drawn.
+  Breaking an internal swing does nothing. Uptrend is the mirror.
+- Bias first read = 3 counted Major swings (config MAJOR_BIAS_FIRST_READ). D1 and
+  H4 must agree.
+- M15 stays N=2 and is never filtered to Major (breaker and OB entries as before).
+- Switch: config.MAJOR_HTF (False for every older variant, True for mz).
+
+Change 2 - used-zone rule B (zone trades only)
+1. A zone is touched when a wick reaches it (body close not needed).
+2. The first time a trade is TAKEN from a zone, the zone is spent. "Taken" =
+   the order really fills: touched, next open not beyond the stop, spread/risk
+   not above 0.15 (the same tests as the simulator).
+3. A spent zone is never used again; later taps are ignored.
+4. After the first trade, hunting continues in the same move: new BOS, CHoCH,
+   breaker and OB setups still count, no new touch needed.
+5. Hunting stops only on a ceiling break, bias lost, or a body close through
+   the far edge of the zone; then look for a different fresh zone.
+6. If an order is cancelled before filling, the zone is NOT spent.
+
+Change 3 - cancel rule (zone orders only)
+- A pending zone order is cancelled (end reason "ran_away") if a wick runs 150
+  pips beyond its entry in the trade-target direction before the entry is
+  touched. Sell: price falls 150 pips below entry. Buy: price rises 150 above.
+- Pip size: 0.0001, or 0.01 for JPY pairs (150 pips = 0.0150 or 1.50).
+- Applies to breaker and OB zone orders alike. Pullback orders are unchanged.
+- The zone is not spent by a cancelled order.
+
+What stays the same as ZT: breaker and OB entries, stop = far edge -/+ 0.2 x ATR,
+static 1:3 and liquidity targets, ceiling rules, spread skip, fill at next open.
+Variant mz passes no first_read override, so the first read stays 3.
+
+Assumptions (not confirmed by him)
+- Z11 "used" in poi.py means wick-touched only (poi.py not read). With rules on,
+  zones that are fresh or used (never dead) and not spent can be touched.
+- Z12 spent zones are keyed by the zone id (a D1 zone refined to an H4 candle
+  keeps its D1 id).
+- Z13 other pending orders from a zone keep running after it is spent.
+- Z14 a bar that touches the entry and also runs 150 pips = cancelled.
+- The 150-pip check starts on the first bar after placement.
+- Z1-Z10 and T1-T2 as in ZT.
+
+Checks for the run
+- Lookahead PASS (all zone rule steps are in the decision log).
+- Pullback numbers are a NEW baseline (Major swings change bias and zones).
+  They will NOT equal V1 (1,455 trades, -21.13R). That is expected, not a failure.
+- Old tests should still pass (MAJOR_HTF and zone rules are off by default).
+
+Measure after the run (not decisions)
+- Pair funnel: does N=8 on D1 delay or block the 3-swing first read on some pairs?
+- How many orders ended "ran_away", and how many zones were spent.
+- Whether same-zone overtrading (GBPCAD style) fell.
+
+Run: all 28 pairs, practice years, LOOKAHEAD_CUTS=10, variant mz.
 Status: written before the run. Result: pending.
 
 ## How versions are judged
-- Pullbacks are the side trade. His main trades are zone trades. The ZT run
-  measures them; it is not a tuning choice.
+- Pullbacks are the side trade. His main trades are zone trades. The ZT and MZ
+  runs measure them; they are not tuning choices.
 - A variant counts as better only with lookahead PASS and a better expectancy
-  and profit factor than V1 on the same practice years.
+  and profit factor than V1 on the same practice years. MZ changes the bias
+  engine, so it starts a new baseline and is compared as a rebuild.
 - Nothing is locked yet.
