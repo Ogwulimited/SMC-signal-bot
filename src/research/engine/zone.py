@@ -16,9 +16,20 @@ Zone rules (his teaching):
     or bias lost. Pending orders are cancelled; filled trades keep running.
   * Each zone order is played twice by the simulator: static 1:3 and liquidity.
 
+RULES SWITCH (SETTINGS["rules"], used by variant mz; all off otherwise):
+  * Used-zone rule B: the first time a trade is TAKEN (order filled, same tests
+    as simulate_orders.py: touch, next open, not beyond stop, spread ok) from a
+    zone, that zone is spent and never used again. A zone touched but never
+    taken (order cancelled, skipped, or no setup) is NOT spent.
+  * Cancel rule: a pending zone order whose entry has not been touched is
+    cancelled (end_reason "ran_away") when a wick runs ZONE_CANCEL_PIPS beyond
+    the entry in the trade direction. Needs SETTINGS["pip"] (0.0001 / 0.01 JPY).
+  * SETTINGS["spread"] = config.SPREAD_PRICE[pair] (price units).
+
 ASSUMPTIONS (not confirmed yet):
   Z1 touch = any wick reaching the zone near edge (cycle's own test).
   Z2 only fresh zones; the zone list is frozen at pullback start.
+     (rules on: fresh or used, never dead, and never spent.)
   Z3 CHoCH = the M15 structure's own CHoCH; level shown on the trade sheet.
   Z4 touch bar and CHoCH-close on the same bar is valid.
   Z5 a CHoCH with the trend before the touch clears the BOS memory.
@@ -26,6 +37,10 @@ ASSUMPTIONS (not confirmed yet):
   Z8 no CHoCH-down gate (a BOS down already implies an earlier CHoCH down).
   Z9 zone trades only inside the cycle flow above.
   Z10 BOS memory = a BOS against the trend since the last CHoCH with the trend.
+  Z11 rules on: "used" in poi.py means wick-touched only (not read yet).
+  Z12 spent zones are keyed by the zone id (a refined D1 zone keeps its D1 id).
+  Z13 other pending orders from a zone keep running after it is spent.
+  Z14 a bar that touches the entry and also runs the cancel distance = cancelled.
   T1 liquidity = unswept M15 swing (N=LTF_SWING_N) between entry and ceiling,
      known at its confirm bar. T2 none >= 3R away: target = the ceiling.
 """
@@ -36,12 +51,16 @@ from src import config
 from src.research.engine import cycle as cy
 from src.research.engine.bias import htf_bias
 
-SETTINGS = {"enabled": False}
+SETTINGS = {"enabled": False, "rules": False, "pip": 0.0001, "spread": 0.0}
 LIQ_CAP = 100
 
 
 def _on():
     return bool(SETTINGS["enabled"])
+
+
+def _rules():
+    return bool(SETTINGS["enabled"]) and bool(SETTINGS.get("rules", False))
 
 
 class ZoneRecorder(cy.CycleRecorder):
@@ -59,12 +78,23 @@ class ZoneRecorder(cy.CycleRecorder):
         self._swin = deque(maxlen=2 * n + 1)
         self._sw_hi = []   # unswept M15 swing highs, ascending
         self._sw_lo = []   # unswept M15 swing lows, ascending
+        self._spent = set()   # zone ids spent by a real fill (rules on)
+        self._watch = []      # zone orders tracked for touch / fill (rules on)
+        if _rules():
+            if not (float(SETTINGS.get("pip", 0.0)) > 0.0
+                    and float(SETTINGS.get("spread", 0.0)) > 0.0):
+                raise ValueError("zone rules on: set SETTINGS pip and spread first")
 
     # ---- feed hooks ----------------------------------------------------
     def on_bar_close(self, bar, feed):
-        if _on() and bar.tf == "M15":
+        m15 = bar.tf == "M15"
+        if _on() and m15:
             self._swings(bar)
+            if _rules():
+                self._resolve_fills(bar)
         super().on_bar_close(bar, feed)
+        if m15 and _rules():
+            self._watch_orders(bar)
 
     def _swings(self, bar):
         h = float(bar.high)
@@ -87,6 +117,111 @@ class ZoneRecorder(cy.CycleRecorder):
                 insort(self._sw_hi, ch)
             if cl == min(lows) and cl < min(lows[:n]) and cl < min(lows[n + 1:]):
                 insort(self._sw_lo, cl)
+
+    # ---- rules: fill tracking, cancel, spent zones ---------------------
+    def _cancel_dist(self):
+        return float(config.ZONE_CANCEL_PIPS) * float(SETTINGS["pip"])
+
+    def _resolve_fills(self, bar):
+        """Runs BEFORE the bar is processed: orders touched on the previous bar
+        fill at THIS bar's open (same tests as the simulator)."""
+        if not self._watch:
+            return
+        keep = []
+        now = bar.close_time
+        for w in self._watch:
+            if w["st"] != "touched":
+                keep.append(w)
+                continue
+            o = w["o"]
+            sell = o["side"] == "sell"
+            fill = float(bar.open)
+            stop = float(o["stop"])
+            if (sell and fill >= stop) or ((not sell) and fill <= stop):
+                self.counts["z_fill_beyond_stop"] += 1
+                continue
+            risk = abs(fill - stop)
+            if float(SETTINGS["spread"]) / risk > float(config.MAX_SPREAD_RISK_RATIO):
+                self.counts["z_fill_skipped_spread"] += 1
+                continue
+            zid = o["zone_id"]
+            if zid not in self._spent:
+                self._spent.add(zid)
+                self.counts["z_zone_spent"] += 1
+                self._log("z_spent", now, zone=zid, order=o["id"])
+        self._watch = keep
+
+    def _watch_orders(self, bar):
+        """Runs AFTER the bar is processed: end checks, cancel, touch."""
+        if not self._watch:
+            return
+        now = bar.close_time
+        cancel = self._cancel_dist()
+        keep = []
+        for w in self._watch:
+            if w["st"] != "pending":
+                keep.append(w)
+                continue
+            o = w["o"]
+            if now <= o["placed_time"]:
+                keep.append(w)          # the placing bar itself never counts
+                continue
+            end = o["end_time"]
+            if end is not None:
+                # an ended order can only touch on a ceiling_break ending bar
+                if not (o["end_reason"] == "ceiling_break" and now <= end):
+                    continue
+            sell = o["side"] == "sell"
+            entry = float(o["entry"])
+            if end is None and cancel > 0.0:
+                if sell:
+                    ran = float(bar.low) <= entry - cancel
+                else:
+                    ran = float(bar.high) >= entry + cancel
+                if ran:
+                    o["end_time"] = now
+                    o["end_reason"] = "ran_away"
+                    self.counts["z_ran_away"] += 1
+                    self._log("z_ran_away", now, order=o["id"], zone=o["zone_id"])
+                    continue
+            touched = float(bar.high) >= entry if sell else float(bar.low) <= entry
+            if touched:
+                w["st"] = "touched"
+                keep.append(w)
+            elif end is None:
+                keep.append(w)
+        self._watch = keep
+
+    def _freeze_zones(self):
+        if not _rules():
+            return super()._freeze_zones()
+        buy_zone = self.ctx["zone_side"] == "buy"
+        out = []
+        for tf in ("D1", "H4"):
+            for p in self.books[tf].usable(self.ctx["zone_side"], include_used=True):
+                if p.id in self._spent:
+                    self.counts["z_spent_skipped"] += 1
+                    continue
+                out.append(self._refine(p, buy_zone))
+        return out
+
+    def _zone_touched(self, bar):
+        if not _rules():
+            return super()._zone_touched(bar)
+        up = self.ctx["up"]
+        best = None
+        for z in self._pb["zones"]:
+            if z["poi"].state not in ("fresh", "used") or z["id"] in self._spent:
+                continue
+            if up:
+                hit = bar.low <= z["high"]
+                near = z["high"]
+            else:
+                hit = bar.high >= z["low"]
+                near = z["low"]
+            if hit and (best is None or (near > best[0] if up else near < best[0])):
+                best = (near, z)
+        return best[1] if best is not None else None
 
     def _on_m15(self, bar, ev):
         self._ev = ev
@@ -279,9 +414,11 @@ class ZoneRecorder(cy.CycleRecorder):
                  "bos_time": s["bos_time"], "zone_touch_time": sc["touch_time"],
                  "zone_tf": z["tf"], "zone_low": float(z["low"]),
                  "zone_high": float(z["high"]), "choch_time": s["choch_time"],
-                 "choch_level": s["choch_level"]}
+                 "choch_level": s["choch_level"], "zone_id": z["id"]}
         sc["zorders"].append(order)
         self.zorders.append(order)
+        if _rules():
+            self._watch.append({"o": order, "st": "pending"})
         self.counts["z_orders_" + kind] += 1
         self._log("z_order", now, id=order["id"], order_kind=kind, side=order["side"],
                   entry=order["entry"], stop=order["stop"], setup=s["id"],
