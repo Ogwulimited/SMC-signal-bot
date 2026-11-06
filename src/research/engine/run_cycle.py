@@ -19,13 +19,20 @@ Variants (env VARIANT, default v1 = as first built):
   zt: as v1 (pullbacks, breaker + OB) PLUS zone trades (with the trend):
       breaker and OB entries, each played with a static 1:3 target and a
       liquidity target. Zone and pullback trades are separate scorecards.
+  mz: REBUILD from his chart rules (not a tuning version):
+      Major swings for H4/D1 (N=8, config MAJOR_*), bias first read 3 counted
+      Major swings, plus zone trades with used-zone rule B (a zone is spent
+      when a trade from it is really filled) and the 150-pip cancel of
+      pending zone orders. M15 stays N=2.
 The lookahead re-runs use the same variant.
 
 Pullback trades are always counter-trend: sells in a bull HTF bias, buys in a
 bear HTF bias. Zone trades go with the trend: buys in a bull bias, sells in a
 bear bias.
 
-Usage (repo root):  PAIR=eurusd VARIANT=zt python -m src.research.engine.run_cycle
+Pip size for the cancel rule: 0.01 for JPY pairs, 0.0001 otherwise.
+
+Usage (repo root):  PAIR=eurusd VARIANT=mz python -m src.research.engine.run_cycle
 """
 import json
 import os
@@ -49,22 +56,33 @@ NY = "America/New_York"
 
 BOTH = ("breaker", "ob")
 
-# first_read None = use config.BIAS_FIRST_READ_SWINGS (5)
+# first_read None = use config.BIAS_FIRST_READ_SWINGS (5), or the Major value
+# (MAJOR_BIAS_FIRST_READ) when major is on (the mapper decides).
 VARIANTS = {
     "v1": {"first_read": None, "bias_tfs": "both", "kinds": BOTH, "zone": False,
+           "major": False, "rules": False,
            "text": "first read 5 swings (config default), D1 and H4 must agree, breaker + OB"},
     "v2": {"first_read": 3, "bias_tfs": "both", "kinds": BOTH, "zone": False,
+           "major": False, "rules": False,
            "text": "first read 3 swings, D1 and H4 must agree, breaker + OB"},
     "v3": {"first_read": 3, "bias_tfs": "h4", "kinds": BOTH, "zone": False,
+           "major": False, "rules": False,
            "text": "first read 3 swings, H4 alone decides the bias, breaker + OB"},
     "v4": {"first_read": None, "bias_tfs": "both", "kinds": ("ob",), "zone": False,
+           "major": False, "rules": False,
            "text": "as v1 (5 swings, D1 and H4 agree) but OB entries only, breaker orders dropped"},
     "zt": {"first_read": None, "bias_tfs": "both", "kinds": BOTH, "zone": True,
+           "major": False, "rules": False,
            "text": "as v1 (5 swings, D1 and H4 agree) plus zone trades (with the trend), "
                    "breaker + OB, static and liquidity targets"},
+    "mz": {"first_read": None, "bias_tfs": "both", "kinds": BOTH, "zone": True,
+           "major": True, "rules": True,
+           "text": "REBUILD: Major swings H4/D1 (N=8), first read 3 Major swings, D1 and H4 "
+                   "agree, pullbacks + zone trades, used-zone rule B (spent on real fill), "
+                   "150-pip cancel of pending zone orders"},
 }
 ACTIVE = {"name": "v1", "first_read": None, "kinds": BOTH, "zone": False,
-          "text": VARIANTS["v1"]["text"]}
+          "major": False, "rules": False, "text": VARIANTS["v1"]["text"]}
 
 
 def set_variant(name):
@@ -73,13 +91,28 @@ def set_variant(name):
         raise SystemExit(f"Unknown VARIANT '{name}'. Use one of {sorted(VARIANTS)}")
     v = VARIANTS[name]
     config.BIAS_TIMEFRAMES = v["bias_tfs"]
+    config.MAJOR_HTF = bool(v["major"])
     zn.SETTINGS["enabled"] = bool(v["zone"])
+    zn.SETTINGS["rules"] = bool(v["rules"])
     ACTIVE["name"] = name
     ACTIVE["first_read"] = v["first_read"]
     ACTIVE["kinds"] = v["kinds"]
     ACTIVE["zone"] = bool(v["zone"])
+    ACTIVE["major"] = bool(v["major"])
+    ACTIVE["rules"] = bool(v["rules"])
     ACTIVE["text"] = v["text"]
     return name
+
+
+def pip_size(pair):
+    """0.01 for JPY pairs, 0.0001 otherwise."""
+    return 0.01 if "jpy" in str(pair).lower() else 0.0001
+
+
+def set_pair_settings(pair):
+    """Per-pair values the zone rules need. Set before any engine run."""
+    zn.SETTINGS["pip"] = pip_size(pair)
+    zn.SETTINGS["spread"] = float(config.SPREAD_PRICE[pair])
 
 
 class FlipRecorder(zn.ZoneRecorder):
@@ -158,7 +191,10 @@ def lookahead_check(m15, full_log, k):
 def run_pair(pair):
     t0 = time.time()
     vname = set_variant(os.environ.get("VARIANT", "v1"))
+    set_pair_settings(pair)
     print(f"[{pair}] variant {vname}: {ACTIVE['text']}", flush=True)
+    print(f"[{pair}] major_htf={ACTIVE['major']} zone_rules={ACTIVE['rules']} "
+          f"pip={zn.SETTINGS['pip']} spread={zn.SETTINGS['spread']}", flush=True)
     cutoff = pd.Timestamp(config.PRACTICE_END, tz="UTC")
     m15 = load_m15(pair, cutoff)
     dropped = int(m15.attrs.get("dropped_weekend", 0))
@@ -196,7 +232,9 @@ def run_pair(pair):
               "statuses": statuses,
               "pullbacks": len(rec.pullbacks), "flips": len(rec.flips),
               "decisions": len(log.items), "bars": len(m15),
-              "dropped_weekend_bars": dropped}
+              "dropped_weekend_bars": dropped,
+              "variant": vname, "major_htf": bool(ACTIVE["major"]),
+              "zone_rules": bool(ACTIVE["rules"]), "pip": zn.SETTINGS["pip"]}
     (OUT_DIR / f"{pair}_funnel.json").write_text(json.dumps(funnel, indent=1, default=str))
     (OUT_DIR / f"{pair}_lookahead.json").write_text(json.dumps(look, indent=1, default=str))
 
@@ -210,6 +248,8 @@ def run_pair(pair):
     lines = [
         f"### Phase 4 cycle run: {pair}  [variant {vname}]",
         f"- Variant: {vname} ({ACTIVE['text']})",
+        f"- Switches: major_htf {ACTIVE['major']}, zone_rules {ACTIVE['rules']}, "
+        f"pip {zn.SETTINGS['pip']}",
         f"- Window: start of data to {config.PRACTICE_END}; bad days NOT excluded",
         f"- Bars used: {len(m15)}; dropped outside trading week (NY clock): {dropped}",
         f"- Pullback orders made {n_all}, simulated {len(orders)} ({'+'.join(kinds)}); "
