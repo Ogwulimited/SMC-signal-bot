@@ -6,13 +6,14 @@ because a measurement favoured it costs one version.
 Exam years (2022-07-01 to 2026-10-01) stay sealed until one version is locked.
 
 Versions used: 4 of 6 (V1, V2, V3, V4).
-ZT and MZ are rebuilds from his rules and chart checks, not tuning versions.
+ZT, MZ and MH are rebuilds from his rules and chart checks, not tuning versions.
 
 Terms
 - Pullback trade = counter-trend, always: a sell in a bull HTF bias, a buy in a
   bear HTF bias. Entry models: breaker and OB.
 - Zone trade = with the trend: a buy at an HTF buy zone in an uptrend, a sell at
-  an HTF sell zone in a downtrend. His MAIN trades (built in ZT, rebuilt in MZ).
+  an HTF sell zone in a downtrend. His MAIN trades (built in ZT, rebuilt in MZ,
+  trading timeframe moved to H1 in MH).
 
 ## V1 - pullback system as built (baseline, nothing tuned)
 
@@ -204,6 +205,7 @@ Variant mz passes no first_read override, so the first read stays 3.
 Assumptions (not confirmed by him)
 - Z11 "used" in poi.py means wick-touched only (poi.py not read). With rules on,
   zones that are fresh or used (never dead) and not spent can be touched.
+  (Corrected later, see MH: poi.py was read and "used" is a BODY close inside.)
 - Z12 spent zones are keyed by the zone id (a D1 zone refined to an H4 candle
   keeps its D1 id).
 - Z13 other pending orders from a zone keep running after it is spent.
@@ -223,12 +225,74 @@ Measure after the run (not decisions)
 - Whether same-zone overtrading (GBPCAD style) fell.
 
 Run: all 28 pairs, practice years, LOOKAHEAD_CUTS=10, variant mz.
+Status: the full run was done. He called the results "poorer than anticipated"
+and said he found many errors, which he will list. The mz numbers were not
+written up here before it was superseded by MH. mz is not a candidate version.
+
+## MH - trading timeframe H1 (variant "mh")  [rule change, not a tuning version]
+
+Why: after seeing the mz results he asked for one rule change: the trading
+timeframe moves from M15 to H1, so the system uses D1, H4 and H1 and no longer
+M15. His words: "This is not a tuning this is a rule change." It is his rule,
+not a switch picked by comparing numbers. Versions used stays 4 of 6.
+Honest note: the request came after he saw a poor mz result, and mh runs on the
+same practice years as mz. If mh is later chosen because it looks better than mz,
+that is a choice between variants and the cap must be counted again.
+
+Change (the only change from mz)
+- Trading timeframe = H1 (config.LTF_TF = "H1"). BOS, CHoCH, breaker, OB,
+  inducement and ceiling now come from H1 bars. The H1 structure uses the same
+  swing size as before (LTF_SWING_N = 2) and the H1 bars have their own POI book.
+- D1 and H4 stay the bias and the HTF zones (Major swings, N=8, first read 3).
+- Switch: config.LTF_TF, default "M15" (read with a default, config.py is not
+  edited). Every older variant sets "M15" explicitly, so they are unchanged.
+
+What stays the same as mz
+- Major swings for H4/D1, used-zone rule B, 150-pip cancel of zone orders.
+- Breaker and OB entries, stop = far edge -/+ 0.2 x ATR(H1,14), static 1:3 and
+  liquidity targets, ceiling rules, spread skip.
+
+Where M15 data is still used (price replay only, no signals)
+- The simulator plays every order on M15 bars (touch, fill at next open, stop,
+  target). The zone code tracks touches, fills, the 150-pip cancel and spent
+  zones on the same M15 bars, so it matches the simulator. The bias-flip list
+  is also timed on M15 bars.
+
+Assumptions (not confirmed by him)
+- H1 swing size N = LTF_SWING_N = 2 (not tuned for H1).
+- H2 Orders are placed at H1 closes but touched, filled and stopped on M15 bars.
+- H3 The 150-pip cancel and the spent-zone test are checked on M15 bars, as in
+  the simulator.
+- H4 Stop buffer (0.2 x ATR H1 14) and spread skip are unchanged.
+- H5 Liquidity swings (N=2) are built from H1 bars.
+- H6 Bias-lost and ceiling checks run at each H1 close.
+- H7 Z11 corrected: poi.py was read. "Used" = a BODY close inside the box, not a
+  wick. No behaviour change (fresh and used are both accepted with rules on).
+- H8 Bars reach the engine in time order. The lookahead check is the test.
+- Z12-Z14 and Z1-Z10, T1-T2 as before.
+
+Checks for the run
+- Lookahead PASS. If it is not PASS, ignore every number.
+- Pullback and zone numbers are a NEW baseline. They will not equal V1 or mz.
+  The report may print its old "pullback card equals V1" line as NO. Expected.
+- Old tests may need a look (switches default off): handled one at a time, a
+  test is never weakened.
+
+Measure after the run (not decisions)
+- Pair funnel: does N=8 on D1 block or delay the 3-swing first read on some pairs?
+- Orders ended "ran_away", zones spent (z_zone_spent, z_ran_away, z_spent_skipped).
+- Whether same-zone overtrading (GBPCAD style) fell.
+- Skipped-for-spread count (estimate, not run: wider H1 boxes should mean wider
+  stops and fewer spread skips, and fewer setups overall).
+
+Run: all 28 pairs, practice years, LOOKAHEAD_CUTS=10, variant mh.
 Status: written before the run. Result: pending.
 
 ## How versions are judged
-- Pullbacks are the side trade. His main trades are zone trades. The ZT and MZ
-  runs measure them; they are not tuning choices.
+- Pullbacks are the side trade. His main trades are zone trades. The ZT, MZ and
+  MH runs measure them; they are not tuning choices.
 - A variant counts as better only with lookahead PASS and a better expectancy
-  and profit factor than V1 on the same practice years. MZ changes the bias
-  engine, so it starts a new baseline and is compared as a rebuild.
+  and profit factor than V1 on the same practice years. MZ and MH change the
+  bias engine and the trading timeframe, so they start a new baseline and are
+  compared as rebuilds.
 - Nothing is locked yet.
