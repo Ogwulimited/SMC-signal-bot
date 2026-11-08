@@ -9,10 +9,10 @@ on:
         options: [smoke, full]
         default: smoke
       variants:
-        description: "mz = rebuild: Major swings + zone rules; zt = v1 + zone trades; v1 = 5 sw, D1+H4; v2 = 3 sw, D1+H4; v3 = 3 sw, H4 only; v4 = v1 with OB entries only"
+        description: "mh = rule change: trading timeframe H1 (D1+H4+H1) on top of mz; mz = Major swings + zone rules (M15); zt = v1 + zone trades; v1 = 5 sw, D1+H4; v2 = 3 sw, D1+H4; v3 = 3 sw, H4 only; v4 = v1 with OB entries only"
         type: choice
-        options: [mz, zt, v4, v1, v2, v3, v2_and_v3]
-        default: mz
+        options: [mh, mz, zt, v4, v1, v2, v3, v2_and_v3]
+        default: mh
 
 jobs:
   plan:
@@ -34,6 +34,7 @@ jobs:
             CSV="eurusd"
           fi
           case "$VARIANTS" in
+            mh) VJ='["mh"]' ;;
             mz) VJ='["mz"]' ;;
             zt) VJ='["zt"]' ;;
             v1) VJ='["v1"]' ;;
