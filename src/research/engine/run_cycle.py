@@ -2,9 +2,9 @@
 
 Loads data/processed/{pair}_m15.parquet (bars fully closed by PRACTICE_END; the
 feed builds H1/H4/D1 from M15), replays the cycle bar by bar, simulates the
-orders, then proves no lookahead by re-running on cut-off data and comparing
-decisions. Writes data/phase4_cycle/{pair}_trades.csv, _funnel.json,
-_lookahead.json, _pullbacks.csv.
+orders (on M15 bars), then proves no lookahead by re-running on cut-off data
+and comparing decisions. Writes data/phase4_cycle/{pair}_trades.csv,
+_funnel.json, _lookahead.json, _pullbacks.csv.
 
 Bad days are NOT excluded in this run.
 Bars outside the trading week (New York clock: Saturday, Sunday before 17:00,
@@ -21,9 +21,11 @@ Variants (env VARIANT, default v1 = as first built):
       liquidity target. Zone and pullback trades are separate scorecards.
   mz: REBUILD from his chart rules (not a tuning version):
       Major swings for H4/D1 (N=8, config MAJOR_*), bias first read 3 counted
-      Major swings, plus zone trades with used-zone rule B (a zone is spent
-      when a trade from it is really filled) and the 150-pip cancel of
-      pending zone orders. M15 stays N=2.
+      Major swings, plus zone trades with used-zone rule B and the 150-pip
+      cancel of pending zone orders. Trading timeframe M15.
+  mh: RULE CHANGE (his request, after seeing mz): same as mz but the trading
+      timeframe is H1 (BOS, CHoCH, breaker, OB, inducement and ceiling come
+      from H1 bars; HTF stays D1 + H4). Orders are still played on M15 bars.
 The lookahead re-runs use the same variant.
 
 Pullback trades are always counter-trend: sells in a bull HTF bias, buys in a
@@ -32,7 +34,7 @@ bear bias.
 
 Pip size for the cancel rule: 0.01 for JPY pairs, 0.0001 otherwise.
 
-Usage (repo root):  PAIR=eurusd VARIANT=mz python -m src.research.engine.run_cycle
+Usage (repo root):  PAIR=eurusd VARIANT=mh python -m src.research.engine.run_cycle
 """
 import json
 import os
@@ -58,31 +60,36 @@ BOTH = ("breaker", "ob")
 
 # first_read None = use config.BIAS_FIRST_READ_SWINGS (5), or the Major value
 # (MAJOR_BIAS_FIRST_READ) when major is on (the mapper decides).
+# ltf = trading timeframe (config.LTF_TF): "M15" for every old variant.
 VARIANTS = {
     "v1": {"first_read": None, "bias_tfs": "both", "kinds": BOTH, "zone": False,
-           "major": False, "rules": False,
+           "major": False, "rules": False, "ltf": "M15",
            "text": "first read 5 swings (config default), D1 and H4 must agree, breaker + OB"},
     "v2": {"first_read": 3, "bias_tfs": "both", "kinds": BOTH, "zone": False,
-           "major": False, "rules": False,
+           "major": False, "rules": False, "ltf": "M15",
            "text": "first read 3 swings, D1 and H4 must agree, breaker + OB"},
     "v3": {"first_read": 3, "bias_tfs": "h4", "kinds": BOTH, "zone": False,
-           "major": False, "rules": False,
+           "major": False, "rules": False, "ltf": "M15",
            "text": "first read 3 swings, H4 alone decides the bias, breaker + OB"},
     "v4": {"first_read": None, "bias_tfs": "both", "kinds": ("ob",), "zone": False,
-           "major": False, "rules": False,
+           "major": False, "rules": False, "ltf": "M15",
            "text": "as v1 (5 swings, D1 and H4 agree) but OB entries only, breaker orders dropped"},
     "zt": {"first_read": None, "bias_tfs": "both", "kinds": BOTH, "zone": True,
-           "major": False, "rules": False,
+           "major": False, "rules": False, "ltf": "M15",
            "text": "as v1 (5 swings, D1 and H4 agree) plus zone trades (with the trend), "
                    "breaker + OB, static and liquidity targets"},
     "mz": {"first_read": None, "bias_tfs": "both", "kinds": BOTH, "zone": True,
-           "major": True, "rules": True,
+           "major": True, "rules": True, "ltf": "M15",
            "text": "REBUILD: Major swings H4/D1 (N=8), first read 3 Major swings, D1 and H4 "
                    "agree, pullbacks + zone trades, used-zone rule B (spent on real fill), "
-                   "150-pip cancel of pending zone orders"},
+                   "150-pip cancel of pending zone orders, trading timeframe M15"},
+    "mh": {"first_read": None, "bias_tfs": "both", "kinds": BOTH, "zone": True,
+           "major": True, "rules": True, "ltf": "H1",
+           "text": "RULE CHANGE: as mz but the trading timeframe is H1 (D1 + H4 + H1): "
+                   "H1 BOS, CHoCH, breaker, OB, inducement and ceiling; orders played on M15"},
 }
 ACTIVE = {"name": "v1", "first_read": None, "kinds": BOTH, "zone": False,
-          "major": False, "rules": False, "text": VARIANTS["v1"]["text"]}
+          "major": False, "rules": False, "ltf": "M15", "text": VARIANTS["v1"]["text"]}
 
 
 def set_variant(name):
@@ -92,6 +99,7 @@ def set_variant(name):
     v = VARIANTS[name]
     config.BIAS_TIMEFRAMES = v["bias_tfs"]
     config.MAJOR_HTF = bool(v["major"])
+    config.LTF_TF = v["ltf"]
     zn.SETTINGS["enabled"] = bool(v["zone"])
     zn.SETTINGS["rules"] = bool(v["rules"])
     ACTIVE["name"] = name
@@ -100,6 +108,7 @@ def set_variant(name):
     ACTIVE["zone"] = bool(v["zone"])
     ACTIVE["major"] = bool(v["major"])
     ACTIVE["rules"] = bool(v["rules"])
+    ACTIVE["ltf"] = v["ltf"]
     ACTIVE["text"] = v["text"]
     return name
 
@@ -193,8 +202,9 @@ def run_pair(pair):
     vname = set_variant(os.environ.get("VARIANT", "v1"))
     set_pair_settings(pair)
     print(f"[{pair}] variant {vname}: {ACTIVE['text']}", flush=True)
-    print(f"[{pair}] major_htf={ACTIVE['major']} zone_rules={ACTIVE['rules']} "
-          f"pip={zn.SETTINGS['pip']} spread={zn.SETTINGS['spread']}", flush=True)
+    print(f"[{pair}] ltf={ACTIVE['ltf']} major_htf={ACTIVE['major']} "
+          f"zone_rules={ACTIVE['rules']} pip={zn.SETTINGS['pip']} "
+          f"spread={zn.SETTINGS['spread']}", flush=True)
     cutoff = pd.Timestamp(config.PRACTICE_END, tz="UTC")
     m15 = load_m15(pair, cutoff)
     dropped = int(m15.attrs.get("dropped_weekend", 0))
@@ -233,7 +243,7 @@ def run_pair(pair):
               "pullbacks": len(rec.pullbacks), "flips": len(rec.flips),
               "decisions": len(log.items), "bars": len(m15),
               "dropped_weekend_bars": dropped,
-              "variant": vname, "major_htf": bool(ACTIVE["major"]),
+              "variant": vname, "ltf": ACTIVE["ltf"], "major_htf": bool(ACTIVE["major"]),
               "zone_rules": bool(ACTIVE["rules"]), "pip": zn.SETTINGS["pip"]}
     (OUT_DIR / f"{pair}_funnel.json").write_text(json.dumps(funnel, indent=1, default=str))
     (OUT_DIR / f"{pair}_lookahead.json").write_text(json.dumps(look, indent=1, default=str))
@@ -248,8 +258,8 @@ def run_pair(pair):
     lines = [
         f"### Phase 4 cycle run: {pair}  [variant {vname}]",
         f"- Variant: {vname} ({ACTIVE['text']})",
-        f"- Switches: major_htf {ACTIVE['major']}, zone_rules {ACTIVE['rules']}, "
-        f"pip {zn.SETTINGS['pip']}",
+        f"- Switches: trading timeframe {ACTIVE['ltf']}, major_htf {ACTIVE['major']}, "
+        f"zone_rules {ACTIVE['rules']}, pip {zn.SETTINGS['pip']}",
         f"- Window: start of data to {config.PRACTICE_END}; bad days NOT excluded",
         f"- Bars used: {len(m15)}; dropped outside trading week (NY clock): {dropped}",
         f"- Pullback orders made {n_all}, simulated {len(orders)} ({'+'.join(kinds)}); "
