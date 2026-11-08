@@ -1,11 +1,13 @@
 """Phase 4 zone trades (with the trend), built on top of the cycle engine.
 
 Zone BUY (bull bias); zone SELL is the exact mirror. Runs inside the cycle's
-flow, cycle.py is NOT changed:
-  HTF BOS arms -> M15 CHoCH down starts the pullback -> a wick touches a
+flow, cycle.py holds the state machine:
+  HTF BOS arms -> trading-TF CHoCH down starts the pullback -> a wick touches a
   remembered HTF buy zone (the cycle's own touch) -> scan.
+The trading timeframe (self.ltf) is M15 or H1 (config.LTF_TF). Touches and
+fills of zone orders are always tracked on M15 bars, like simulate_orders.py.
 Zone rules (his teaching):
-  * An M15 BOS down must exist before the CHoCH up (before the zone, on the
+  * A BOS down must exist before the CHoCH up (before the zone, on the
     touch, or inside the zone). The leg down must have touched the zone.
   * A body close above the BOS-down leg's high is the CHoCH up (structure.py).
   * Breaker buy: the CHoCH's "the" breaker (sell box of the last BOS down),
@@ -16,7 +18,7 @@ Zone rules (his teaching):
     or bias lost. Pending orders are cancelled; filled trades keep running.
   * Each zone order is played twice by the simulator: static 1:3 and liquidity.
 
-RULES SWITCH (SETTINGS["rules"], used by variant mz; all off otherwise):
+RULES SWITCH (SETTINGS["rules"], used by variants mz and mh; off otherwise):
   * Used-zone rule B: the first time a trade is TAKEN (order filled, same tests
     as simulate_orders.py: touch, next open, not beyond stop, spread ok) from a
     zone, that zone is spent and never used again. A zone touched but never
@@ -25,24 +27,29 @@ RULES SWITCH (SETTINGS["rules"], used by variant mz; all off otherwise):
     cancelled (end_reason "ran_away") when a wick runs ZONE_CANCEL_PIPS beyond
     the entry in the trade direction. Needs SETTINGS["pip"] (0.0001 / 0.01 JPY).
   * SETTINGS["spread"] = config.SPREAD_PRICE[pair] (price units).
+  * Tracking timing: each M15 bar is handled when the NEXT M15 bar arrives, so
+    every end/cancel set by trading-timeframe bars up to its close is already
+    known. Window rule = the simulator's: a bar counts if its close is before
+    the order's end (on it too, for a ceiling_break end).
 
 ASSUMPTIONS (not confirmed yet):
   Z1 touch = any wick reaching the zone near edge (cycle's own test).
   Z2 only fresh zones; the zone list is frozen at pullback start.
      (rules on: fresh or used, never dead, and never spent.)
-  Z3 CHoCH = the M15 structure's own CHoCH; level shown on the trade sheet.
+  Z3 CHoCH = the trading-TF structure's own CHoCH; level shown on the trade sheet.
   Z4 touch bar and CHoCH-close on the same bar is valid.
   Z5 a CHoCH with the trend before the touch clears the BOS memory.
   Z7 more attempts in the same scan are allowed.
   Z8 no CHoCH-down gate (a BOS down already implies an earlier CHoCH down).
   Z9 zone trades only inside the cycle flow above.
   Z10 BOS memory = a BOS against the trend since the last CHoCH with the trend.
-  Z11 rules on: "used" in poi.py means wick-touched only (not read yet).
+  Z11 rules on: "used" in poi.py means wick-touched only. (poi.py now read: a
+      POI becomes "used" on a BODY close inside the box, not a wick.)
   Z12 spent zones are keyed by the zone id (a refined D1 zone keeps its D1 id).
   Z13 other pending orders from a zone keep running after it is spent.
   Z14 a bar that touches the entry and also runs the cancel distance = cancelled.
-  T1 liquidity = unswept M15 swing (N=LTF_SWING_N) between entry and ceiling,
-     known at its confirm bar. T2 none >= 3R away: target = the ceiling.
+  T1 liquidity = unswept swing (N=LTF_SWING_N, trading timeframe) between entry
+     and ceiling, known at its confirm bar. T2 none >= 3R away: target = ceiling.
 """
 from bisect import bisect_left, bisect_right, insort
 from collections import deque
@@ -76,10 +83,11 @@ class ZoneRecorder(cy.CycleRecorder):
         self._zbos_time = None
         n = int(config.LTF_SWING_N)
         self._swin = deque(maxlen=2 * n + 1)
-        self._sw_hi = []   # unswept M15 swing highs, ascending
-        self._sw_lo = []   # unswept M15 swing lows, ascending
+        self._sw_hi = []   # unswept swing highs (trading TF), ascending
+        self._sw_lo = []   # unswept swing lows (trading TF), ascending
         self._spent = set()   # zone ids spent by a real fill (rules on)
         self._watch = []      # zone orders tracked for touch / fill (rules on)
+        self._prev15 = None   # last M15 bar, handled when the next one arrives
         if _rules():
             if not (float(SETTINGS.get("pip", 0.0)) > 0.0
                     and float(SETTINGS.get("spread", 0.0)) > 0.0):
@@ -87,14 +95,15 @@ class ZoneRecorder(cy.CycleRecorder):
 
     # ---- feed hooks ----------------------------------------------------
     def on_bar_close(self, bar, feed):
-        m15 = bar.tf == "M15"
-        if _on() and m15:
-            self._swings(bar)
-            if _rules():
+        if _on():
+            if bar.tf == self.ltf:
+                self._swings(bar)
+            if _rules() and bar.tf == "M15":
+                if self._prev15 is not None:
+                    self._watch_orders(self._prev15, bar)
                 self._resolve_fills(bar)
+                self._prev15 = bar
         super().on_bar_close(bar, feed)
-        if m15 and _rules():
-            self._watch_orders(bar)
 
     def _swings(self, bar):
         h = float(bar.high)
@@ -123,8 +132,8 @@ class ZoneRecorder(cy.CycleRecorder):
         return float(config.ZONE_CANCEL_PIPS) * float(SETTINGS["pip"])
 
     def _resolve_fills(self, bar):
-        """Runs BEFORE the bar is processed: orders touched on the previous bar
-        fill at THIS bar's open (same tests as the simulator)."""
+        """Orders touched on the previous M15 bar fill at THIS bar's open
+        (same tests as the simulator). Called after _watch_orders(previous)."""
         if not self._watch:
             return
         keep = []
@@ -151,11 +160,12 @@ class ZoneRecorder(cy.CycleRecorder):
                 self._log("z_spent", now, zone=zid, order=o["id"])
         self._watch = keep
 
-    def _watch_orders(self, bar):
-        """Runs AFTER the bar is processed: end checks, cancel, touch."""
+    def _watch_orders(self, p, arrival):
+        """Handle M15 bar p (called when the next M15 bar 'arrival' comes):
+        window check, 150-pip cancel, touch."""
         if not self._watch:
             return
-        now = bar.close_time
+        pclose = p.close_time
         cancel = self._cancel_dist()
         keep = []
         for w in self._watch:
@@ -163,32 +173,36 @@ class ZoneRecorder(cy.CycleRecorder):
                 keep.append(w)
                 continue
             o = w["o"]
-            if now <= o["placed_time"]:
-                keep.append(w)          # the placing bar itself never counts
+            if pclose <= o["placed_time"]:
+                keep.append(w)          # bars up to the placing close never count
                 continue
             end = o["end_time"]
             if end is not None:
-                # an ended order can only touch on a ceiling_break ending bar
-                if not (o["end_reason"] == "ceiling_break" and now <= end):
+                if o["end_reason"] == "ceiling_break":
+                    live = pclose <= end
+                else:
+                    live = pclose < end
+                if not live:
                     continue
             sell = o["side"] == "sell"
             entry = float(o["entry"])
-            if end is None and cancel > 0.0:
+            if (end is None or end > pclose) and cancel > 0.0:
                 if sell:
-                    ran = float(bar.low) <= entry - cancel
+                    ran = float(p.low) <= entry - cancel
                 else:
-                    ran = float(bar.high) >= entry + cancel
+                    ran = float(p.high) >= entry + cancel
                 if ran:
-                    o["end_time"] = now
+                    o["end_time"] = pclose
                     o["end_reason"] = "ran_away"
                     self.counts["z_ran_away"] += 1
-                    self._log("z_ran_away", now, order=o["id"], zone=o["zone_id"])
+                    self._log("z_ran_away", arrival.close_time,
+                              order=o["id"], zone=o["zone_id"])
                     continue
-            touched = float(bar.high) >= entry if sell else float(bar.low) <= entry
+            touched = float(p.high) >= entry if sell else float(p.low) <= entry
             if touched:
                 w["st"] = "touched"
                 keep.append(w)
-            elif end is None:
+            elif end is None or pclose < end:
                 keep.append(w)
         self._watch = keep
 
@@ -327,7 +341,7 @@ class ZoneRecorder(cy.CycleRecorder):
     def _z_new_choch(self, sc, bar, ev, now):
         self._n_z += 1
         box = self._choch_poi(ev)
-        breaker = self.books["M15"].choch_breaker.get(ev["time"])
+        breaker = self.books[self.ltf].choch_breaker.get(ev["time"])
         s = {"id": f"{sc['pb_id']}-Z{self._n_z}", "choch_time": ev["time"],
              "choch_level": cy._num(ev["broken_swing_price"]), "box": box,
              "breaker": breaker, "br": "none", "ob": "none", "idm": None,
