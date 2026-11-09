@@ -15,7 +15,7 @@ Terms
   an HTF sell zone in a downtrend. His MAIN trades (built in ZT, rebuilt in MZ,
   trading timeframe moved to H1 in MH).
 - Aggressive entry = a separate run (AG): limit at the edge of a refined H1 zone
-  inside an HTF zone, no CHoCH or BOS wait, static 1:5 target.
+  inside an HTF zone, no CHoCH or BOS wait, static 1:3 target.
 
 ## V1 - pullback system as built (baseline, nothing tuned)
 
@@ -330,6 +330,9 @@ Why: he wants a separate run that "only looks for HTF zones, refines it and
 enters on the tap to continue the move to TP". It shares nothing with the zone
 trades (no CHoCH, BOS, breaker or pullback logic, no shared spent list). His
 rules, confirmed YES on all lines. Versions used stays 4 of 6.
+Correction (no version cost): the target was first written as 1:5. That was his
+typo. He confirmed the rule is a static 1:3. Every file and this ledger now say
+1:3. Any ag run made with the 1:5 files is invalid and must be discarded.
 Honest note: AG is a different entry style, not a tuned switch. If AG is later
 chosen because its numbers look better than the zone trades, that is a choice
 between variants and the cap must be counted again.
@@ -340,11 +343,12 @@ Rules
    Major N=8 BOS/CHoCH (first read 3), as in mz and mh.
 2. Entry = limit at the H1 zone's near edge (top for buys, bottom for sells).
 3. Stop = H1 far edge -/+ 0.2 x ATR(H1, 14).
-4. Target = static 1:5, measured from the fill price. No liquidity target.
+4. Target = static 1:3, measured from the fill price. No liquidity target.
 5. The limit rests from the moment the H1 zone exists and fills at the edge
    when a wick reaches it.
 6. A bar that opens past the edge fills at that open (like a real broker). If
-   that open is beyond the stop, the order is skipped and the zone is not spent.
+   that open is beyond the stop, the order is skipped and the zone is not
+   spent.
 7. Rule B: one fill spends the zone.
 8. The limit is cancelled, and the zone is not spent, if bias is lost, or a body
    closes through the far edge, or a wick runs 150 pips beyond the edge in the
@@ -353,9 +357,9 @@ Rules
 10. (mine, accepted) Spread skip stays: skipped if spread > 0.15 of the risk.
 11. (mine, accepted) Every fresh zone in the bias direction gets its own limit
     at the same time.
-12. The scorecard is aggressive/static 1:5, on its own, never mixed with the
-    zone or pullback cards. Break-even win rate at 1:5 is about 16.7% before
-    spread cost.
+12. The scorecard is aggressive/static 1:3, on its own, never mixed with the
+    zone or pullback cards. Break-even win rate at 1:3 is 25% before spread
+    cost.
 
 Mechanics
 - Trading timeframe H1 (as mh). The simulator plays orders on M15 bars, with
@@ -407,5 +411,5 @@ Status: written before the run. Result: pending.
 - A variant counts as better only with lookahead PASS and a better expectancy
   and profit factor than V1 on the same practice years. MZ and MH change the
   bias engine and the trading timeframe, and AG is a separate entry style with
-  its own 1:5 card, so they start new baselines and are compared as rebuilds.
+  its own 1:3 card, so they start new baselines and are compared as rebuilds.
 - Nothing is locked yet.
