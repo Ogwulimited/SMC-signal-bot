@@ -2,16 +2,24 @@
 
 Takes the orders the cycle produced and plays them on M15 bars.
   * Touch: a bar after placement reaches the entry price.
-  * Fill: at the NEXT M15 open (Fill 2). Stop/target are checked from the fill
-    bar's open. 1R = |fill - stop|.
-  * Targets: "static" = fill -/+ RR_STATIC x R (all orders).
+  * Fill (default orders): at the NEXT M15 open (Fill 2). Stop/target are
+    checked from the fill bar's open. 1R = |fill - stop|.
+  * Fill (limit orders, o["fill"] == "limit"): in the touch bar itself.
+    If the bar opens at or past the entry (buy: open <= entry, sell: open >=
+    entry) the fill is at that open, like a broker. Otherwise it fills at the
+    entry price. Fill bar rule: after a mid-bar edge fill the stop counts in
+    that bar but the target does not (the order of high and low inside the bar
+    is unknown); after an open fill the whole bar counts.
+  * Targets: "static" = fill -/+ RR x R (all orders). RR is RR_STATIC unless
+             the order carries its own "rr".
              "liquidity" (zone orders only) = the nearest unswept swing at least
              LIQ_MIN_R x R away (list carried by the order, nearest first); if
              none, the order's ceiling; if the ceiling is not beyond the fill,
              status skipped_no_target.
     A zone order is played twice (static and liquidity) with the same entry and
-    stop. Each row carries leg (pullback/zone) and target_mode.
-  * Next open already beyond the stop -> fill_beyond_stop (no trade).
+    stop. Each row carries leg (pullback/zone/...) and target_mode.
+    Any other leg is played once (static).
+  * Fill already beyond the stop -> fill_beyond_stop (no trade).
   * Spread cost = SPREAD_PRICE[pair] / risk. Above MAX_SPREAD_RISK_RATIO -> skipped_spread.
   * Stop wins a same-bar tie. A bar that OPENS beyond the stop fills the loss
     at that open (loss can exceed 1R).
@@ -72,6 +80,7 @@ def _liq_target(o, fill, risk, sell):
 
 def simulate_order(o, a, spread, pair, mode="static"):
     sell = o["side"] == "sell"
+    limit = o.get("fill") == "limit"
     rec = {c: None for c in TRADE_COLS}
     rec["pair"] = pair
     rec["order_id"] = o["id"]
@@ -105,12 +114,19 @@ def simulate_order(o, a, spread, pair, mode="static"):
         return rec
 
     rec["touch_time"] = a["close_t"][touch]
-    f = touch + 1
-    if f >= n:
-        rec["status"] = "unfilled_open"
-        return rec
-
-    fill = float(a["o"][f])
+    open_fill = False
+    if limit:
+        # Limit order: filled inside the touch bar.
+        f = touch
+        bar_open = float(a["o"][f])
+        open_fill = (bar_open >= entry) if sell else (bar_open <= entry)
+        fill = bar_open if open_fill else entry
+    else:
+        f = touch + 1
+        if f >= n:
+            rec["status"] = "unfilled_open"
+            return rec
+        fill = float(a["o"][f])
     rec["fill_time"] = a["open_t"][f]
     rec["fill_price"] = fill
     if (sell and fill >= stop) or ((not sell) and fill <= stop):
@@ -131,7 +147,8 @@ def simulate_order(o, a, spread, pair, mode="static"):
             rec["status"] = "skipped_no_target"
             return rec
     else:
-        rr = float(config.RR_STATIC)
+        rr = o.get("rr")
+        rr = float(config.RR_STATIC) if rr is None else float(rr)
         target = fill - rr * risk if sell else fill + rr * risk
         tkind = "static"
     rec["target_price"] = target
@@ -151,6 +168,9 @@ def simulate_order(o, a, spread, pair, mode="static"):
         tgt_hit = h >= target
         gap = op <= stop
     gap[0] = False
+    if limit and not open_fill:
+        # Mid-bar edge fill: the target cannot be counted in the fill bar.
+        tgt_hit[0] = False
     si = int(np.argmax(stop_hit)) if stop_hit.any() else None
     ti = int(np.argmax(tgt_hit)) if tgt_hit.any() else None
     if si is None and ti is None:
@@ -208,7 +228,8 @@ def tag_trades(recs, flips):
 
 
 def simulate_all(orders, m15, pair):
-    """Pullback orders: one play (static). Zone orders: two plays."""
+    """Pullback orders: one play (static). Zone orders: two plays.
+    Any other leg (for example the aggressive run): one play (static)."""
     a = prepare(m15)
     spread = config.SPREAD_PRICE[pair]
     out = []
