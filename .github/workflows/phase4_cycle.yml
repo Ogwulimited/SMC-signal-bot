@@ -9,9 +9,9 @@ on:
         options: [smoke, full]
         default: smoke
       variants:
-        description: "mh = rule change: trading timeframe H1 (D1+H4+H1) on top of mz; mz = Major swings + zone rules (M15); zt = v1 + zone trades; v1 = 5 sw, D1+H4; v2 = 3 sw, D1+H4; v3 = 3 sw, H4 only; v4 = v1 with OB entries only"
+        description: "ag = aggressive entry (separate run, D1/H4 zones refined to H1, limit at the edge, 1:5); mh = rule change: trading timeframe H1 (D1+H4+H1) on top of mz; mz = Major swings + zone rules (M15); zt = v1 + zone trades; v1 = 5 sw, D1+H4; v2 = 3 sw, D1+H4; v3 = 3 sw, H4 only; v4 = v1 with OB entries only"
         type: choice
-        options: [mh, mz, zt, v4, v1, v2, v3, v2_and_v3]
+        options: [ag, mh, mz, zt, v4, v1, v2, v3, v2_and_v3]
         default: mh
 
 jobs:
@@ -34,6 +34,7 @@ jobs:
             CSV="eurusd"
           fi
           case "$VARIANTS" in
+            ag) VJ='["ag"]' ;;
             mh) VJ='["mh"]' ;;
             mz) VJ='["mz"]' ;;
             zt) VJ='["zt"]' ;;
@@ -110,15 +111,25 @@ jobs:
           path: data/phase4_cycle
 
       - name: Build report ${{ matrix.variant }}
+        if: ${{ matrix.variant != 'ag' }}
         env:
           REPORT_LABEL: ${{ inputs.mode }}
           EXPECT_PAIRS: ${{ needs.plan.outputs.csv }}
         run: python -m src.research.engine.report_cycle
 
+      - name: Build aggressive report
+        if: ${{ matrix.variant == 'ag' }}
+        env:
+          REPORT_LABEL: ${{ inputs.mode }}
+          EXPECT_PAIRS: ${{ needs.plan.outputs.csv }}
+        run: python -m src.research.engine.report_ag
+
       - name: Upload report ${{ matrix.variant }}
         uses: actions/upload-artifact@v4
         with:
           name: report-cycle-${{ inputs.mode }}-${{ matrix.variant }}
-          path: reports/phase4/report_cycle_*.md
+          path: |
+            reports/phase4/report_cycle_*.md
+            reports/phase4/report_ag_*.md
           retention-days: 30
           if-no-files-found: error
