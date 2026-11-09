@@ -3,7 +3,7 @@
 His rules (confirmed): a separate run that only reads the D1 and H4 Major
 zones in the bias direction (D1 and H4 must agree), refines each zone down to
 H1, and rests a LIMIT at the H1 zone's near edge (buy: top, sell: bottom).
-Stop = H1 far edge -/+ STOP_BUFFER_ATR x ATR(H1, 14). Static 1:5 target (the
+Stop = H1 far edge -/+ STOP_BUFFER_ATR x ATR(H1, 14). Static 1:3 target (the
 simulator reads order["rr"]). No BOS, CHoCH, breaker or pullback logic.
 
 Refinement (his rule, impulsive = a body-close break in the trade direction on
@@ -47,7 +47,7 @@ from src.research.engine.poi import PoiBook
 from src.research.engine.structure import IncrementalStructure
 
 SETTINGS = {"pip": None, "spread": None}
-RR_AGG = 5.0
+RR_AGG = 3.0
 
 
 def _gap(p, prev):
