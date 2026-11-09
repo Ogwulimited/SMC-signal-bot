@@ -9,7 +9,7 @@ on:
         options: [smoke, full]
         default: smoke
       variants:
-        description: "ag = aggressive entry (separate run, D1/H4 zones refined to H1, limit at the edge, 1:5); mh = rule change: trading timeframe H1 (D1+H4+H1) on top of mz; mz = Major swings + zone rules (M15); zt = v1 + zone trades; v1 = 5 sw, D1+H4; v2 = 3 sw, D1+H4; v3 = 3 sw, H4 only; v4 = v1 with OB entries only"
+        description: "ag = aggressive entry (separate run, D1/H4 zones refined to H1, limit at the edge, static 1:3); mh = rule change: trading timeframe H1 (D1+H4+H1) on top of mz; mz = Major swings + zone rules (M15); zt = v1 + zone trades; v1 = 5 sw, D1+H4; v2 = 3 sw, D1+H4; v3 = 3 sw, H4 only; v4 = v1 with OB entries only"
         type: choice
         options: [ag, mh, mz, zt, v4, v1, v2, v3, v2_and_v3]
         default: mh
