@@ -6,7 +6,7 @@ because a measurement favoured it costs one version.
 Exam years (2022-07-01 to 2026-10-01) stay sealed until one version is locked.
 
 Versions used: 4 of 6 (V1, V2, V3, V4).
-ZT, MZ and MH are rebuilds from his rules and chart checks, not tuning versions.
+ZT, MZ, MH and AG are rebuilds from his rules and chart checks, not tuning versions.
 
 Terms
 - Pullback trade = counter-trend, always: a sell in a bull HTF bias, a buy in a
@@ -14,6 +14,8 @@ Terms
 - Zone trade = with the trend: a buy at an HTF buy zone in an uptrend, a sell at
   an HTF sell zone in a downtrend. His MAIN trades (built in ZT, rebuilt in MZ,
   trading timeframe moved to H1 in MH).
+- Aggressive entry = a separate run (AG): limit at the edge of a refined H1 zone
+  inside an HTF zone, no CHoCH or BOS wait, static 1:5 target.
 
 ## V1 - pullback system as built (baseline, nothing tuned)
 
@@ -288,11 +290,122 @@ Measure after the run (not decisions)
 Run: all 28 pairs, practice years, LOOKAHEAD_CUTS=10, variant mh.
 Status: written before the run. Result: pending.
 
+## ZONE REFINEMENT - his rules (used by AG only)  [rebuild, not a tuning version]
+
+Why: his AUDUSD pictures showed how a D1 zone is refined to an H4 zone and then
+to an H1 zone, and that the refined zone need not sit inside the previous box.
+He confirmed YES on lines 1-7 and answered the detail questions. These are his
+rules, not a switch picked by comparing numbers. Versions used stays 4 of 6.
+1. A POI is the last opposite candle in the base before an impulsive move, wick
+   to wick.
+2. The D1 POI is the starting zone.
+3. H4: look around the D1 zone and find the last opposite candle before an
+   impulsive move. It must be the one CLOSEST to the D1 zone; it need NOT sit
+   inside the D1 box.
+4. H1: the same around the H4 zone.
+5. The D1 and H4 zones are only steps; the H1 zone is the point of interest and
+   the entry.
+6. Do not refine too far.
+7. A zone that starts on H4 goes H4 then H1. Sells are the mirror.
+- There is NO distance number for "closest" or "too far".
+Details he confirmed
+- "Impulsive" = a body-close break in the trade direction (BOS or CHoCH up for
+  buys, down for sells) on that timeframe. No size numbers.
+- Search window = the lower-timeframe bars from the open of the previous zone's
+  candle to the close of the break that made the zone. Pick the candidate
+  closest in price to the previous box (touching or inside counts as closest).
+  Ties go to the later candle. Only bars already closed are used.
+- Refinement break swing size: N=2 on both H4 and H1. The D1/H4 zones themselves
+  stay Major N=8.
+Added by me, accepted
+- A zone that starts on H4 uses the window from the H4 zone candle to the close
+  of the H4 break, then goes to H1.
+- If no candidate is found at a step, that zone gets no limit and no trade.
+Scope: refinement code lives in aggressive.py. cycle.py and its old refinement
+(D1 zone to one H4 candle) are NOT changed, so mz and mh are unaffected.
+
+## AG - aggressive entry (variant "ag")  [rebuild, not a tuning version]
+
+Why: he wants a separate run that "only looks for HTF zones, refines it and
+enters on the tap to continue the move to TP". It shares nothing with the zone
+trades (no CHoCH, BOS, breaker or pullback logic, no shared spent list). His
+rules, confirmed YES on all lines. Versions used stays 4 of 6.
+Honest note: AG is a different entry style, not a tuned switch. If AG is later
+chosen because its numbers look better than the zone trades, that is a choice
+between variants and the cap must be counted again.
+
+Rules
+1. D1 and H4 must agree on bias, or no trade. Buys only at buy zones in a bull
+   bias, sells only at sell zones in a bear bias. Bias and HTF zones come from
+   Major N=8 BOS/CHoCH (first read 3), as in mz and mh.
+2. Entry = limit at the H1 zone's near edge (top for buys, bottom for sells).
+3. Stop = H1 far edge -/+ 0.2 x ATR(H1, 14).
+4. Target = static 1:5, measured from the fill price. No liquidity target.
+5. The limit rests from the moment the H1 zone exists and fills at the edge
+   when a wick reaches it.
+6. A bar that opens past the edge fills at that open (like a real broker). If
+   that open is beyond the stop, the order is skipped and the zone is not spent.
+7. Rule B: one fill spends the zone.
+8. The limit is cancelled, and the zone is not spent, if bias is lost, or a body
+   closes through the far edge, or a wick runs 150 pips beyond the edge in the
+   target direction before the touch ("we missed entry").
+9. No CHoCH, BOS, breaker or pullback logic.
+10. (mine, accepted) Spread skip stays: skipped if spread > 0.15 of the risk.
+11. (mine, accepted) Every fresh zone in the bias direction gets its own limit
+    at the same time.
+12. The scorecard is aggressive/static 1:5, on its own, never mixed with the
+    zone or pullback cards. Break-even win rate at 1:5 is about 16.7% before
+    spread cost.
+
+Mechanics
+- Trading timeframe H1 (as mh). The simulator plays orders on M15 bars, with
+  "fill": "limit" (open fill if the bar opens at or past the entry, otherwise
+  the edge). Fill-bar convention (mine, simulator): after a mid-bar edge fill
+  the stop counts in that bar but the target does not; after an open fill the
+  whole bar counts.
+- Report: report_ag.py (its own six sections and Extras).
+- Lookahead check re-runs the whole engine on cut data, same as the other variants.
+
+Assumptions (mine, not confirmed by him)
+- AG1 The limit is placed at the first M15 close after the HTF break closed.
+- AG2 If price has not yet gone beyond the edge, the order waits. If price is
+  already 150 or more pips past the edge when it would be placed, it is missed
+  (ag_missed_far) and no order is made.
+- AG3 The candidate's state (fresh/used/dead) is ignored. The candle must open
+  inside the search window.
+- AG4 Far edge = the H1 zone's far edge, checked on H1 body closes.
+- AG5 A touched order that is skipped (spread or gap) ends; the zone is not
+  spent, but no second limit is placed.
+- AG6 A cancel at time t: the M15 bar closing at t cannot touch; touches are
+  resolved with a one-bar delay.
+- AG7 Spent and closed zones are keyed by the H1 box. Two HTF zones that refine
+  to the same H1 candle give one limit.
+
+Checks for the run
+- Lookahead PASS. If it is not PASS, ignore every number.
+- Numbers are a NEW scorecard. They cannot be compared to the zone or pullback
+  numbers as a tie-break without counting a version.
+- Old tests untouched. No existing file besides run_cycle.py and the workflow
+  was changed.
+
+Measure after the run (not decisions)
+- ag_zones_D1, ag_zones_H4, ag_no_h4_candidate, ag_no_h1_candidate.
+- ag_missed_far (estimate, not run: a D1 zone is usually born after price has
+  already run far above it, so many D1 zones may be missed at birth).
+- ag_orders, ag_zone_spent, ag_skip_spread, ag_skip_beyond_stop, ag_cancel_*.
+- Statuses of the trades file and the first 10 trades on a chart (his method:
+  look them up, say what the system did wrong, fix it).
+- Estimates (not run): many more trades than the CHoCH entries, tight stops
+  because H1 boxes are small, many orders skipped for spread.
+
+Run: all 28 pairs, practice years, LOOKAHEAD_CUTS=10, variant ag, mode full.
+Status: written before the run. Result: pending.
+
 ## How versions are judged
-- Pullbacks are the side trade. His main trades are zone trades. The ZT, MZ and
-  MH runs measure them; they are not tuning choices.
+- Pullbacks are the side trade. His main trades are zone trades. The ZT, MZ, MH
+  and AG runs measure them; they are not tuning choices.
 - A variant counts as better only with lookahead PASS and a better expectancy
   and profit factor than V1 on the same practice years. MZ and MH change the
-  bias engine and the trading timeframe, so they start a new baseline and are
-  compared as rebuilds.
+  bias engine and the trading timeframe, and AG is a separate entry style with
+  its own 1:5 card, so they start new baselines and are compared as rebuilds.
 - Nothing is locked yet.
