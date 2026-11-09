@@ -26,6 +26,9 @@ Variants (env VARIANT, default v1 = as first built):
   mh: RULE CHANGE (his request, after seeing mz): same as mz but the trading
       timeframe is H1 (BOS, CHoCH, breaker, OB, inducement and ceiling come
       from H1 bars; HTF stays D1 + H4). Orders are still played on M15 bars.
+  ag: AGGRESSIVE ENTRY (his rules, separate run, see aggressive.py): D1 and H4
+      Major zones in the bias direction, refined D1 -> H4 -> H1, a limit at the
+      H1 zone edge, static 1:5. No pullbacks, no CHoCH zone trades.
 The lookahead re-runs use the same variant.
 
 Pullback trades are always counter-trend: sells in a bull HTF bias, buys in a
@@ -45,6 +48,7 @@ import numpy as np
 import pandas as pd
 
 from src import config
+from src.research.engine import aggressive as ag
 from src.research.engine import simulate_orders as so
 from src.research.engine import zone as zn
 from src.research.engine.bias import htf_bias
@@ -61,6 +65,7 @@ BOTH = ("breaker", "ob")
 # first_read None = use config.BIAS_FIRST_READ_SWINGS (5), or the Major value
 # (MAJOR_BIAS_FIRST_READ) when major is on (the mapper decides).
 # ltf = trading timeframe (config.LTF_TF): "M15" for every old variant.
+# agg (optional, default False) = the aggressive-entry run.
 VARIANTS = {
     "v1": {"first_read": None, "bias_tfs": "both", "kinds": BOTH, "zone": False,
            "major": False, "rules": False, "ltf": "M15",
@@ -87,9 +92,16 @@ VARIANTS = {
            "major": True, "rules": True, "ltf": "H1",
            "text": "RULE CHANGE: as mz but the trading timeframe is H1 (D1 + H4 + H1): "
                    "H1 BOS, CHoCH, breaker, OB, inducement and ceiling; orders played on M15"},
+    "ag": {"first_read": None, "bias_tfs": "both", "kinds": (), "zone": False,
+           "major": True, "rules": False, "ltf": "H1", "agg": True,
+           "text": "AGGRESSIVE ENTRY (separate run): Major D1/H4 zones in the bias "
+                   "direction, refined D1 -> H4 -> H1 (last opposite candle in the base), "
+                   "limit at the H1 edge, stop = far edge -/+ 0.2 x ATR(H1), static 1:5, "
+                   "rule B, 150-pip cancel, no pullbacks, no CHoCH logic"},
 }
 ACTIVE = {"name": "v1", "first_read": None, "kinds": BOTH, "zone": False,
-          "major": False, "rules": False, "ltf": "M15", "text": VARIANTS["v1"]["text"]}
+          "major": False, "rules": False, "ltf": "M15", "agg": False,
+          "text": VARIANTS["v1"]["text"]}
 
 
 def set_variant(name):
@@ -109,6 +121,7 @@ def set_variant(name):
     ACTIVE["major"] = bool(v["major"])
     ACTIVE["rules"] = bool(v["rules"])
     ACTIVE["ltf"] = v["ltf"]
+    ACTIVE["agg"] = bool(v.get("agg", False))
     ACTIVE["text"] = v["text"]
     return name
 
@@ -122,6 +135,8 @@ def set_pair_settings(pair):
     """Per-pair values the zone rules need. Set before any engine run."""
     zn.SETTINGS["pip"] = pip_size(pair)
     zn.SETTINGS["spread"] = float(config.SPREAD_PRICE[pair])
+    ag.SETTINGS["pip"] = pip_size(pair)
+    ag.SETTINGS["spread"] = float(config.SPREAD_PRICE[pair])
 
 
 class FlipRecorder(zn.ZoneRecorder):
@@ -142,9 +157,28 @@ class FlipRecorder(zn.ZoneRecorder):
                 self._last_real = hb
 
 
+class AggFlipRecorder(ag.AggRecorder):
+    """AggRecorder + the same read-only list of HTF bias flips."""
+
+    def __init__(self, log, first_read=None):
+        super().__init__(log, first_read)
+        self.flips = []
+        self._last_real = None
+
+    def on_bar_close(self, bar, feed):
+        super().on_bar_close(bar, feed)
+        if bar.tf == "M15":
+            hb = htf_bias(self.bias["D1"], self.bias["H4"])
+            if hb is not None:
+                if self._last_real is not None and hb != self._last_real:
+                    self.flips.append(bar.close_time)
+                self._last_real = hb
+
+
 def run_engine(m15):
     log = DecisionLog()
-    rec = FlipRecorder(log, ACTIVE["first_read"])
+    cls = AggFlipRecorder if ACTIVE["agg"] else FlipRecorder
+    rec = cls(log, ACTIVE["first_read"])
     DataFeed(m15, htf=("H1", "H4", "D1")).run(rec)
     return rec, log
 
@@ -203,7 +237,7 @@ def run_pair(pair):
     set_pair_settings(pair)
     print(f"[{pair}] variant {vname}: {ACTIVE['text']}", flush=True)
     print(f"[{pair}] ltf={ACTIVE['ltf']} major_htf={ACTIVE['major']} "
-          f"zone_rules={ACTIVE['rules']} pip={zn.SETTINGS['pip']} "
+          f"zone_rules={ACTIVE['rules']} agg={ACTIVE['agg']} pip={zn.SETTINGS['pip']} "
           f"spread={zn.SETTINGS['spread']}", flush=True)
     cutoff = pd.Timestamp(config.PRACTICE_END, tz="UTC")
     m15 = load_m15(pair, cutoff)
@@ -216,11 +250,14 @@ def run_pair(pair):
     n_all = len(rec.orders)
     kinds = tuple(ACTIVE["kinds"])
     orders = [o for o in rec.orders if o["kind"] in kinds]
-    zorders = list(rec.zorders) if ACTIVE["zone"] else []
+    if ACTIVE["agg"]:
+        zorders = list(rec.aorders)
+    else:
+        zorders = list(rec.zorders) if ACTIVE["zone"] else []
     print(f"[{pair}] main run done in {time.time() - t0:.0f}s: "
           f"{len(log.items)} decisions, {len(rec.pullbacks)} pullbacks, "
           f"{n_all} pullback orders made, {len(orders)} kept ({'+'.join(kinds)}), "
-          f"{len(zorders)} zone orders, {len(rec.flips)} bias flips", flush=True)
+          f"{len(zorders)} zone/aggressive orders, {len(rec.flips)} bias flips", flush=True)
 
     recs = so.simulate_all(orders + zorders, m15, pair)
     groups = {}
@@ -244,7 +281,8 @@ def run_pair(pair):
               "decisions": len(log.items), "bars": len(m15),
               "dropped_weekend_bars": dropped,
               "variant": vname, "ltf": ACTIVE["ltf"], "major_htf": bool(ACTIVE["major"]),
-              "zone_rules": bool(ACTIVE["rules"]), "pip": zn.SETTINGS["pip"]}
+              "zone_rules": bool(ACTIVE["rules"]), "agg": bool(ACTIVE["agg"]),
+              "pip": zn.SETTINGS["pip"]}
     (OUT_DIR / f"{pair}_funnel.json").write_text(json.dumps(funnel, indent=1, default=str))
     (OUT_DIR / f"{pair}_lookahead.json").write_text(json.dumps(look, indent=1, default=str))
 
@@ -259,13 +297,14 @@ def run_pair(pair):
         f"### Phase 4 cycle run: {pair}  [variant {vname}]",
         f"- Variant: {vname} ({ACTIVE['text']})",
         f"- Switches: trading timeframe {ACTIVE['ltf']}, major_htf {ACTIVE['major']}, "
-        f"zone_rules {ACTIVE['rules']}, pip {zn.SETTINGS['pip']}",
+        f"zone_rules {ACTIVE['rules']}, aggressive {ACTIVE['agg']}, pip {zn.SETTINGS['pip']}",
         f"- Window: start of data to {config.PRACTICE_END}; bad days NOT excluded",
         f"- Bars used: {len(m15)}; dropped outside trading week (NY clock): {dropped}",
         f"- Pullback orders made {n_all}, simulated {len(orders)} ({'+'.join(kinds)}); "
-        f"zone orders {len(zorders)}  |  Status: {statuses}",
+        f"zone/aggressive orders {len(zorders)}  |  Status: {statuses}",
         f"- Resolved: pullback {card('pullback', 'static')}; "
-        f"zone static {card('zone', 'static')}; zone liquidity {card('zone', 'liquidity')}",
+        f"zone static {card('zone', 'static')}; zone liquidity {card('zone', 'liquidity')}; "
+        f"aggressive static 1:5 {card('aggressive', 'static')}",
         f"- open_at_cutoff {int((df['outcome'] == 'open_at_cutoff').sum())}",
         f"- Lookahead: {'PASS' if look['pass'] else 'FAIL'} "
         f"({look['cuts']} cuts, {look['decisions']} decisions compared)",
