@@ -4,7 +4,7 @@ Reads data/phase4_cycle/{pair}_{trades.csv,funnel.json,lookahead.json}.
 Env: REPORT_LABEL (file name label), EXPECT_PAIRS (comma list).
 Writes reports/phase4/report_ag_<label>.md and the GitHub step summary.
 
-One scorecard only: aggressive / static 1:5, never mixed with zone or
+One scorecard only: aggressive / static 1:3, never mixed with zone or
 pullback trades. Same six sections as report_cycle.py.
 """
 import json
@@ -198,9 +198,9 @@ def main():
           "- Bad days are NOT excluded in this run.",
           "- Variant ag: aggressive entry. D1 and H4 Major zones, refined D1 > H4 > H1 "
           "(or H4 > H1), limit at the H1 box near edge, stop = far edge +/- 0.2 x ATR(H1,14), "
-          "static 1:5 target measured from the fill price. No CHoCH, BOS, breaker or "
+          "static 1:3 target measured from the fill price. No CHoCH, BOS, breaker or "
           "pullback logic. Fully separate from the zone trades.",
-          "- Break-even win rate at 1:5 is about 16.7% before spread cost.",
+          "- Break-even win rate at 1:3 is 25% before spread cost.",
           "- Basis: stacking (every filled trade). Net R = gross R minus one spread cost.",
           "- Rule assumptions AG1-AG7 (aggressive.py) are not confirmed by you yet.",
           ""]
@@ -297,7 +297,7 @@ def main():
     L += table(["Group", "Trades", "Win %", "Net R", "Expectancy"], srows)
     L.append("")
 
-    L += ["### All pairs (aggressive, static 1:5)"]
+    L += ["### All pairs (aggressive, static 1:3)"]
     prow, warns = [], []
     for p in expect:
         t = res[res["pair"] == p]
