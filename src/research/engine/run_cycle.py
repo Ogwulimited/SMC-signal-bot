@@ -28,7 +28,7 @@ Variants (env VARIANT, default v1 = as first built):
       from H1 bars; HTF stays D1 + H4). Orders are still played on M15 bars.
   ag: AGGRESSIVE ENTRY (his rules, separate run, see aggressive.py): D1 and H4
       Major zones in the bias direction, refined D1 -> H4 -> H1, a limit at the
-      H1 zone edge, static 1:5. No pullbacks, no CHoCH zone trades.
+      H1 zone edge, static 1:3. No pullbacks, no CHoCH zone trades.
 The lookahead re-runs use the same variant.
 
 Pullback trades are always counter-trend: sells in a bull HTF bias, buys in a
@@ -96,7 +96,7 @@ VARIANTS = {
            "major": True, "rules": False, "ltf": "H1", "agg": True,
            "text": "AGGRESSIVE ENTRY (separate run): Major D1/H4 zones in the bias "
                    "direction, refined D1 -> H4 -> H1 (last opposite candle in the base), "
-                   "limit at the H1 edge, stop = far edge -/+ 0.2 x ATR(H1), static 1:5, "
+                   "limit at the H1 edge, stop = far edge -/+ 0.2 x ATR(H1), static 1:3, "
                    "rule B, 150-pip cancel, no pullbacks, no CHoCH logic"},
 }
 ACTIVE = {"name": "v1", "first_read": None, "kinds": BOTH, "zone": False,
@@ -304,7 +304,7 @@ def run_pair(pair):
         f"zone/aggressive orders {len(zorders)}  |  Status: {statuses}",
         f"- Resolved: pullback {card('pullback', 'static')}; "
         f"zone static {card('zone', 'static')}; zone liquidity {card('zone', 'liquidity')}; "
-        f"aggressive static 1:5 {card('aggressive', 'static')}",
+        f"aggressive static 1:3 {card('aggressive', 'static')}",
         f"- open_at_cutoff {int((df['outcome'] == 'open_at_cutoff').sum())}",
         f"- Lookahead: {'PASS' if look['pass'] else 'FAIL'} "
         f"({look['cuts']} cuts, {look['decisions']} decisions compared)",
