@@ -11,10 +11,10 @@ that timeframe, small swings N=LTF_SWING_N on H4 and H1):
   D1 zone: H4 step searches the window [D1 candle open, D1 break close];
            H1 step searches [H4 pick candle open, D1 break close].
   H4 zone: H1 step searches [H4 candle open, H4 break close].
-  In each step the candidate is a POI of the right side made by a break that
-  closed inside the window, on a candle that opened inside the window. The pick
-  is the candidate closest in price to the previous box (touching or inside = 0
-  distance). Equal distance: the later candle. No candidate: no limit.
+  Option A freshness: the H4 candidate must not be dead, and the H1 candidate
+  must be fresh (no body close inside or beyond) AND have zero H1 wick taps
+  after leaving the box, both at refinement and before an order is placed.
+  Closest in price to the previous box wins; ties go to the later candle.
 
 Order rules (his): fills at the edge when a wick reaches it; a bar that opens
 past the edge fills at that open; open beyond the stop = skipped, zone not
@@ -25,8 +25,7 @@ run-away cancel on ag).
 ASSUMPTIONS (mine, not confirmed):
   AG1 the limit is placed at the first M15 close after the HTF break closed.
   AG2 price not yet beyond the edge: the order waits until an M15 close is
-      ahead of the edge.
-  AG3 candidate state is ignored; candle must open inside the window.
+      ahead of the edge (provided the H1 box stays fresh and untapped).
   AG4 far edge = the H1 zone far edge, checked on H1 body closes.
   AG5 a touched order skipped for spread or gap ends; the zone is not spent
       but no second limit is placed on it.
@@ -36,6 +35,7 @@ ASSUMPTIONS (mine, not confirmed):
   AG7 spent / closed zones are keyed by the H1 box, so two HTF zones that
       refine to one H1 candle give one limit.
 """
+from bisect import bisect_left
 from collections import defaultdict
 
 import pandas as pd
@@ -59,21 +59,76 @@ def _gap(p, prev):
     return 0.0
 
 
-def pick_base(book, side, t0, t1, prev):
-    """Closest candidate to prev inside the window, ties to the later candle."""
+def _h1_clean(h1_book, p, upto):
+    """True if H1 POI p is fresh and has zero H1 wick taps up to upto."""
+    if p.dead_time is not None and p.dead_time <= upto:
+        return False
+    if p.used_time is not None and p.used_time <= upto:
+        return False
+    buy = p.side == "buy"
+    edge = p.high if buy else p.low
+    left_box = False
+    i = bisect_left(h1_book._times, p.candle_time)
+    n = len(h1_book._times)
+    while i < n:
+        t = h1_book._times[i]
+        _o, h, l, c, ct = h1_book._bars[t]
+        if ct > upto:
+            break
+        if ct >= p.born_time:
+            if not left_box:
+                if (buy and c > edge) or ((not buy) and c < edge):
+                    left_box = True
+            else:
+                if (buy and l <= edge) or ((not buy) and h >= edge):
+                    return False
+        i += 1
+    return True
+
+
+def pick_h4_base(book, side, t0, t1, prev, counts):
+    """Closest non-dead H4 candidate inside [t0, t1], ties to later candle."""
     best = None
     best_d = None
-    for p in reversed(book.pois):      # born_time never decreases
+    for p in reversed(book.pois):
         if p.born_time > t1:
             continue
         if p.born_time < t0:
             break
         if p.side != side or p.candle_time < t0:
             continue
+        if p.dead_time is not None and p.dead_time <= t1:
+            counts["ag_h4_cand_dead"] += 1
+            continue
         d = _gap(p, prev)
         if (best is None or d < best_d
                 or (d == best_d and p.candle_time > best.candle_time)):
             best, best_d = p, d
+    return best
+
+
+def pick_h1_base(book, side, t0, t1, prev, counts):
+    """Closest fresh & untapped H1 candidate inside [t0, t1], ties to later candle."""
+    best = None
+    best_d = None
+    saw_raw = False
+    for p in reversed(book.pois):
+        if p.born_time > t1:
+            continue
+        if p.born_time < t0:
+            break
+        if p.side != side or p.candle_time < t0:
+            continue
+        saw_raw = True
+        if not _h1_clean(book, p, t1):
+            counts["ag_h1_cand_mitigated"] += 1
+            continue
+        d = _gap(p, prev)
+        if (best is None or d < best_d
+                or (d == best_d and p.candle_time > best.candle_time)):
+            best, best_d = p, d
+    if best is None and saw_raw:
+        counts["ag_h1_all_mitigated"] += 1
     return best
 
 
@@ -93,7 +148,7 @@ class AggRecorder(MapRecorder):
         self.pullbacks = []
         self.aorders = []
         self.slots = {}         # H1 poi id -> slot
-        self._map = {}          # HTF poi id -> H1 poi or None
+        self._map = {}          # HTF poi id -> (H4 poi or None, H1 poi or None)
         self._spent = set()
         self._closed = set()
         self._pend = []         # M15 bars not yet resolved
@@ -127,16 +182,20 @@ class AggRecorder(MapRecorder):
     def _refine(self, htf):
         side = htf.side
         if htf.tf == "D1":
-            h4 = pick_base(self.h4s_book, side, htf.candle_time, htf.born_time, htf)
+            h4 = pick_h4_base(self.h4s_book, side, htf.candle_time,
+                              htf.born_time, htf, self.counts)
             if h4 is None:
                 self.counts["ag_no_h4_candidate"] += 1
-                return None
-            h1 = pick_base(self.books["H1"], side, h4.candle_time, htf.born_time, h4)
+                return None, None
+            h1 = pick_h1_base(self.books["H1"], side, h4.candle_time,
+                              htf.born_time, h4, self.counts)
         else:
-            h1 = pick_base(self.books["H1"], side, htf.candle_time, htf.born_time, htf)
+            h4 = None
+            h1 = pick_h1_base(self.books["H1"], side, htf.candle_time,
+                              htf.born_time, htf, self.counts)
         if h1 is None:
             self.counts["ag_no_h1_candidate"] += 1
-        return h1
+        return h4, h1
 
     # ---- M15 bar -------------------------------------------------------
     def _on_m15(self, bar):
@@ -158,6 +217,11 @@ class AggRecorder(MapRecorder):
             if s["htf"].state != "fresh":
                 del self.slots[key]
                 self.counts["ag_wait_htf_not_fresh"] += 1
+            elif (s["h4"] is not None and s["h4"].dead_time is not None
+                  and s["h4"].dead_time <= now):
+                self._drop(key, "ag_drop_h4_dead")
+            elif not _h1_clean(self.books["H1"], s["h1"], now):
+                self._drop(key, "ag_drop_h1_mitigated")
             else:
                 self._try_place(s, bar, now)
         if need is not None:
@@ -174,18 +238,26 @@ class AggRecorder(MapRecorder):
                     self._rescan = True
                     continue
                 if htf.id in self._map:
-                    h1 = self._map[htf.id]
+                    h4, h1 = self._map[htf.id]
                 else:
-                    h1 = self._refine(htf)
-                    self._map[htf.id] = h1
+                    h4, h1 = self._refine(htf)
+                    self._map[htf.id] = (h4, h1)
                     self.counts["ag_zones_" + tf] += 1
                 if h1 is None:
                     continue
                 hid = h1.id
                 if hid in self.slots or hid in self._spent or hid in self._closed:
                     continue
-                slot = {"htf": htf, "h1": h1, "side": side, "order": None,
-                        "waited": False}
+                if h4 is not None and h4.dead_time is not None and h4.dead_time <= now:
+                    self._closed.add(hid)
+                    self.counts["ag_drop_h4_dead"] += 1
+                    continue
+                if not _h1_clean(self.books["H1"], h1, now):
+                    self._closed.add(hid)
+                    self.counts["ag_drop_h1_mitigated"] += 1
+                    continue
+                slot = {"htf": htf, "h4": h4, "h1": h1, "side": side,
+                        "order": None, "waited": False}
                 self.slots[hid] = slot
                 self.counts["ag_slots"] += 1
                 self._try_place(slot, bar, now)
