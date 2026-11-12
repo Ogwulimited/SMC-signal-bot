@@ -210,13 +210,13 @@ def main():
     L += ["",
           f"- Practice years only: start of data to {config.PRACTICE_END}. Exam years are sealed.",
           "- Bad days are NOT excluded in this run.",
-          "- Variant ag: aggressive entry (Option A: no 150-pip distance cap/cancel). "
+          "- Variant ag: aggressive entry (Option A distance + Option A fresh/untapped H1). "
           "D1 and H4 Major zones, refined D1 > H4 > H1 (or H4 > H1), limit at the H1 box "
           "near edge, stop = far edge +/- 0.2 x ATR(H1,14), static 1:3 target measured "
           "from the fill price. No CHoCH, BOS, breaker or pullback logic.",
           "- Break-even win rate at 1:3 is 25% before spread cost.",
           "- Basis: stacking (every filled trade). Net R = gross R minus one spread cost.",
-          "- Rule assumptions AG1-AG7 (aggressive.py) are not confirmed by you yet.",
+          "- Rule assumptions AG1-AG2, AG4-AG7 (aggressive.py) are not confirmed by you yet.",
           ""]
 
     s = stats(res)
@@ -441,14 +441,15 @@ def main():
     for p in expect:
         fj = funnels.get(p)
         if fj is None:
-            arows.append([p, "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a"])
+            arows.append(["n/a"] * 8)
             continue
         c = ag_counts(fj)
+        mit = c.get("ag_h1_all_mitigated", 0) + c.get("ag_drop_h1_mitigated", 0)
         arows.append([p, c.get("ag_zones_D1", 0), c.get("ag_zones_H4", 0),
-                      c.get("ag_slots", 0), c.get("ag_missed_far", 0),
-                      c.get("ag_orders", 0), c.get("ag_zone_spent", 0),
+                      mit, c.get("ag_slots", 0), c.get("ag_orders", 0),
+                      c.get("ag_zone_spent", 0),
                       int((allr[allr["pair"] == p]["status"] == "filled").sum())])
-    L += table(["Pair", "D1 zones", "H4 zones", "H1 slots", "Missed far", "Orders",
+    L += table(["Pair", "D1 zones", "H4 zones", "H1 mitigated", "H1 slots", "Orders",
                 "Zones spent", "Filled"], arows)
     L.append("")
 
@@ -468,7 +469,7 @@ def main():
     for name, t in (("flip_while_open", res[res["flip_while_open"]]),
                     ("no flip", res[~res["flip_while_open"]])):
         st = stats(t)
-        frow.append([name, st["n"], fmt(st["wr"], 1), fmt(st["exp"], 3)])
+        frow.append([name, st["n"], fmt(st["net"]), fmt(st["exp"], 3)])
     L += table(["Group", "Trades", "Net R", "Expectancy"], frow)
     L.append("")
 
