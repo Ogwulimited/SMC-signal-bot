@@ -18,14 +18,14 @@ that timeframe, small swings N=LTF_SWING_N on H4 and H1):
 
 Order rules (his): fills at the edge when a wick reaches it; a bar that opens
 past the edge fills at that open; open beyond the stop = skipped, zone not
-spent. One real fill spends the zone (rule B). Cancelled, not spent: bias lost,
-a body close through the far edge, a wick running ZONE_CANCEL_PIPS beyond the
-edge in the target direction before the touch.
+spent. One real fill spends the zone (rule B). Cancelled, not spent: bias lost
+or a body close through the far edge (Option A: no 150-pip distance cap or
+run-away cancel on ag).
 
 ASSUMPTIONS (mine, not confirmed):
   AG1 the limit is placed at the first M15 close after the HTF break closed.
-  AG2 price not yet beyond the edge: the order waits. Price already
-      ZONE_CANCEL_PIPS or more past the edge: missed, no order is made.
+  AG2 price not yet beyond the edge: the order waits until an M15 close is
+      ahead of the edge.
   AG3 candidate state is ignored; candle must open inside the window.
   AG4 far edge = the H1 zone far edge, checked on H1 body closes.
   AG5 a touched order skipped for spread or gap ends; the zone is not spent
@@ -86,7 +86,6 @@ class AggRecorder(MapRecorder):
             raise ValueError("ag needs aggressive.SETTINGS pip and spread set")
         self.pip = float(SETTINGS["pip"])
         self.spread = float(SETTINGS["spread"])
-        self.run_dist = float(getattr(config, "ZONE_CANCEL_PIPS", 150)) * self.pip
         self.h4s = IncrementalStructure(config.LTF_SWING_N, pd.Timedelta(hours=4), "H4")
         self.h4s_book = PoiBook("H4", None)
         self.counts = defaultdict(int)
@@ -152,7 +151,6 @@ class AggRecorder(MapRecorder):
                 self._cancel(key, now, "bias_lost", False)
         if need is None:
             self._scan_key = None
-        self._ran_away(bar, now)
         for key in list(self.slots):
             s = self.slots[key]
             if s["order"] is not None:
@@ -207,9 +205,6 @@ class AggRecorder(MapRecorder):
             if not slot["waited"]:
                 slot["waited"] = True
                 self.counts["ag_wait_not_ahead"] += 1
-            return
-        if abs(close - entry) >= self.run_dist:
-            self._drop(h1.id, "ag_missed_far")
             return
         atr = self.atr.value_at(h1.candle_time)
         if atr is None:
@@ -288,18 +283,6 @@ class AggRecorder(MapRecorder):
             self.counts["ag_slot_drop_" + reason] += 1
         if permanent:
             self._closed.add(key)
-
-    def _ran_away(self, bar, now):
-        for key, s in list(self.slots.items()):
-            od = s["order"]
-            if od is None or od["placed_time"] > bar.open_time:
-                continue
-            if s["side"] == "buy":
-                away = float(bar.high) >= od["entry"] + self.run_dist
-            else:
-                away = float(bar.low) <= od["entry"] - self.run_dist
-            if away:
-                self._cancel(key, now, "ran_away", True)
 
     def _on_h1(self, bar):
         now = bar.close_time
