@@ -3,9 +3,6 @@
 Reads data/phase4_cycle/{pair}_{trades.csv,funnel.json,lookahead.json}.
 Env: REPORT_LABEL (file name label), EXPECT_PAIRS (comma list).
 Writes reports/phase4/report_ag_<label>.md and the GitHub step summary.
-
-One scorecard only: aggressive / static 1:3, never mixed with zone or
-pullback trades. Includes Monthly and Rolling 8-Month performance.
 """
 import json
 import math
@@ -149,7 +146,6 @@ def card(allr, leg, mode):
 
 
 def ag_counts(fj):
-    """All counters whose name starts with 'ag' from one pair's funnel json."""
     out = {}
     for src in (fj.get("counts"), fj.get("agg")):
         if not isinstance(src, dict):
@@ -210,9 +206,10 @@ def main():
     L += ["",
           f"- Practice years only: start of data to {config.PRACTICE_END}. Exam years are sealed.",
           "- Bad days are NOT excluded in this run.",
-          "- Variant ag: aggressive entry (Option A: no 150-pip cap, clean/untapped H1, "
-          "latest D1/H4 dealing range only, cancel on Major CHoCH warning).",
-          "- Break-even win rate at 1:3 is 25% before spread cost.",
+          "- Variant ag: aggressive entry (Option A: static 1:5 RR, no 150-pip cap, "
+          "clean/untapped H1 with FVG displacement, all fresh D1/H4 zones kept, "
+          "cancel on Major CHoCH warning).",
+          "- Break-even win rate at 1:5 is 16.7% before spread cost (~18.5% after spread).",
           "- Basis: stacking (every filled trade). Net R = gross R minus one spread cost.",
           ""]
 
@@ -225,10 +222,12 @@ def main():
 
     L += ["## 2. Core Performance Metrics"]
     n_open = int((allr["outcome"] == "open_at_cutoff").sum())
+    be_wr = (100.0 / (1.0 + s["rr"])) if (s["rr"] == s["rr"] and s["rr"] > 0) else np.nan
     L += table(["Metric", "Value"], [
         ["Expectancy (net R per trade)", fmt(s["exp"], 3)],
         ["Total Trades (resolved)", s["n"]],
         ["Avg R:R (avg winning net R / avg losing net R)", fmt(s["rr"])],
+        ["Effective Break-Even Win Rate % (after spread)", fmt(be_wr, 1)],
         ["open_at_cutoff (not in the numbers)", n_open]])
     L.append("")
 
@@ -359,7 +358,6 @@ def main():
         L.append("No resolved trades for monthly or 8-month stats.")
     L.append("")
 
-    # ------------------------------------------------------------ Extras
     L += ["## Extras", ""]
 
     L += ["### Buy / sell split"]
@@ -391,7 +389,7 @@ def main():
     L += table(["Group", "Trades", "Win %", "Net R", "Expectancy"], grows)
     L.append("")
 
-    L += ["### All pairs (aggressive, static 1:3)"]
+    L += ["### All pairs (aggressive, static 1:5)"]
     prow, warns = [], []
     for p in expect:
         t = res[res["pair"] == p]
@@ -438,16 +436,17 @@ def main():
     for p in expect:
         fj = funnels.get(p)
         if fj is None:
-            arows.append(["n/a"] * 8)
+            arows.append(["n/a"] * 9)
             continue
         c = ag_counts(fj)
         mit = c.get("ag_h1_all_mitigated", 0) + c.get("ag_drop_h1_mitigated", 0)
+        nofvg = c.get("ag_h1_all_no_fvg", 0)
         arows.append([p, c.get("ag_zones_D1", 0), c.get("ag_zones_H4", 0),
-                      mit, c.get("ag_slots", 0), c.get("ag_orders", 0),
+                      mit, nofvg, c.get("ag_slots", 0), c.get("ag_orders", 0),
                       c.get("ag_zone_spent", 0),
                       int((allr[allr["pair"] == p]["status"] == "filled").sum())])
-    L += table(["Pair", "D1 zones", "H4 zones", "H1 mitigated", "H1 slots", "Orders",
-                "Zones spent", "Filled"], arows)
+    L += table(["Pair", "D1 zones", "H4 zones", "H1 mitigated", "H1 no FVG",
+                "H1 slots", "Orders", "Zones spent", "Filled"], arows)
     L.append("")
 
     L += ["### Stacking vs one-at-a-time (kept per pair)"]
