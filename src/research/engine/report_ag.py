@@ -210,13 +210,10 @@ def main():
     L += ["",
           f"- Practice years only: start of data to {config.PRACTICE_END}. Exam years are sealed.",
           "- Bad days are NOT excluded in this run.",
-          "- Variant ag: aggressive entry (Option A distance + Option A fresh/untapped H1). "
-          "D1 and H4 Major zones, refined D1 > H4 > H1 (or H4 > H1), limit at the H1 box "
-          "near edge, stop = far edge +/- 0.2 x ATR(H1,14), static 1:3 target measured "
-          "from the fill price. No CHoCH, BOS, breaker or pullback logic.",
+          "- Variant ag: aggressive entry (Option A: no 150-pip cap, clean/untapped H1, "
+          "latest D1/H4 dealing range only, cancel on Major CHoCH warning).",
           "- Break-even win rate at 1:3 is 25% before spread cost.",
           "- Basis: stacking (every filled trade). Net R = gross R minus one spread cost.",
-          "- Rule assumptions AG1-AG2, AG4-AG7 (aggressive.py) are not confirmed by you yet.",
           ""]
 
     s = stats(res)
