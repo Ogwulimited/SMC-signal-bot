@@ -3,28 +3,8 @@
 His rules (confirmed): a separate run that only reads the D1 and H4 Major
 zones in the bias direction (D1 and H4 must agree), refines each zone down to
 H1, and rests a LIMIT at the H1 zone's near edge (buy: top, sell: bottom).
-Stop = H1 far edge -/+ STOP_BUFFER_ATR x ATR(H1, 14). Static 1:3 target (the
+Stop = H1 far edge -/+ STOP_BUFFER_ATR x ATR(H1, 14). Static 1:5 target (the
 simulator reads order["rr"]). No BOS, CHoCH, breaker or pullback logic.
-
-Refinement (his rule, impulsive = a body-close break in the trade direction on
-that timeframe, small swings N=LTF_SWING_N on H4 and H1):
-  D1 zone: H4 step searches the window [D1 candle open, D1 break close];
-           H1 step searches [H4 pick candle open, D1 break close].
-  H4 zone: H1 step searches [H4 candle open, H4 break close].
-  Option A freshness: the H4 candidate must not be dead, and the H1 candidate
-  must be fresh (no body close inside or beyond) AND have zero H1 wick taps
-  after leaving the box, both at refinement and before an order is placed.
-  Closest in price to the previous box wins; ties go to the later candle.
-
-Active dealing range & warning protection (Option A):
-  - Only the latest fresh Major D1 zone and latest fresh Major H4 zone in the
-    bias direction are active. A newer zone on that timeframe cancels an older
-    unfilled limit ("newer_zone").
-  - If D1 or H4 enters warning (a Major CHoCH against the trend), resting
-    unfilled limits are cancelled ("bias_warning") and no new blind limits are
-    placed while warning is active.
-  - Cancelled zones (bias_lost, bias_warning, newer_zone, zone_far_break) are
-    closed permanently so old zones are never re-placed after bias flickers.
 """
 from bisect import bisect_left
 from collections import defaultdict
@@ -38,7 +18,7 @@ from src.research.engine.poi import PoiBook
 from src.research.engine.structure import IncrementalStructure
 
 SETTINGS = {"pip": None, "spread": None}
-RR_AGG = 3.0
+RR_AGG = 5.0
 
 
 def _gap(p, prev):
@@ -77,6 +57,48 @@ def _h1_clean(h1_book, p, upto):
     return True
 
 
+def _h1_has_fvg(h1_book, p, upto, atr_at):
+    """True if the H1 impulse leg from p created a valid FVG by upto."""
+    buy = p.side == "buy"
+    min_atr = float(config.FVG_MIN_SIZE_ATR)
+    idx0 = bisect_left(h1_book._times, p.candle_time)
+    n = len(h1_book._times)
+    i = max(2, idx0 + 1)
+    saw_after_born = False
+    while i < n:
+        t_a = h1_book._times[i - 2]
+        t_b = h1_book._times[i - 1]
+        t_c = h1_book._times[i]
+        if t_b >= p.born_time:
+            break
+        _ao, ah, al, _ac, _act = h1_book._bars[t_a]
+        _co, ch, cl, _cc, cct = h1_book._bars[t_c]
+        if cct > upto:
+            break
+        if cct > p.born_time:
+            saw_after_born = True
+        atr = atr_at(cct)
+        if atr is not None and atr > 0:
+            need = min_atr * float(atr)
+            if buy and cl > ah and (cl - ah) >= need:
+                return True
+            if (not buy) and al > ch and (al - ch) >= need:
+                return True
+        i += 1
+    if not saw_after_born and p.born_time == upto:
+        j = bisect_left(h1_book._times, p.born_time) - 1
+        if 0 <= j < n:
+            bo, _bh, _bl, bc, bct = h1_book._bars[h1_book._times[j]]
+            atr = atr_at(bct)
+            if atr is not None and atr > 0:
+                need = min_atr * float(atr)
+                if buy and (bc - bo) >= need:
+                    return True
+                if (not buy) and (bo - bc) >= need:
+                    return True
+    return False
+
+
 def pick_h4_base(book, side, t0, t1, prev, counts):
     """Closest non-dead H4 candidate inside [t0, t1], ties to later candle."""
     best = None
@@ -98,11 +120,12 @@ def pick_h4_base(book, side, t0, t1, prev, counts):
     return best
 
 
-def pick_h1_base(book, side, t0, t1, prev, counts):
-    """Closest fresh & untapped H1 candidate inside [t0, t1], ties to later candle."""
+def pick_h1_base(book, side, t0, t1, prev, atr_at, counts):
+    """Closest fresh, untapped, FVG-backed H1 candidate inside [t0, t1]."""
     best = None
     best_d = None
     saw_raw = False
+    saw_clean = False
     for p in reversed(book.pois):
         if p.born_time > t1:
             continue
@@ -114,12 +137,19 @@ def pick_h1_base(book, side, t0, t1, prev, counts):
         if not _h1_clean(book, p, t1):
             counts["ag_h1_cand_mitigated"] += 1
             continue
+        saw_clean = True
+        if not _h1_has_fvg(book, p, t1, atr_at):
+            counts["ag_h1_cand_no_fvg"] += 1
+            continue
         d = _gap(p, prev)
         if (best is None or d < best_d
                 or (d == best_d and p.candle_time > best.candle_time)):
             best, best_d = p, d
-    if best is None and saw_raw:
-        counts["ag_h1_all_mitigated"] += 1
+    if best is None:
+        if saw_clean:
+            counts["ag_h1_all_no_fvg"] += 1
+        elif saw_raw:
+            counts["ag_h1_all_mitigated"] += 1
     return best
 
 
@@ -135,19 +165,18 @@ class AggRecorder(MapRecorder):
         self.h4s = IncrementalStructure(config.LTF_SWING_N, pd.Timedelta(hours=4), "H4")
         self.h4s_book = PoiBook("H4", None)
         self.counts = defaultdict(int)
-        self.orders = []        # no pullback orders in this run
+        self.orders = []
         self.pullbacks = []
         self.aorders = []
-        self.slots = {}         # H1 poi id -> slot
-        self._map = {}          # HTF poi id -> (H4 poi or None, H1 poi or None)
+        self.slots = {}
+        self._map = {}
         self._spent = set()
         self._closed = set()
-        self._pend = []         # M15 bars not yet resolved
+        self._pend = []
         self._scan_key = None
         self._rescan = False
         self._n_order = 0
 
-    # ---- feed ----------------------------------------------------------
     def on_bar_close(self, bar, feed):
         super().on_bar_close(bar, feed)
         if bar.tf == "H4":
@@ -169,7 +198,6 @@ class AggRecorder(MapRecorder):
                      direction=ev["direction"], close=ev["close"])
         self.h4s_book.on_event(ev)
 
-    # ---- refinement ----------------------------------------------------
     def _refine(self, htf):
         side = htf.side
         if htf.tf == "D1":
@@ -179,16 +207,15 @@ class AggRecorder(MapRecorder):
                 self.counts["ag_no_h4_candidate"] += 1
                 return None, None
             h1 = pick_h1_base(self.books["H1"], side, h4.candle_time,
-                              htf.born_time, h4, self.counts)
+                              htf.born_time, h4, self.atr.value_at, self.counts)
         else:
             h4 = None
             h1 = pick_h1_base(self.books["H1"], side, htf.candle_time,
-                              htf.born_time, htf, self.counts)
+                              htf.born_time, htf, self.atr.value_at, self.counts)
         if h1 is None:
             self.counts["ag_no_h1_candidate"] += 1
         return h4, h1
 
-    # ---- M15 bar -------------------------------------------------------
     def _on_m15(self, bar):
         now = bar.close_time
         self._pend.append((bar.open_time, now, float(bar.open), float(bar.high),
@@ -234,38 +261,33 @@ class AggRecorder(MapRecorder):
             all_fresh = self.books[tf].fresh(side)
             if any(p.born_time >= now for p in all_fresh):
                 self._rescan = True
-            ready = [p for p in all_fresh if p.born_time < now]
-            if not ready:
-                continue
-            htf = ready[-1]     # latest Major zone = active dealing range
-            if htf.id in self._map:
-                h4, h1 = self._map[htf.id]
-            else:
-                h4, h1 = self._refine(htf)
-                self._map[htf.id] = (h4, h1)
-                self.counts["ag_zones_" + tf] += 1
-            hid = h1.id if h1 is not None else None
-            for key in list(self.slots):
-                s = self.slots[key]
-                if s["tf"] == tf and s["htf"].id != htf.id and key != hid:
-                    self._cancel(key, now, "newer_zone", True)
-            if h1 is None:
-                continue
-            if hid in self.slots or hid in self._spent or hid in self._closed:
-                continue
-            if h4 is not None and h4.dead_time is not None and h4.dead_time <= now:
-                self._closed.add(hid)
-                self.counts["ag_drop_h4_dead"] += 1
-                continue
-            if not _h1_clean(self.books["H1"], h1, now):
-                self._closed.add(hid)
-                self.counts["ag_drop_h1_mitigated"] += 1
-                continue
-            slot = {"tf": tf, "htf": htf, "h4": h4, "h1": h1, "side": side,
-                    "order": None, "waited": False}
-            self.slots[hid] = slot
-            self.counts["ag_slots"] += 1
-            self._try_place(slot, bar, now)
+            for htf in all_fresh:
+                if htf.born_time >= now:
+                    continue
+                if htf.id in self._map:
+                    h4, h1 = self._map[htf.id]
+                else:
+                    h4, h1 = self._refine(htf)
+                    self._map[htf.id] = (h4, h1)
+                    self.counts["ag_zones_" + tf] += 1
+                if h1 is None:
+                    continue
+                hid = h1.id
+                if hid in self.slots or hid in self._spent or hid in self._closed:
+                    continue
+                if h4 is not None and h4.dead_time is not None and h4.dead_time <= now:
+                    self._closed.add(hid)
+                    self.counts["ag_drop_h4_dead"] += 1
+                    continue
+                if not _h1_clean(self.books["H1"], h1, now):
+                    self._closed.add(hid)
+                    self.counts["ag_drop_h1_mitigated"] += 1
+                    continue
+                slot = {"tf": tf, "htf": htf, "h4": h4, "h1": h1, "side": side,
+                        "order": None, "waited": False}
+                self.slots[hid] = slot
+                self.counts["ag_slots"] += 1
+                self._try_place(slot, bar, now)
 
     def _drop(self, key, counter):
         self.slots.pop(key, None)
@@ -307,9 +329,7 @@ class AggRecorder(MapRecorder):
         self._log("ag_order", now, id=order["id"], side=order["side"],
                   entry=order["entry"], stop=order["stop"], htf=htf.id, h1=h1.id)
 
-    # ---- fills, cancels ------------------------------------------------
     def _resolve(self, upto):
-        """Resolve M15 bars that closed before 'upto' (touch / fill / skip)."""
         todo = [b for b in self._pend if b[1] < upto]
         if not todo:
             return
@@ -371,7 +391,6 @@ class AggRecorder(MapRecorder):
             if beyond:
                 self._cancel(key, now, "zone_far_break", True)
 
-    # ---- outputs -------------------------------------------------------
     def funnel(self):
         return dict(self.counts)
 
