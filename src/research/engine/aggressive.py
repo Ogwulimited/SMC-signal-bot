@@ -16,24 +16,15 @@ that timeframe, small swings N=LTF_SWING_N on H4 and H1):
   after leaving the box, both at refinement and before an order is placed.
   Closest in price to the previous box wins; ties go to the later candle.
 
-Order rules (his): fills at the edge when a wick reaches it; a bar that opens
-past the edge fills at that open; open beyond the stop = skipped, zone not
-spent. One real fill spends the zone (rule B). Cancelled, not spent: bias lost
-or a body close through the far edge (Option A: no 150-pip distance cap or
-run-away cancel on ag).
-
-ASSUMPTIONS (mine, not confirmed):
-  AG1 the limit is placed at the first M15 close after the HTF break closed.
-  AG2 price not yet beyond the edge: the order waits until an M15 close is
-      ahead of the edge (provided the H1 box stays fresh and untapped).
-  AG4 far edge = the H1 zone far edge, checked on H1 body closes.
-  AG5 a touched order skipped for spread or gap ends; the zone is not spent
-      but no second limit is placed on it.
-  AG6 a cancel at time t: the M15 bar closing at t cannot touch (simulator
-      convention). Touches are resolved with a one-bar delay so the result does
-      not depend on the order the feed delivers bars that close together.
-  AG7 spent / closed zones are keyed by the H1 box, so two HTF zones that
-      refine to one H1 candle give one limit.
+Active dealing range & warning protection (Option A):
+  - Only the latest fresh Major D1 zone and latest fresh Major H4 zone in the
+    bias direction are active. A newer zone on that timeframe cancels an older
+    unfilled limit ("newer_zone").
+  - If D1 or H4 enters warning (a Major CHoCH against the trend), resting
+    unfilled limits are cancelled ("bias_warning") and no new blind limits are
+    placed while warning is active.
+  - Cancelled zones (bias_lost, bias_warning, newer_zone, zone_far_break) are
+    closed permanently so old zones are never re-placed after bias flickers.
 """
 from bisect import bisect_left
 from collections import defaultdict
@@ -204,19 +195,26 @@ class AggRecorder(MapRecorder):
                            float(bar.low), float(bar.close)))
         self._resolve(now)
         hb = htf_bias(self.bias["D1"], self.bias["H4"])
-        need = {"bull": "buy", "bear": "sell"}.get(hb)
-        for key in list(self.slots):
-            if self.slots[key]["side"] != need:
-                self._cancel(key, now, "bias_lost", False)
-        if need is None:
+        warn = (hb is not None) and (self.bias["D1"].warning or self.bias["H4"].warning)
+        need = {"bull": "buy", "bear": "sell"}.get(hb) if not warn else None
+        if hb is None:
+            for key in list(self.slots):
+                self._cancel(key, now, "bias_lost", True)
             self._scan_key = None
+        elif warn:
+            for key in list(self.slots):
+                self._cancel(key, now, "bias_warning", True)
+            self._scan_key = None
+        else:
+            for key in list(self.slots):
+                if self.slots[key]["side"] != need:
+                    self._cancel(key, now, "bias_lost", True)
         for key in list(self.slots):
             s = self.slots[key]
             if s["order"] is not None:
                 continue
             if s["htf"].state != "fresh":
-                del self.slots[key]
-                self.counts["ag_wait_htf_not_fresh"] += 1
+                self._drop(key, "ag_wait_htf_not_fresh")
             elif (s["h4"] is not None and s["h4"].dead_time is not None
                   and s["h4"].dead_time <= now):
                 self._drop(key, "ag_drop_h4_dead")
@@ -233,34 +231,41 @@ class AggRecorder(MapRecorder):
 
     def _scan(self, side, hb, bar, now):
         for tf in ("D1", "H4"):
-            for htf in self.books[tf].fresh(side):
-                if htf.born_time >= now:
-                    self._rescan = True
-                    continue
-                if htf.id in self._map:
-                    h4, h1 = self._map[htf.id]
-                else:
-                    h4, h1 = self._refine(htf)
-                    self._map[htf.id] = (h4, h1)
-                    self.counts["ag_zones_" + tf] += 1
-                if h1 is None:
-                    continue
-                hid = h1.id
-                if hid in self.slots or hid in self._spent or hid in self._closed:
-                    continue
-                if h4 is not None and h4.dead_time is not None and h4.dead_time <= now:
-                    self._closed.add(hid)
-                    self.counts["ag_drop_h4_dead"] += 1
-                    continue
-                if not _h1_clean(self.books["H1"], h1, now):
-                    self._closed.add(hid)
-                    self.counts["ag_drop_h1_mitigated"] += 1
-                    continue
-                slot = {"htf": htf, "h4": h4, "h1": h1, "side": side,
-                        "order": None, "waited": False}
-                self.slots[hid] = slot
-                self.counts["ag_slots"] += 1
-                self._try_place(slot, bar, now)
+            all_fresh = self.books[tf].fresh(side)
+            if any(p.born_time >= now for p in all_fresh):
+                self._rescan = True
+            ready = [p for p in all_fresh if p.born_time < now]
+            if not ready:
+                continue
+            htf = ready[-1]     # latest Major zone = active dealing range
+            if htf.id in self._map:
+                h4, h1 = self._map[htf.id]
+            else:
+                h4, h1 = self._refine(htf)
+                self._map[htf.id] = (h4, h1)
+                self.counts["ag_zones_" + tf] += 1
+            hid = h1.id if h1 is not None else None
+            for key in list(self.slots):
+                s = self.slots[key]
+                if s["tf"] == tf and s["htf"].id != htf.id and key != hid:
+                    self._cancel(key, now, "newer_zone", True)
+            if h1 is None:
+                continue
+            if hid in self.slots or hid in self._spent or hid in self._closed:
+                continue
+            if h4 is not None and h4.dead_time is not None and h4.dead_time <= now:
+                self._closed.add(hid)
+                self.counts["ag_drop_h4_dead"] += 1
+                continue
+            if not _h1_clean(self.books["H1"], h1, now):
+                self._closed.add(hid)
+                self.counts["ag_drop_h1_mitigated"] += 1
+                continue
+            slot = {"tf": tf, "htf": htf, "h4": h4, "h1": h1, "side": side,
+                    "order": None, "waited": False}
+            self.slots[hid] = slot
+            self.counts["ag_slots"] += 1
+            self._try_place(slot, bar, now)
 
     def _drop(self, key, counter):
         self.slots.pop(key, None)
