@@ -5,7 +5,7 @@ Env: REPORT_LABEL (file name label), EXPECT_PAIRS (comma list).
 Writes reports/phase4/report_ag_<label>.md and the GitHub step summary.
 
 One scorecard only: aggressive / static 1:3, never mixed with zone or
-pullback trades. Same six sections as report_cycle.py.
+pullback trades. Includes Monthly and Rolling 8-Month performance.
 """
 import json
 import math
@@ -59,6 +59,20 @@ def table(head, rows):
     out = ["| " + " | ".join(head) + " |", "|" + "|".join("---" for _ in head) + "|"]
     for r in rows:
         out.append("| " + " | ".join(str(x) for x in r) + " |")
+    return out
+
+
+def month_list(t0, t1_excl):
+    last = t1_excl - pd.Timedelta(seconds=1)
+    y, m = t0.year, t0.month
+    ey, em = last.year, last.month
+    out = []
+    while (y, m) <= (ey, em):
+        out.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            y += 1
+            m = 1
     return out
 
 
@@ -196,10 +210,10 @@ def main():
     L += ["",
           f"- Practice years only: start of data to {config.PRACTICE_END}. Exam years are sealed.",
           "- Bad days are NOT excluded in this run.",
-          "- Variant ag: aggressive entry. D1 and H4 Major zones, refined D1 > H4 > H1 "
-          "(or H4 > H1), limit at the H1 box near edge, stop = far edge +/- 0.2 x ATR(H1,14), "
-          "static 1:3 target measured from the fill price. No CHoCH, BOS, breaker or "
-          "pullback logic. Fully separate from the zone trades.",
+          "- Variant ag: aggressive entry (Option A: no 150-pip distance cap/cancel). "
+          "D1 and H4 Major zones, refined D1 > H4 > H1 (or H4 > H1), limit at the H1 box "
+          "near edge, stop = far edge +/- 0.2 x ATR(H1,14), static 1:3 target measured "
+          "from the fill price. No CHoCH, BOS, breaker or pullback logic.",
           "- Break-even win rate at 1:3 is 25% before spread cost.",
           "- Basis: stacking (every filled trade). Net R = gross R minus one spread cost.",
           "- Rule assumptions AG1-AG7 (aggressive.py) are not confirmed by you yet.",
@@ -284,6 +298,70 @@ def main():
     L += table(["Year", "Trades", "Net R", "Win %", "PF"], yrows)
     L.append("")
 
+    L += ["## 7. Monthly & 8-Month Consistency (active window, by entry month)"]
+    months = month_list(res["fill_time"].min(), t_end) if len(res) else []
+    m_n, m_net, m_win = {}, {}, {}
+    if months:
+        ym = res["fill_time"].dt.strftime("%Y-%m")
+        for m in months:
+            sub = res[ym == m]
+            m_n[m] = len(sub)
+            m_net[m] = float(sub["net_r"].sum()) if len(sub) else 0.0
+            m_win[m] = int((sub["outcome"] == "target").sum()) if len(sub) else 0
+        nets = [m_net[m] for m in months]
+        n_m = len(months)
+        n_green = sum(1 for x in nets if x > 0)
+        n_red = sum(1 for x in nets if x < 0)
+        n_flat = n_m - n_green - n_red
+        best_m = max(months, key=lambda m: m_net[m])
+        worst_m = min(months, key=lambda m: m_net[m])
+        L += table(["Monthly Metric", "Value"], [
+            ["Active months", f"{n_m} ({months[0]} to {months[-1]})"],
+            ["Green months (Net R > 0)", f"{n_green}/{n_m} ({fmt(n_green * 100.0 / n_m, 1)}%)"],
+            ["Red / Flat months", f"{n_red} red / {n_flat} flat (0 tr)"],
+            ["Avg trades per active month", fmt(len(res) / n_m, 2)],
+            ["Avg / Median monthly Net R", f"{fmt(np.mean(nets))} / {fmt(np.median(nets))}"],
+            ["Best month", f"{best_m} ({fmt(m_net[best_m])} R, {m_n[best_m]} tr)"],
+            ["Worst month", f"{worst_m} ({fmt(m_net[worst_m])} R, {m_n[worst_m]} tr)"],
+        ])
+        L.append("")
+        if n_m >= 8:
+            r8 = [(f"{months[i]}..{months[i + 7]}",
+                   sum(m_n[x] for x in months[i:i + 8]),
+                   sum(m_net[x] for x in months[i:i + 8]))
+                  for i in range(n_m - 7)]
+            r8_nets = [x[2] for x in r8]
+            r8_tr = [x[1] for x in r8]
+            g8 = sum(1 for x in r8_nets if x > 0)
+            best8 = max(r8, key=lambda x: x[2])
+            worst8 = min(r8, key=lambda x: x[2])
+            L.append("**Rolling 8-month windows**")
+            L += table(["8-Month Metric", "Value"], [
+                ["Rolling 8-month windows", len(r8)],
+                ["Green 8-month windows", f"{g8}/{len(r8)} ({fmt(g8 * 100.0 / len(r8), 1)}%)"],
+                ["Avg 8-month trades", fmt(np.mean(r8_tr), 1)],
+                ["Avg / Median 8-month Net R",
+                 f"{fmt(np.mean(r8_nets))} / {fmt(np.median(r8_nets))}"],
+                ["Best 8m stretch", f"{best8[0]} ({fmt(best8[2])} R, {best8[1]} tr)"],
+                ["Worst 8m stretch", f"{worst8[0]} ({fmt(worst8[2])} R, {worst8[1]} tr)"],
+            ])
+            L.append("")
+        L.append("**Chronological 8-month blocks**")
+        brows = []
+        for i in range(0, n_m, 8):
+            w = months[i:i + 8]
+            bn = sum(m_n[x] for x in w)
+            bnet = sum(m_net[x] for x in w)
+            bw = sum(m_win[x] for x in w)
+            bwr = (bw * 100.0 / bn) if bn else np.nan
+            bg = sum(1 for x in w if m_net[x] > 0)
+            tag = f"{w[0]}..{w[-1]}" if len(w) == 8 else f"{w[0]}..{w[-1]} ({len(w)}m)"
+            brows.append([tag, bn, fmt(bwr, 1), fmt(bnet), f"{bg}/{len(w)}"])
+        L += table(["8m Block", "Tr", "Win %", "Net R", "Green m"], brows)
+    else:
+        L.append("No resolved trades for monthly or 8-month stats.")
+    L.append("")
+
     # ------------------------------------------------------------ Extras
     L += ["## Extras", ""]
 
@@ -295,6 +373,25 @@ def main():
     st = stats(res)
     srows.append(["ALL", st["n"], fmt(st["wr"], 1), fmt(st["net"]), fmt(st["exp"], 3)])
     L += table(["Group", "Trades", "Win %", "Net R", "Expectancy"], srows)
+    L.append("")
+
+    L += ["### HTF zone origin split (D1 vs H4)"]
+    setup_s = res["setup"].astype(str) if "setup" in res.columns else pd.Series(dtype=str)
+    zrows = []
+    for ztf in ("D1", "H4"):
+        sub = res[setup_s.str.startswith(ztf)] if len(res) else res
+        st = stats(sub)
+        zrows.append([ztf, st["n"], fmt(st["wr"], 1), fmt(st["net"]), fmt(st["exp"], 3)])
+    L += table(["Origin TF", "Trades", "Win %", "Net R", "Expectancy"], zrows)
+    L.append("")
+
+    L += ["### Market group split (measured majors vs assumed crosses)"]
+    grows = []
+    for gname, mask in (("Majors / liquid (11 measured)", ~res["pair"].isin(NEW_PAIRS)),
+                        ("Minor crosses (17 assumed)", res["pair"].isin(NEW_PAIRS))):
+        st = stats(res[mask] if len(res) else res)
+        grows.append([gname, st["n"], fmt(st["wr"], 1), fmt(st["net"]), fmt(st["exp"], 3)])
+    L += table(["Group", "Trades", "Win %", "Net R", "Expectancy"], grows)
     L.append("")
 
     L += ["### All pairs (aggressive, static 1:3)"]
@@ -371,7 +468,7 @@ def main():
     for name, t in (("flip_while_open", res[res["flip_while_open"]]),
                     ("no flip", res[~res["flip_while_open"]])):
         st = stats(t)
-        frow.append([name, st["n"], fmt(st["net"]), fmt(st["exp"], 3)])
+        frow.append([name, st["n"], fmt(st["wr"], 1), fmt(st["exp"], 3)])
     L += table(["Group", "Trades", "Net R", "Expectancy"], frow)
     L.append("")
 
@@ -410,6 +507,16 @@ def main():
     else:
         L.append("No ag_ counters found in the funnel files.")
     L.append("")
+
+    if months:
+        L += ["### Month-by-month breakdown (active window)"]
+        mrows = []
+        for m in months:
+            mn = m_n[m]
+            mwr = (m_win[m] * 100.0 / mn) if mn else np.nan
+            mrows.append([m, mn, fmt(mwr, 1), fmt(m_net[m])])
+        L += table(["Month", "Tr", "Win %", "Net R"], mrows)
+        L.append("")
 
     L += ["### Trade sheet: first 10 resolved aggressive trades by fill time"]
     L.append("Times are UTC and are candle CLOSE times. On the chart check: the D1/H4 "
