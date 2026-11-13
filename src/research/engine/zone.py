@@ -20,6 +20,7 @@ def _rules():
 class ZoneRecorder(cy.CycleRecorder):
     def __init__(self, log, first_read=None):
         super().__init__(log, first_read)
+        self._spread = float(SETTINGS.get("spread", 0.0))
         self.zorders = []
         self._n_z = 0
         self._n_zo = 0
@@ -327,10 +328,10 @@ class ZoneRecorder(cy.CycleRecorder):
         if not swept:
             return
         s["ob"] = "none"
-        allow_used = bool(config.TRADE_USED_POIS) or _rules()
-        if box.state != "fresh" and not allow_used:
+        if box.state != "fresh" and not bool(config.TRADE_USED_POIS):
             self.counts["z_ob_box_used"] += 1
             return
+        near = box.low if tsell else bar.low
         near = box.low if tsell else box.high
         touched = bar.high >= near if tsell else bar.low <= near
         if touched:
@@ -363,6 +364,11 @@ class ZoneRecorder(cy.CycleRecorder):
             return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
         stop = edge + buf if tsell else edge - buf
+        if self._spread > 0.0:
+            min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
+            if abs(entry - stop) < min_risk:
+                stop = entry + min_risk if tsell else entry - min_risk
+                self.counts["z_" + kind + "_min_risk_padded"] += 1
         ceiling = float(sc["ceiling"])
         z = sc["zone"]
         self._n_zo += 1
