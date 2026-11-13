@@ -94,6 +94,7 @@ class CycleRecorder(MapRecorder):
         self._n_pb = 0
         self._n_setup = 0
         self._n_order = 0
+        self._spread = 0.0
 
     # ---- feed entry ----------------------------------------------------
     def on_bar_close(self, bar, feed):
@@ -319,6 +320,11 @@ class CycleRecorder(MapRecorder):
             return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
         stop = edge + buf if up else edge - buf
+        if self._spread > 0.0:
+            min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
+            if abs(entry - stop) < min_risk:
+                stop = entry + min_risk if up else entry - min_risk
+                self.counts[kind + "_min_risk_padded"] += 1
         pb = self._pb
         self._n_order += 1
         breaker = setup["breaker"]
