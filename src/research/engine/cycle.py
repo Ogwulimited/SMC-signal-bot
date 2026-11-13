@@ -356,8 +356,6 @@ class CycleRecorder(MapRecorder):
         z = self._zone_touched(bar)
         if z is not None:
             ceiling = pb["ceiling"]
-            zones = list(pb["zones"])
-            locked = bool(pb["locked"])
             self._end_pullback(now, "zone")
             self.counts["end_zone"] += 1
             if ceiling is None:
@@ -365,8 +363,7 @@ class CycleRecorder(MapRecorder):
                 self.counts["zone_no_ceiling"] += 1
             else:
                 self.state = SCAN
-                self._scan = {"zone": z, "ceiling": ceiling,
-                              "zones": zones, "locked": locked}
+                self._scan = {"zone": z, "ceiling": ceiling}
                 self._log("pb_zone", now, id=pb["id"], zone=z["id"], tf=z["tf"])
                 self._scan_step(bar, now)
             return
@@ -456,18 +453,12 @@ class CycleRecorder(MapRecorder):
         self._log("pb_end", now, id=pb["id"], reason=reason)
         self._pb = None
 
-    def _zone_alive(self, z):
-        ok = ("fresh", "used") if config.TRADE_USED_POIS else ("fresh",)
-        return z["poi"].state in ok
-
-    def _usable_zone(self, z):
-        return self._zone_alive(z)
-
-    def _pick_touched_zone(self, bar, zones):
+    def _zone_touched(self, bar):
         up = self.ctx["up"]
+        ok = ("fresh", "used") if config.TRADE_USED_POIS else ("fresh",)
         best = None
-        for z in zones:
-            if not self._usable_zone(z):
+        for z in self._pb["zones"]:
+            if z["poi"].state not in ok:
                 continue
             if up:
                 hit = bar.low <= z["high"]
@@ -479,21 +470,6 @@ class CycleRecorder(MapRecorder):
                 best = (near, z)
         return best[1] if best is not None else None
 
-    def _rem_zones(self, zones, drop_id, close_price):
-        up = self.ctx["up"]
-        out = []
-        for z in zones:
-            if z["id"] == drop_id or not self._zone_alive(z):
-                continue
-            far = z["low"] if up else z["high"]
-            if _beyond(close_price, far, not up):
-                continue
-            out.append(z)
-        return out
-
-    def _zone_touched(self, bar):
-        return self._pick_touched_zone(bar, self._pb["zones"])
-
     def _scan_step(self, bar, now):
         sc = self._scan
         up = self.ctx["up"]
@@ -504,35 +480,12 @@ class CycleRecorder(MapRecorder):
             self._scan = None
             self._log("pb_scan_end", now, reason="ceiling_break")
             return
-        if sc.get("zone") is None:
-            rem = self._rem_zones(sc.get("zones", ()), None, bar.close)
-            if not rem:
-                self.state = IDLE
-                self._scan = None
-                return
-            sc["zones"] = rem
-            z_next = self._pick_touched_zone(bar, rem)
-            if z_next is not None:
-                self._scan = {"zone": z_next, "ceiling": sc["ceiling"],
-                              "zones": rem, "locked": sc.get("locked", False)}
-                self._log("pb_zone_step", now, zone=z_next["id"], tf=z_next["tf"])
-            return
         far = sc["zone"]["low"] if up else sc["zone"]["high"]
         if _beyond(bar.close, far, not up):
             self.counts["scan_far_break"] += 1
-            self._log("pb_scan_end", now, reason="far_edge_break")
-            if bool(getattr(config, "MAJOR_HTF", False)):
-                rem = self._rem_zones(sc.get("zones", ()), sc["zone"]["id"], bar.close)
-                if rem:
-                    self.counts["scan_step_deeper"] += 1
-                    z_next = self._pick_touched_zone(bar, rem)
-                    self._scan = {"zone": z_next, "ceiling": sc["ceiling"],
-                                  "zones": rem, "locked": sc.get("locked", False)}
-                    if z_next is not None:
-                        self._log("pb_zone_step", now, zone=z_next["id"], tf=z_next["tf"])
-                    return
             self.state = IDLE
             self._scan = None
+            self._log("pb_scan_end", now, reason="far_edge_break")
 
     # ---- outputs -------------------------------------------------------
     def funnel(self):
