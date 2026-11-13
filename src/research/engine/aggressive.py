@@ -58,14 +58,15 @@ def _h1_clean(h1_book, p, upto):
 
 
 def _h1_has_fvg(h1_book, p, upto, atr_at):
-    """True if the H1 impulse leg from p created a valid FVG by upto."""
+    """True if the first 1-2 H1 candles leaving p created a valid FVG by upto."""
     buy = p.side == "buy"
     min_atr = float(config.FVG_MIN_SIZE_ATR)
     idx0 = bisect_left(h1_book._times, p.candle_time)
     n = len(h1_book._times)
-    i = max(2, idx0 + 1)
-    saw_after_born = False
-    while i < n:
+    max_i = min(n - 1, idx0 + 3)
+    i = max(2, idx0 + 2)
+    saw_window = False
+    while i <= max_i:
         t_a = h1_book._times[i - 2]
         t_b = h1_book._times[i - 1]
         t_c = h1_book._times[i]
@@ -75,8 +76,7 @@ def _h1_has_fvg(h1_book, p, upto, atr_at):
         _co, ch, cl, _cc, cct = h1_book._bars[t_c]
         if cct > upto:
             break
-        if cct > p.born_time:
-            saw_after_born = True
+        saw_window = True
         atr = atr_at(cct)
         if atr is not None and atr > 0:
             need = min_atr * float(atr)
@@ -85,16 +85,16 @@ def _h1_has_fvg(h1_book, p, upto, atr_at):
             if (not buy) and al > ch and (al - ch) >= need:
                 return True
         i += 1
-    if not saw_after_born and p.born_time == upto:
-        j = bisect_left(h1_book._times, p.born_time) - 1
-        if 0 <= j < n:
-            bo, _bh, _bl, bc, bct = h1_book._bars[h1_book._times[j]]
+    if not saw_window and p.born_time == upto and idx0 + 1 < n:
+        t_b = h1_book._times[idx0 + 1]
+        bo, _bh, _bl, bc, bct = h1_book._bars[t_b]
+        if bct == upto:
             atr = atr_at(bct)
             if atr is not None and atr > 0:
-                need = min_atr * float(atr)
-                if buy and (bc - bo) >= need:
+                need = max(min_atr, 0.5) * float(atr)
+                if buy and bc > p.high and (bc - bo) >= need:
                     return True
-                if (not buy) and (bo - bc) >= need:
+                if (not buy) and bc < p.low and (bo - bc) >= need:
                     return True
     return False
 
@@ -121,7 +121,7 @@ def pick_h4_base(book, side, t0, t1, prev, counts):
 
 
 def pick_h1_base(book, side, t0, t1, prev, atr_at, counts):
-    """Closest fresh, untapped, FVG-backed H1 candidate inside [t0, t1]."""
+    """Closest fresh, untapped, OB-FVG-backed H1 candidate inside [t0, t1]."""
     best = None
     best_d = None
     saw_raw = False
@@ -222,20 +222,22 @@ class AggRecorder(MapRecorder):
                            float(bar.low), float(bar.close)))
         self._resolve(now)
         hb = htf_bias(self.bias["D1"], self.bias["H4"])
-        warn = (hb is not None) and (self.bias["D1"].warning or self.bias["H4"].warning)
-        need = {"bull": "buy", "bear": "sell"}.get(hb) if not warn else None
-        if hb is None:
+        d1_warn = bool(self.bias["D1"].warning) if hb is not None else False
+        h4_warn = bool(self.bias["H4"].warning) if hb is not None else False
+        need = {"bull": "buy", "bear": "sell"}.get(hb)
+        if need is None:
             for key in list(self.slots):
                 self._cancel(key, now, "bias_lost", True)
             self._scan_key = None
-        elif warn:
-            for key in list(self.slots):
-                self._cancel(key, now, "bias_warning", True)
-            self._scan_key = None
         else:
             for key in list(self.slots):
-                if self.slots[key]["side"] != need:
+                s = self.slots[key]
+                if s["side"] != need:
                     self._cancel(key, now, "bias_lost", True)
+                else:
+                    w = d1_warn if s["tf"] == "D1" else (d1_warn or h4_warn)
+                    if w:
+                        self._cancel(key, now, "bias_warning", False)
         for key in list(self.slots):
             s = self.slots[key]
             if s["order"] is not None:
@@ -250,14 +252,16 @@ class AggRecorder(MapRecorder):
             else:
                 self._try_place(s, bar, now)
         if need is not None:
-            k = (hb, len(self.books["D1"].pois), len(self.books["H4"].pois))
+            k = (hb, d1_warn, h4_warn,
+                 len(self.books["D1"].pois), len(self.books["H4"].pois))
             if k != self._scan_key or self._rescan:
                 self._scan_key = k
                 self._rescan = False
-                self._scan(need, hb, bar, now)
+                self._scan(need, hb, d1_warn, h4_warn, bar, now)
 
-    def _scan(self, side, hb, bar, now):
+    def _scan(self, side, hb, d1_warn, h4_warn, bar, now):
         for tf in ("D1", "H4"):
+            w = d1_warn if tf == "D1" else (d1_warn or h4_warn)
             all_fresh = self.books[tf].fresh(side)
             if any(p.born_time >= now for p in all_fresh):
                 self._rescan = True
@@ -270,7 +274,7 @@ class AggRecorder(MapRecorder):
                     h4, h1 = self._refine(htf)
                     self._map[htf.id] = (h4, h1)
                     self.counts["ag_zones_" + tf] += 1
-                if h1 is None:
+                if w or h1 is None:
                     continue
                 hid = h1.id
                 if hid in self.slots or hid in self._spent or hid in self._closed:
