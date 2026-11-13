@@ -31,6 +31,25 @@ RULES SWITCH (SETTINGS["rules"], used by variants mz and mh; off otherwise):
     every end/cancel set by trading-timeframe bars up to its close is already
     known. Window rule = the simulator's: a bar counts if its close is before
     the order's end (on it too, for a ceiling_break end).
+
+ASSUMPTIONS (not confirmed yet):
+  Z1 touch = any wick reaching the zone near edge (cycle's own test).
+  Z2 only fresh zones; the zone list is frozen at pullback start.
+     (rules on: fresh or used, never dead, and never spent.)
+  Z3 CHoCH = the trading-TF structure's own CHoCH; level shown on the trade sheet.
+  Z4 touch bar and CHoCH-close on the same bar is valid.
+  Z5 a CHoCH with the trend before the touch clears the BOS memory.
+  Z7 more attempts in the same scan are allowed.
+  Z8 no CHoCH-down gate (a BOS down already implies an earlier CHoCH down).
+  Z9 zone trades only inside the cycle flow above.
+  Z10 BOS memory = a BOS against the trend since the last CHoCH with the trend.
+  Z11 rules on: "used" in poi.py means wick-touched only. (poi.py now read: a
+      POI becomes "used" on a BODY close inside the box, not a wick.)
+  Z12 spent zones are keyed by the zone id (a refined D1 zone keeps its D1 id).
+  Z13 other pending orders from a zone keep running after it is spent.
+  Z14 a bar that touches the entry and also runs the cancel distance = cancelled.
+  T1 liquidity = unswept swing (N=LTF_SWING_N, trading timeframe) between entry
+     and ceiling, known at its confirm bar. T2 none >= 3R away: target = ceiling.
 """
 from bisect import bisect_left, bisect_right, insort
 from collections import deque
@@ -110,16 +129,7 @@ class ZoneRecorder(cy.CycleRecorder):
 
     # ---- rules: fill tracking, cancel, spent zones ---------------------
     def _cancel_dist(self):
-        if bool(getattr(config, "MAJOR_HTF", False)):
-            return 0.0
         return float(config.ZONE_CANCEL_PIPS) * float(SETTINGS["pip"])
-
-    def _zone_warn(self, z):
-        if not _rules() or z is None:
-            return False
-        d1_w = bool(self.bias["D1"].warning)
-        h4_w = bool(self.bias["H4"].warning)
-        return d1_w if z["tf"] == "D1" else (d1_w or h4_w)
 
     def _resolve_fills(self, bar):
         """Orders touched on the previous M15 bar fill at THIS bar's open
@@ -209,10 +219,23 @@ class ZoneRecorder(cy.CycleRecorder):
                 out.append(self._refine(p, buy_zone))
         return out
 
-    def _zone_alive(self, z):
+    def _zone_touched(self, bar):
         if not _rules():
-            return super()._zone_alive(z)
-        return z["poi"].state in ("fresh", "used") and z["id"] not in self._spent
+            return super()._zone_touched(bar)
+        up = self.ctx["up"]
+        best = None
+        for z in self._pb["zones"]:
+            if z["poi"].state not in ("fresh", "used") or z["id"] in self._spent:
+                continue
+            if up:
+                hit = bar.low <= z["high"]
+                near = z["high"]
+            else:
+                hit = bar.high >= z["low"]
+                near = z["low"]
+            if hit and (best is None or (near > best[0] if up else near < best[0])):
+                best = (near, z)
+        return best[1] if best is not None else None
 
     def _on_m15(self, bar, ev):
         self._ev = ev
@@ -236,24 +259,16 @@ class ZoneRecorder(cy.CycleRecorder):
         super()._on_bos(ev, now)
 
     def _on_choch_other(self, now):
-        if _on() and self._zbos and not _rules():
+        if _on() and self._zbos:
             self.counts["z_bos_cleared_by_choch"] += 1
             self._zbos = False
             self._zbos_time = None
         super()._on_choch_other(now)
 
     def _check_bias(self, now):
-        if _on() and self.state == cy.SCAN and self._scan is not None:
-            if htf_bias(self.bias["D1"], self.bias["H4"]) != self.ctx["bias"]:
-                if self._scan.get("zone") is not None and "zorders" in self._scan:
-                    self._zend(self._scan, now, "bias_lost")
-            elif self._scan.get("zone") is not None and "zorders" in self._scan:
-                if self._zone_warn(self._scan["zone"]):
-                    if not self._scan.get("warned"):
-                        self._scan["warned"] = True
-                        self._zend(self._scan, now, "bias_warning")
-                else:
-                    self._scan["warned"] = False
+        if (_on() and self.state == cy.SCAN and self._scan is not None
+                and htf_bias(self.bias["D1"], self.bias["H4"]) != self.ctx["bias"]):
+            self._zend(self._scan, now, "bias_lost")
         super()._check_bias(now)
 
     def _mark_bos(self, ev, now):
@@ -262,57 +277,26 @@ class ZoneRecorder(cy.CycleRecorder):
         self.counts["z_bos_seen"] += 1
         self._log("z_bos", now, direction=ev["direction"])
 
-    def _init_zscan(self, sc, now):
-        sc["zorders"] = []
-        sc["zsetups"] = []
-        sc["pb_id"] = self._zpb_id
-        sc["locked"] = bool(sc.get("locked", self._zlocked))
-        sc["touch_time"] = now
-        sc["warned"] = False
-        self.counts["z_scan"] += 1
-        z = sc["zone"]
-        self._log("z_touch", now, pb=sc["pb_id"], zone=z["id"], zone_tf=z["tf"],
-                  zone_low=float(z["low"]), zone_high=float(z["high"]),
-                  ceiling=float(sc["ceiling"]), bos_seen=bool(self._zbos))
-
     # ---- the scan = zone trading --------------------------------------
     def _scan_step(self, bar, now):
         if not _on():
             return super()._scan_step(bar, now)
         sc = self._scan
-        if sc.get("zone") is None:
-            if (self._ev is not None and self._ev["label"] == "BOS"
-                    and self._ev["direction"] == self.ctx["choch_dir"]):
-                self._mark_bos(self._ev, now)
-            super()._scan_step(bar, now)
-            if self._scan is None or self._scan.get("zone") is None:
-                return
-            sc = self._scan
-            self._init_zscan(sc, now)
-            if self._zone_warn(sc["zone"]):
-                sc["warned"] = True
-            self._z_event(sc, bar, now)
-            return
-
         if "zorders" not in sc:
-            self._init_zscan(sc, now)
-            if self._zone_warn(sc["zone"]):
-                sc["warned"] = True
+            sc["zorders"] = []
+            sc["zsetups"] = []
+            sc["pb_id"] = self._zpb_id
+            sc["locked"] = self._zlocked
+            sc["touch_time"] = now
+            self.counts["z_scan"] += 1
+            z = sc["zone"]
+            self._log("z_touch", now, pb=sc["pb_id"], zone=z["id"], zone_tf=z["tf"],
+                      zone_low=float(z["low"]), zone_high=float(z["high"]),
+                      ceiling=float(sc["ceiling"]), bos_seen=bool(self._zbos))
         super()._scan_step(bar, now)
-        if self._scan is not sc:
+        if self._scan is None:
             why = "ceiling_break" if self.state == cy.ARMED else "zone_far_break"
             self._zend(sc, now, why)
-            if self._scan is None or self._scan.get("zone") is None:
-                if (self._scan is not None and self._ev is not None
-                        and self._ev["label"] == "BOS"
-                        and self._ev["direction"] == self.ctx["choch_dir"]):
-                    self._mark_bos(self._ev, now)
-                return
-            sc = self._scan
-            self._init_zscan(sc, now)
-            if self._zone_warn(sc["zone"]):
-                sc["warned"] = True
-            self._z_event(sc, bar, now)
             return
         for s in sc["zsetups"]:
             if s["br"] == "wait":
@@ -355,9 +339,6 @@ class ZoneRecorder(cy.CycleRecorder):
                     self.counts["z_ob_no_bos"] += 1
 
     def _z_new_choch(self, sc, bar, ev, now):
-        if self._zone_warn(sc.get("zone")):
-            self.counts["z_skip_bias_warning"] += 1
-            return
         self._n_z += 1
         box = self._choch_poi(ev)
         breaker = self.books[self.ltf].choch_breaker.get(ev["time"])
@@ -400,8 +381,7 @@ class ZoneRecorder(cy.CycleRecorder):
         if not swept:
             return
         s["ob"] = "none"
-        allow_used = bool(config.TRADE_USED_POIS) or _rules()
-        if box.state != "fresh" and not allow_used:
+        if box.state != "fresh" and not bool(config.TRADE_USED_POIS):
             self.counts["z_ob_box_used"] += 1
             return
         near = box.low if tsell else box.high
@@ -423,9 +403,6 @@ class ZoneRecorder(cy.CycleRecorder):
         return [float(x) for x in hi[a:b]][:LIQ_CAP]
 
     def _zplace(self, s, sc, kind, p, bar, now):
-        if self._zone_warn(sc.get("zone")):
-            self.counts["z_skip_bias_warning"] += 1
-            return None
         tsell = not self.ctx["up"]   # True = the zone trade is a SELL
         atr = self.atr.value_at(p.candle_time)
         if atr is None:
