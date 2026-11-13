@@ -292,13 +292,13 @@ class ZoneRecorder(cy.CycleRecorder):
         sc["zsetups"].append(s)
         self.counts["z_setups"] += 1
         self._log("z_setup", now, setup=s["id"], choch_level=float(s["choch_level"] or 0.0))
-        skip_m15_br_buy = _rules() and self.ltf == "M15" and self.ctx["up"]
-        skip_h1_br_sell = _rules() and self.ltf == "H1" and (not self.ctx["up"])
+        skip_br_buy = _rules() and self.ltf == "M15" and self.ctx["up"]
+        skip_br_sell = _rules() and (not self.ctx["up"])
         if breaker is None:
             self.counts["z_no_breaker"] += 1
-        elif skip_m15_br_buy:
+        elif skip_br_buy:
             self.counts["z_breaker_buy_skipped"] += 1
-        elif skip_h1_br_sell:
+        elif skip_br_sell:
             self.counts["z_breaker_sell_skipped"] += 1
         else:
             s["br"] = "wait"
@@ -327,7 +327,8 @@ class ZoneRecorder(cy.CycleRecorder):
         if not swept:
             return
         s["ob"] = "none"
-        if box.state != "fresh" and not bool(config.TRADE_USED_POIS):
+        allow_used = bool(config.TRADE_USED_POIS) or _rules()
+        if box.state != "fresh" and not allow_used:
             self.counts["z_ob_box_used"] += 1
             return
         near = box.low if tsell else box.high
