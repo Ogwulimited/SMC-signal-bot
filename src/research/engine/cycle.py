@@ -330,7 +330,7 @@ class CycleRecorder(MapRecorder):
                  "ceiling": pb["ceiling"], "ceiling_locked": pb["locked"],
                  "breaker_id": breaker.id if breaker is not None else None,
                  "anchor_id": None, "end_time": None, "end_reason": None,
-                 "fill": "limit"}
+                 "fill": "limit" if kind == "ob" else "next_open"}
         self.orders.append(order)
         pb["orders"].append(order)
         self.counts["orders_" + kind] += 1
