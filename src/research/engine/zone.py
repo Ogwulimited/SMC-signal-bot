@@ -89,15 +89,7 @@ class ZoneRecorder(cy.CycleRecorder):
                 continue
             o = w["o"]
             sell = o["side"] == "sell"
-            if o.get("fill") == "limit":
-                popen = float(w["touch_open"])
-                entry = float(o["entry"])
-                if (sell and popen >= entry) or ((not sell) and popen <= entry):
-                    fill = popen
-                else:
-                    fill = entry
-            else:
-                fill = float(bar.open)
+            fill = float(bar.open)
             stop = float(o["stop"])
             if (sell and fill >= stop) or ((not sell) and fill <= stop):
                 self.counts["z_fill_beyond_stop"] += 1
@@ -152,7 +144,6 @@ class ZoneRecorder(cy.CycleRecorder):
             touched = float(p.high) >= entry if sell else float(p.low) <= entry
             if touched:
                 w["st"] = "touched"
-                w["touch_open"] = float(p.open)
                 keep.append(w)
             elif end is None or pclose < end:
                 keep.append(w)
@@ -386,8 +377,7 @@ class ZoneRecorder(cy.CycleRecorder):
                  "bos_time": s["bos_time"], "zone_touch_time": sc["touch_time"],
                  "zone_tf": z["tf"], "zone_low": float(z["low"]),
                  "zone_high": float(z["high"]), "choch_time": s["choch_time"],
-                 "choch_level": s["choch_level"], "zone_id": z["id"],
-                 "fill": "limit"}
+                 "choch_level": s["choch_level"], "zone_id": z["id"]}
         sc["zorders"].append(order)
         self.zorders.append(order)
         if _rules():
