@@ -1,402 +1,419 @@
-"""Phase 4 aggressive entry (variant ag), practice years only.
+"""Aggressive-entry track (Step 3b — Option A hybrid lock).
 
-His rules (confirmed): a separate run that only reads the D1 and H4 Major
-zones in the bias direction (D1 and H4 must agree), refines each zone down to
-H1, and rests a LIMIT at the H1 zone's near edge (buy: top, sell: bottom).
-Stop = H1 far edge -/+ STOP_BUFFER_ATR x ATR(H1, 14). Static 1:5 target (the
-simulator reads order["rr"]). No BOS, CHoCH, breaker or pullback logic.
+Rules locked with the trader:
+  * Same Major HTF bias gate (D1 + H4 agree, 3 swings first read, N=8).
+  * Every fresh D1 and H4 POI opened in the bias direction is refined:
+        D1 -> H4 -> H1   over [D1 candle open, D1 break close]
+        H4 -> H1         over [H4 candle open, H4 break close]
+    Inside the window, structure uses N=2 swings and picks the closest
+    opposite-colour base candle before an impulsive break.
+    - H4 candidate must not be dead (no H4 body close beyond far edge).
+    - H1 candidate must be fresh (no H1 body close inside/beyond) AND
+      completely untouched by any H1 wick after leaving the box (_h1_clean).
+  * No 150-pip distance cap and no ran-away cancel.
+  * All fresh D1 and H4 zones stay active (no newer_zone cancel).
+  * Timeframe-specific Major CHoCH warning protection (permanent=True):
+    - D1 zones only cancel if D1 bias enters warning (ignoring H4 pullback
+      warnings on the way to the D1 zone).
+    - H4 zones cancel if either D1 or H4 bias enters warning.
+  * Target = static 1:5 R:R (RR_AGG = 5.0).
+  * Used-zone Rule B: first real FILL spends the D1/H4 zone.
 """
-from bisect import bisect_left
-from collections import defaultdict
+from __future__ import annotations
 
-import pandas as pd
+from collections import Counter
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
-from src import config
-from src.research.engine.bias import htf_bias
-from src.research.engine.mapper import MapRecorder
-from src.research.engine.poi import PoiBook
-from src.research.engine.structure import IncrementalStructure
+from .. import config
+from . import poi as poi_mod
+from .atr import AtrTracker
+from .bias import BiasTracker
+from .poi import Poi, PoiBook
+from .refinement import pick_base
+from .swings import SwingTracker
 
-SETTINGS = {"pip": None, "spread": None}
+PIP_DEFAULT = 0.0001
+PIP_JPY = 0.01
+
 RR_AGG = 5.0
 
 
-def _gap(p, prev):
-    """Price distance between two boxes (0 when they touch or overlap)."""
-    if p.high < prev.low:
-        return prev.low - p.high
-    if p.low > prev.high:
-        return p.low - prev.high
-    return 0.0
+def pip_size(pair: str) -> float:
+    return PIP_JPY if pair.lower().endswith("jpy") else PIP_DEFAULT
 
 
-def _h1_clean(h1_book, p, upto):
-    """True if H1 POI p is fresh and has zero H1 wick taps up to upto."""
-    if p.dead_time is not None and p.dead_time <= upto:
-        return False
-    if p.used_time is not None and p.used_time <= upto:
-        return False
-    buy = p.side == "buy"
-    edge = p.high if buy else p.low
-    left_box = False
-    i = bisect_left(h1_book._times, p.candle_time)
-    n = len(h1_book._times)
-    while i < n:
-        t = h1_book._times[i]
-        _o, h, l, c, ct = h1_book._bars[t]
-        if ct > upto:
-            break
-        if ct >= p.born_time:
-            if not left_box:
-                if (buy and c > edge) or ((not buy) and c < edge):
-                    left_box = True
-            else:
-                if (buy and l <= edge) or ((not buy) and h >= edge):
-                    return False
-        i += 1
-    return True
+@dataclass
+class AggSlot:
+    htf: Poi
+    h4_pick: Optional[Poi]
+    h1: Poi
+    order: Optional[dict] = None
+    spent: bool = False
+    cancelled: bool = False
 
 
-def _h1_has_fvg(h1_book, p, upto, atr_at):
-    """True if the first 1-2 H1 candles leaving p created a valid FVG by upto."""
-    buy = p.side == "buy"
-    min_atr = float(config.FVG_MIN_SIZE_ATR)
-    idx0 = bisect_left(h1_book._times, p.candle_time)
-    n = len(h1_book._times)
-    max_i = min(n - 1, idx0 + 3)
-    i = max(2, idx0 + 2)
-    saw_window = False
-    while i <= max_i:
-        t_a = h1_book._times[i - 2]
-        t_b = h1_book._times[i - 1]
-        t_c = h1_book._times[i]
-        if t_b >= p.born_time:
-            break
-        _ao, ah, al, _ac, _act = h1_book._bars[t_a]
-        _co, ch, cl, _cc, cct = h1_book._bars[t_c]
-        if cct > upto:
-            break
-        saw_window = True
-        atr = atr_at(cct)
-        if atr is not None and atr > 0:
-            need = min_atr * float(atr)
-            if buy and cl > ah and (cl - ah) >= need:
-                return True
-            if (not buy) and al > ch and (al - ch) >= need:
-                return True
-        i += 1
-    if not saw_window and p.born_time == upto and idx0 + 1 < n:
-        t_b = h1_book._times[idx0 + 1]
-        bo, _bh, _bl, bc, bct = h1_book._bars[t_b]
-        if bct == upto:
-            atr = atr_at(bct)
-            if atr is not None and atr > 0:
-                need = max(min_atr, 0.5) * float(atr)
-                if buy and bc > p.high and (bc - bo) >= need:
-                    return True
-                if (not buy) and bc < p.low and (bo - bc) >= need:
-                    return True
-    return False
+class AggressiveEngine:
+    """Runs alongside ZoneEngine or standalone to emit aggressive orders."""
 
+    def __init__(self, pair: str) -> None:
+        self.pair = pair
+        self.pip = pip_size(pair)
+        n_h4 = config.MAJOR_H4_SWING_N if config.MAJOR_HTF else None
+        n_d1 = config.MAJOR_D1_SWING_N if config.MAJOR_HTF else None
+        first_read = (
+            config.MAJOR_BIAS_FIRST_READ if config.MAJOR_HTF
+            else config.BIAS_SWINGS_FIRST_READ
+        )
+        self.swings = {
+            "D1": SwingTracker(n_d1),
+            "H4": SwingTracker(n_h4),
+            "H1": SwingTracker(config.SWING_N["H1"]),
+        }
+        self.atr = {
+            "D1": AtrTracker(), "H4": AtrTracker(), "H1": AtrTracker(),
+        }
+        self.bias = {
+            "D1": BiasTracker(first_read=first_read),
+            "H4": BiasTracker(first_read=first_read),
+        }
+        self.pois = {
+            "D1": PoiBook("D1"), "H4": PoiBook("H4"), "H1": PoiBook("H1"),
+        }
+        # Map from HTF POI id (e.g. "D1-3" or "H4-12") to AggSlot.
+        self.slots: Dict[str, AggSlot] = {}
+        self.rejected: set[str] = set()
+        self.orders: List[dict] = []
+        self.flips: List[Tuple[int, str]] = []
+        self.counts: Counter = Counter()
+        self._last_bias: Optional[str] = None
+        self._last_h1: Optional[Tuple[int, float, float, float, float, int]] = None
+        self._scan_key: Optional[Tuple] = None
 
-def pick_h4_base(book, side, t0, t1, prev, counts):
-    """Closest non-dead H4 candidate inside [t0, t1], ties to later candle."""
-    best = None
-    best_d = None
-    for p in reversed(book.pois):
-        if p.born_time > t1:
-            continue
-        if p.born_time < t0:
-            break
-        if p.side != side or p.candle_time < t0:
-            continue
-        if p.dead_time is not None and p.dead_time <= t1:
-            counts["ag_h4_cand_dead"] += 1
-            continue
-        d = _gap(p, prev)
-        if (best is None or d < best_d
-                or (d == best_d and p.candle_time > best.candle_time)):
-            best, best_d = p, d
-    return best
+    def current_bias(self) -> Optional[str]:
+        b1, b4 = self.bias["D1"].bias, self.bias["H4"].bias
+        return b1 if (b1 is not None and b1 == b4) else None
 
+    def _h1_clean(self, h1_poi: Poi, as_of: Optional[int] = None) -> bool:
+        """True if no closed H1 candle after the break candle has wicked into the H1 box."""
+        book = self.pois["H1"]
+        times = book._times
+        bars = book._bars
+        lo, hi = h1_poi.low, h1_poi.high
+        born_open = h1_poi.born_time - 3_600_000
+        idx = poi_mod._bsearch_Floor(times, born_open)
+        for j in range(idx + 1, len(times)):
+            o, h, l, c, ct = bars[times[j]]
+            if as_of is not None and ct > as_of:
+                break
+            if h >= lo and l <= hi:
+                return False
+        return True
 
-def pick_h1_base(book, side, t0, t1, prev, atr_at, counts):
-    """Closest fresh, untapped, OB-FVG-backed H1 candidate inside [t0, t1]."""
-    best = None
-    best_d = None
-    saw_raw = False
-    saw_clean = False
-    for p in reversed(book.pois):
-        if p.born_time > t1:
-            continue
-        if p.born_time < t0:
-            break
-        if p.side != side or p.candle_time < t0:
-            continue
-        saw_raw = True
-        if not _h1_clean(book, p, t1):
-            counts["ag_h1_cand_mitigated"] += 1
-            continue
-        saw_clean = True
-        if not _h1_has_fvg(book, p, t1, atr_at):
-            counts["ag_h1_cand_no_fvg"] += 1
-            continue
-        d = _gap(p, prev)
-        if (best is None or d < best_d
-                or (d == best_d and p.candle_time > best.candle_time)):
-            best, best_d = p, d
-    if best is None:
-        if saw_clean:
-            counts["ag_h1_all_no_fvg"] += 1
-        elif saw_raw:
-            counts["ag_h1_all_mitigated"] += 1
-    return best
+    def _h1_ok(self, c: Poi, as_of: Optional[int] = None) -> bool:
+        """True if H1 candidate has no body close inside/beyond and zero wick taps."""
+        if c.state != "fresh":
+            return False
+        if not self._h1_clean(c, as_of=as_of):
+            return False
+        return True
 
-
-class AggRecorder(MapRecorder):
-    def __init__(self, log, first_read=None):
-        super().__init__(log)
-        if self.ltf != "H1":
-            raise ValueError("ag needs config.LTF_TF = 'H1'")
-        if SETTINGS["pip"] is None or SETTINGS["spread"] is None:
-            raise ValueError("ag needs aggressive.SETTINGS pip and spread set")
-        self.pip = float(SETTINGS["pip"])
-        self.spread = float(SETTINGS["spread"])
-        self.h4s = IncrementalStructure(config.LTF_SWING_N, pd.Timedelta(hours=4), "H4")
-        self.h4s_book = PoiBook("H4", None)
-        self.counts = defaultdict(int)
-        self.orders = []
-        self.pullbacks = []
-        self.aorders = []
-        self.slots = {}
-        self._map = {}
-        self._spent = set()
-        self._closed = set()
-        self._pend = []
-        self._scan_key = None
-        self._rescan = False
-        self._n_order = 0
-
-    def on_bar_close(self, bar, feed):
-        super().on_bar_close(bar, feed)
-        if bar.tf == "H4":
-            self._h4_small(bar)
-        elif bar.tf == "H1":
-            self._on_h1(bar)
-        elif bar.tf == "M15":
-            self._on_m15(bar)
-
-    def _log(self, kind, now, **data):
-        self.log.add(kind, now, now, **data)
-
-    def _h4_small(self, bar):
-        ev = self.h4s.on_bar_close(bar)
-        self.h4s_book.on_bar_close(bar)
-        if ev is None:
+    def on_bar(self, tf: str, o: float, h: float, l: float, c: float,
+               open_time: int, close_time: int) -> None:
+        if tf not in self.swings:
             return
-        self.log.add("agstruct_H4", ev["time"], ev["known_at"], label=ev["label"],
-                     direction=ev["direction"], close=ev["close"])
-        self.h4s_book.on_event(ev)
+        self.atr[tf].update(h, l, c)
+        atr_now = self.atr[tf].value
+        self.pois[tf].Push_bar(open_time, o, h, l, c, close_time)
+        new_sw = self.swings[tf].update(open_time, h, l)
 
-    def _refine(self, htf):
-        side = htf.side
-        if htf.tf == "D1":
-            h4 = pick_h4_base(self.h4s_book, side, htf.candle_time,
-                              htf.born_time, htf, self.counts)
-            if h4 is None:
-                self.counts["ag_no_h4_candidate"] += 1
-                return None, None
-            h1 = pick_h1_base(self.books["H1"], side, h4.candle_time,
-                              htf.born_time, h4, self.atr.value_at, self.counts)
-        else:
-            h4 = None
-            h1 = pick_h1_base(self.books["H1"], side, htf.candle_time,
-                              htf.born_time, htf, self.atr.value_at, self.counts)
-        if h1 is None:
-            self.counts["ag_no_h1_candidate"] += 1
-        return h4, h1
+        if tf in ("D1", "H4"):
+            for s in new_sw:
+                self.bias[tf].on_swing(s)
+            ev = self.bias[tf].on_bar_close(c, close_time, atr_now)
+            if ev is not None:
+                kind, side, s_time = ev
+                p = self.pois[tf].Create_on_break(
+                    kind, side, s_time, open_time, close_time
+                )
+                if p is not None:
+                    self.counts[f"ag_zones_{tf}"] += 1
+            self.pois[tf].Update_states_on_close(c, close_time)
+            hb = self.current_bias()
+            if hb != self._last_bias:
+                if self._last_bias is not None:
+                    self.flips.append((close_time, hb or "none"))
+                self._last_bias = hb
+            return
 
-    def _on_m15(self, bar):
-        now = bar.close_time
-        self._pend.append((bar.open_time, now, float(bar.open), float(bar.high),
-                           float(bar.low), float(bar.close)))
-        self._resolve(now)
-        hb = htf_bias(self.bias["D1"], self.bias["H4"])
-        d1_warn = bool(self.bias["D1"].warning) if hb is not None else False
-        h4_warn = bool(self.bias["H4"].warning) if hb is not None else False
-        need = {"bull": "buy", "bear": "sell"}.get(hb)
-        if need is None:
-            for key in list(self.slots):
-                self._cancel(key, now, "bias_lost", True)
+        # H1 bar: record structure events so H1 PoiBook has the N=2 POIs
+        # inside every HTF impulse window.
+        for s in new_sw:
+            pass
+        self._update_h1_pois(c, open_time, close_time, atr_now)
+        self.pois["H1"].Update_states_on_close(c, close_time)
+        self._last_h1 = (open_time, o, h, l, c, close_time)
+        self._step_h1(o, h, l, c, open_time, close_time)
+
+    # ---- lightweight N=2 BOS/CHoCH detector on H1 for PoiBook population ----
+    def _update_h1_pois(self, c: float, open_time: int, close_time: int,
+                        atr_now: Optional[float]) -> None:
+        if not hasattr(self, "_h1_struct"):
+            self._h1_struct = BiasTracker(first_read=1)
+        for s in self.swings["H1"].swings[-2:]:
+            if getattr(self, "_h1_last_sw", -1) < s.index:
+                self._h1_struct.on_swing(s)
+                self._h1_last_sw = s.index
+        ev = self._h1_struct.on_bar_close(c, close_time, atr_now)
+        if ev is not None:
+            kind, side, s_time = ev
+            self.pois["H1"].Create_on_break(
+                kind, side, s_time, open_time, close_time
+            )
+
+    # ---- per-H1-bar aggressive slot management ----
+    def _step_h1(self, o: float, h: float, l: float, c: float,
+                 open_time: int, close_time: int) -> None:
+        hb = self.current_bias()
+        d1_warn = self.bias["D1"].warning
+        h4_warn = self.bias["H4"].warning
+
+        # Check active orders for fills / cancels on this H1 bar.
+        for key, slot in list(self.slots.items()):
+            if slot.spent or slot.cancelled or slot.order is None:
+                continue
+            want = "buy" if slot.htf.side == "bull" else "sell"
+            if hb is None or (hb == "bull" and want != "buy") or (
+                hb == "bear" and want != "sell"
+            ):
+                self._cancel(key, close_time, "bias_lost", True)
+                continue
+
+            # D1 zones only cancel on D1 warning; H4 zones cancel on D1 or H4 warning.
+            warn_now = d1_warn if slot.htf.tf == "D1" else (d1_warn or h4_warn)
+            if warn_now:
+                self._cancel(key, close_time, "bias_warning", True)
+                continue
+
+            if slot.htf.state == "dead":
+                self._cancel(key, close_time, "zone_far_break", True)
+                continue
+            # Did this H1 bar reach the entry edge?
+            od = slot.order
+            touched = (l <= od["entry"]) if want == "buy" else (h >= od["entry"])
+            if touched:
+                self._try_fill_or_skip(slot, o, h, l, close_time)
+
+        if hb is None:
             self._scan_key = None
-        else:
-            for key in list(self.slots):
-                s = self.slots[key]
-                if s["side"] != need:
-                    self._cancel(key, now, "bias_lost", True)
-                else:
-                    w = d1_warn if s["tf"] == "D1" else (d1_warn or h4_warn)
-                    if w:
-                        self._cancel(key, now, "bias_warning", False)
-        for key in list(self.slots):
-            s = self.slots[key]
-            if s["order"] is not None:
-                continue
-            if s["htf"].state != "fresh":
-                self._drop(key, "ag_wait_htf_not_fresh")
-            elif (s["h4"] is not None and s["h4"].dead_time is not None
-                  and s["h4"].dead_time <= now):
-                self._drop(key, "ag_drop_h4_dead")
-            elif not _h1_clean(self.books["H1"], s["h1"], now):
-                self._drop(key, "ag_drop_h1_mitigated")
-            else:
-                self._try_place(s, bar, now)
-        if need is not None:
-            k = (hb, d1_warn, h4_warn,
-                 len(self.books["D1"].pois), len(self.books["H4"].pois))
-            if k != self._scan_key or self._rescan:
-                self._scan_key = k
-                self._rescan = False
-                self._scan(need, hb, d1_warn, h4_warn, bar, now)
+            return
 
-    def _scan(self, side, hb, d1_warn, h4_warn, bar, now):
+        # Re-scan only when bias, warnings, or POI count changes.
+        key_now = (
+            hb,
+            d1_warn,
+            h4_warn,
+            len(self.pois["D1"].all()),
+            len(self.pois["H4"].all()),
+        )
+        if key_now == self._scan_key:
+            return
+        self._scan_key = key_now
+        self._scan(hb, d1_warn, h4_warn, close_time)
+
+    def _scan(self, hb: str, d1_warn: bool, h4_warn: bool, now: int) -> None:
+        want_side = "bull" if hb == "bull" else "bear"
+        atr_h1 = self.atr["H1"].value
+        if atr_h1 is None or atr_h1 <= 0:
+            return
+
         for tf in ("D1", "H4"):
-            w = d1_warn if tf == "D1" else (d1_warn or h4_warn)
-            all_fresh = self.books[tf].fresh(side)
-            if any(p.born_time >= now for p in all_fresh):
-                self._rescan = True
-            for htf in all_fresh:
-                if htf.born_time >= now:
+            # Timeframe-specific warning gate before placing new orders
+            if tf == "D1" and d1_warn:
+                continue
+            if tf == "H4" and (d1_warn or h4_warn):
+                continue
+
+            for p in self.pois[tf].all():
+                if p.side != want_side or p.state != "fresh":
                     continue
-                if htf.id in self._map:
-                    h4, h1 = self._map[htf.id]
+                if p.id in self.slots or p.id in self.rejected:
+                    continue
+                slot = self._refine(p, now)
+                if slot is None:
+                    self.rejected.add(p.id)
+                    continue
+                self._place(slot, atr_h1, now)
+                self.slots[p.id] = slot
+
+    def _refine(self, p: Poi, now: int) -> Optional[AggSlot]:
+        if p.tf == "D1":
+            h4_all = self.pois["H4"].Candidates_in(
+                p.candle_time, p.born_time, p.side
+            )
+            if not h4_all:
+                self.counts["ag_no_h4_candidate"] += 1
+                return None
+            h4_cands = []
+            for c in h4_all:
+                if c.state != "dead":
+                    h4_cands.append(c)
                 else:
-                    h4, h1 = self._refine(htf)
-                    self._map[htf.id] = (h4, h1)
-                    self.counts["ag_zones_" + tf] += 1
-                if w or h1 is None:
-                    continue
-                hid = h1.id
-                if hid in self.slots or hid in self._spent or hid in self._closed:
-                    continue
-                if h4 is not None and h4.dead_time is not None and h4.dead_time <= now:
-                    self._closed.add(hid)
-                    self.counts["ag_drop_h4_dead"] += 1
-                    continue
-                if not _h1_clean(self.books["H1"], h1, now):
-                    self._closed.add(hid)
-                    self.counts["ag_drop_h1_mitigated"] += 1
-                    continue
-                slot = {"tf": tf, "htf": htf, "h4": h4, "h1": h1, "side": side,
-                        "order": None, "waited": False}
-                self.slots[hid] = slot
-                self.counts["ag_slots"] += 1
-                self._try_place(slot, bar, now)
+                    self.counts["ag_h4_cand_dead"] += 1
+            if not h4_cands:
+                self.counts["ag_h4_all_dead"] += 1
+                return None
+            h4_pick = pick_base(p.low, p.high, h4_cands)
+            if h4_pick is None:
+                return None
 
-    def _drop(self, key, counter):
-        self.slots.pop(key, None)
-        self._closed.add(key)
-        self.counts[counter] += 1
+            h1_all = self.pois["H1"].Candidates_in(
+                h4_pick.candle_time, p.born_time, p.side
+            )
+            if not h1_all:
+                self.counts["ag_no_h1_candidate"] += 1
+                return None
+            h1_cands = []
+            for c in h1_all:
+                if self._h1_ok(c, as_of=now):
+                    h1_cands.append(c)
+                else:
+                    self.counts["ag_h1_cand_mitigated"] += 1
+            if not h1_cands:
+                self.counts["ag_h1_all_mitigated"] += 1
+                return None
+            h1_pick = pick_base(h4_pick.low, h4_pick.high, h1_cands)
+            if h1_pick is None:
+                return None
+            return AggSlot(htf=p, h4_pick=h4_pick, h1=h1_pick)
 
-    def _try_place(self, slot, bar, now):
-        h1 = slot["h1"]
-        buy = slot["side"] == "buy"
-        entry = float(h1.high if buy else h1.low)
-        close = float(bar.close)
-        ahead = close > entry if buy else close < entry
-        if not ahead:
-            if not slot["waited"]:
-                slot["waited"] = True
-                self.counts["ag_wait_not_ahead"] += 1
+        # H4 zone -> H1 directly.
+        h1_all = self.pois["H1"].Candidates_in(
+            p.candle_time, p.born_time, p.side
+        )
+        if not h1_all:
+            self.counts["ag_no_h1_candidate"] += 1
+            return None
+        h1_cands = []
+        for c in h1_all:
+            if self._h1_ok(c, as_of=now):
+                h1_cands.append(c)
+            else:
+                self.counts["ag_h1_cand_mitigated"] += 1
+        if not h1_cands:
+            self.counts["ag_h1_all_mitigated"] += 1
+            return None
+        h1_pick = pick_base(p.low, p.high, h1_cands)
+        if h1_pick is None:
+            return None
+        return AggSlot(htf=p, h4_pick=None, h1=h1_pick)
+
+    def _place(self, slot: AggSlot, atr_h1: float, now: int) -> None:
+        # Final safety check before arming limit: ensure H4/H1 boxes are still unmitigated at 'now'.
+        if slot.h4_pick is not None and slot.h4_pick.state == "dead":
+            slot.cancelled = True
+            self.counts["ag_drop_h4_dead"] += 1
             return
-        atr = self.atr.value_at(h1.candle_time)
-        if atr is None:
-            self._drop(h1.id, "ag_no_atr")
+        if not self._h1_ok(slot.h1, as_of=now):
+            slot.cancelled = True
+            self.counts["ag_drop_h1_mitigated"] += 1
             return
-        edge = float(h1.low if buy else h1.high)
-        buf = float(config.STOP_BUFFER_ATR) * float(atr)
-        stop = edge - buf if buy else edge + buf
-        htf = slot["htf"]
-        self._n_order += 1
-        order = {"id": f"AG{self._n_order}", "pullback": None,
-                 "setup": f"{htf.id}>{h1.id}", "variant": "ag", "kind": "aggressive",
-                 "side": slot["side"], "placed_time": now, "entry": entry,
-                 "stop": float(stop), "ceiling": None, "ceiling_locked": None,
-                 "end_time": None, "end_reason": None, "leg": "aggressive",
-                 "fill": "limit", "rr": RR_AGG, "zone_tf": htf.tf,
-                 "zone_low": float(h1.low), "zone_high": float(h1.high),
-                 "bos_time": htf.born_time, "zone_touch_time": None,
-                 "choch_time": None, "choch_level": None}
-        slot["order"] = order
-        self.aorders.append(order)
-        self.counts["ag_orders"] += 1
-        self._log("ag_order", now, id=order["id"], side=order["side"],
-                  entry=order["entry"], stop=order["stop"], htf=htf.id, h1=h1.id)
 
-    def _resolve(self, upto):
-        todo = [b for b in self._pend if b[1] < upto]
-        if not todo:
-            return
-        self._pend = [b for b in self._pend if b[1] >= upto]
-        for b in todo:
-            self._touch_bar(b, upto)
-
-    def _touch_bar(self, b, now):
-        ot, _ct, o, h, l, _c = b
-        for key, s in list(self.slots.items()):
-            od = s["order"]
-            if od is None or ot < od["placed_time"]:
-                continue
-            buy = s["side"] == "buy"
-            entry = od["entry"]
-            if not ((l <= entry) if buy else (h >= entry)):
-                continue
-            stop = od["stop"]
-            at_open = (o <= entry) if buy else (o >= entry)
-            fill = o if at_open else entry
-            del self.slots[key]
-            if (buy and fill <= stop) or ((not buy) and fill >= stop):
-                self._closed.add(key)
-                self.counts["ag_skip_beyond_stop"] += 1
-                self._log("ag_skip", now, id=od["id"], why="beyond_stop")
-                continue
-            risk = abs(fill - stop)
-            if self.spread / risk > float(config.MAX_SPREAD_RISK_RATIO):
-                self._closed.add(key)
-                self.counts["ag_skip_spread"] += 1
-                self._log("ag_skip", now, id=od["id"], why="spread")
-                continue
-            self._spent.add(key)
-            self.counts["ag_zone_spent"] += 1
-            if at_open:
-                self.counts["ag_fill_at_open"] += 1
-            self._log("ag_fill", now, id=od["id"], fill=float(fill))
-
-    def _cancel(self, key, now, reason, permanent):
-        s = self.slots.pop(key)
-        od = s["order"]
-        if od is not None:
-            od["end_time"] = now
-            od["end_reason"] = reason
-            self.counts["ag_cancel_" + reason] += 1
-            self._log("ag_cancel", now, id=od["id"], why=reason)
+        h1 = slot.h1
+        direction = "buy" if slot.htf.side == "bull" else "sell"
+        buf = config.STOP_BUFFER_ATR * atr_h1
+        if direction == "buy":
+            entry = h1.high
+            stop = h1.low - buf
+            risk = entry - stop
+            target = entry + RR_AGG * risk
         else:
-            self.counts["ag_slot_drop_" + reason] += 1
-        if permanent:
-            self._closed.add(key)
+            entry = h1.low
+            stop = h1.high + buf
+            risk = stop - entry
+            target = entry - RR_AGG * risk
+        if risk <= 0:
+            slot.cancelled = True
+            self.counts["ag_bad_risk"] += 1
+            return
 
-    def _on_h1(self, bar):
-        now = bar.close_time
-        self._resolve(now)
-        c = float(bar.close)
-        for key, s in list(self.slots.items()):
-            h1 = s["h1"]
-            beyond = c < h1.low if s["side"] == "buy" else c > h1.high
+        chain = (
+            f"{slot.htf.id}->{slot.h4_pick.id}->{h1.id}"
+            if slot.h4_pick is not None else f"{slot.htf.id}->{h1.id}"
+        )
+        od = {
+            "pair": self.pair,
+            "leg": "aggressive",
+            "entry_type": "ag_ob",
+            "direction": direction,
+            "fill": "limit",
+            "placed_time": now,
+            "entry": entry,
+            "stop": stop,
+            "risk": risk,
+            "rr": RR_AGG,
+            "target_static": target,
+            "target_liq": target,
+            "htf_poi_id": slot.htf.id,
+            "htf_tf": slot.htf.tf,
+            "htf_born": slot.htf.born_time,
+            "h4_poi_id": slot.h4_pick.id if slot.h4_pick else None,
+            "h1_poi_id": h1.id,
+            "h1_low": h1.low,
+            "h1_high": h1.high,
+            "chain": chain,
+            "cancel_time": None,
+            "cancel_reason": None,
+        }
+        slot.order = od
+        self.orders.append(od)
+        self.counts["ag_slots"] += 1
+        self.counts["ag_orders"] += 1
+
+    def _try_fill_or_skip(self, slot: AggSlot, o: float, h: float, l: float,
+                          now: int) -> None:
+        """Mirror simulator's fill / spread-skip / beyond-stop decision so
+        Used-zone Rule B marks the HTF zone spent ONLY on a real fill."""
+        from .. import simulate_orders as sim
+        od = slot.order
+        spread = sim.get_spread_pips(self.pair) * self.pip
+        if spread / od["risk"] > config.MAX_SPREAD_RISK_RATIO:
+            # Simulator will skip_spread this order and retry on a later touch
+            # if we kept it open — so cancel this order at open of bar and
+            # leave the HTF zone unspent (Rule B).
+            od["cancel_time"] = now - 1
+            od["cancel_reason"] = "spread_skip"
+            slot.order = None
+            slot.cancelled = True
+            self.counts["ag_skip_spread"] += 1
+            return
+        want = od["direction"]
+        fill_at_open = (o <= od["entry"]) if want == "buy" else (o >= od["entry"])
+        if fill_at_open:
+            fill_px = o
+            beyond = (fill_px <= od["stop"]) if want == "buy" else (
+                fill_px >= od["stop"]
+            )
             if beyond:
-                self._cancel(key, now, "zone_far_break", True)
+                slot.order = None
+                slot.cancelled = True
+                self.counts["ag_skip_beyond_stop"] += 1
+                return
+            self.counts["ag_fill_at_open"] += 1
+        # Real fill -> Rule B spends the HTF zone permanently.
+        slot.spent = True
+        slot.htf.state = "used"
+        slot.htf.used_time = now
+        self.counts["ag_zone_spent"] += 1
 
-    def funnel(self):
-        return dict(self.counts)
-
-    def pullback_rows(self):
-        return []
+    def _cancel(self, key: str, now: int, reason: str,
+                permanent: bool) -> None:
+        slot = self.slots[key]
+        if slot.order is not None and slot.order["cancel_time"] is None:
+            slot.order["cancel_time"] = now
+            slot.order["cancel_reason"] = reason
+        slot.order = None
+        slot.cancelled = True
+        self.counts[f"ag_cancel_{reason}"] += 1
+        if not permanent:
+            del self.slots[key]
