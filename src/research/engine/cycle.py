@@ -6,36 +6,6 @@ lookahead. Sits on top of MapRecorder (structure, POI books, bias, ATR).
 The trading timeframe is self.ltf (M15 by default, H1 when config.LTF_TF is
 "H1"). Method names such as _on_m15 keep their old names; they run on bars of
 the trading timeframe.
-
-Rules coded (his teaching):
-  * HTF BOS (H4 or D1) with D1 and H4 bias agreeing arms the cycle.
-  * The first trading-timeframe CHoCH after arming starts the pullback. At that
-    moment all usable (fresh) D1 and H4 zones of the right side are remembered;
-    a D1 zone is refined to one H4 candle inside that D1 candle. The pullback
-    ends when a wick touches one of them.
-  * Ceiling = last_opposite_price of the CHoCH (temporary). It locks after TWO
-    more events (BOS+BOS or BOS+CHoCH-against). A CHoCH-against as the FIRST
-    event, or a body close beyond the temporary ceiling, throws the ceiling and
-    the attempt away; wait for the next CHoCH.
-  * A body close beyond the LOCKED ceiling ends the pullback and re-arms at once.
-  * Every CHoCH in the pullback may give two separate orders, each once:
-      breaker order: limit at the breaker's near edge once its box has died
-      OB order: after the first BOS (same direction) the inducement is swept by
-                a wick, then a limit at the CHoCH box's near edge
-    stop = far edge -/+ STOP_BUFFER_ATR x ATR.
-  * A zone touch cancels pending orders and starts the "buy scan" (no buys in
-    this build): re-arm when a body closes beyond the ceiling, idle when a body
-    closes through the zone's far edge.
-
-ASSUMPTIONS (not confirmed yet):
-  A1 inducement = last_opposite of the first BOS after the CHoCH.
-  A2 OB order needs a fresh CHoCH box (TRADE_USED_POIS); same-bar sweep+touch skipped.
-  A3 target zones are frozen at pullback start.
-  A4 refined H4 candle = the one holding the D1 base, colour rule as poi.py.
-  A5 zone touched before the lock: the temporary ceiling is used; no ceiling: idle.
-  A6 bias lost during a pullback: orders cancelled, idle.
-  A7 after a far-edge break in the buy scan: idle until the next HTF BOS.
-  A8 FVG variant is not built here (fvg.py not seen); variant is always "plain".
 """
 from bisect import bisect_left
 from collections import defaultdict
@@ -54,7 +24,6 @@ ARMED = "armed"
 PULL = "pullback"
 SCAN = "buy_scan"
 
-# "up" = the adverse direction is up (ceiling above price): sells in a bull context
 _CTX = {
     "sell": {"side": "sell", "bias": "bull", "htf_dir": "up", "choch_dir": "down",
              "other_dir": "up", "zone_side": "buy", "up": True},
@@ -96,7 +65,6 @@ class CycleRecorder(MapRecorder):
         self._n_order = 0
         self._spread = 0.0
 
-    # ---- feed entry ----------------------------------------------------
     def on_bar_close(self, bar, feed):
         n0 = len(self.events)
         super().on_bar_close(bar, feed)
@@ -118,18 +86,6 @@ class CycleRecorder(MapRecorder):
             return hb
         return self.bias["H4"].bias or self.bias["D1"].bias
 
-    def _arm_from_bias(self, now, tf="BIAS"):
-        hb = self._cycle_bias()
-        for c in _CTX.values():
-            if hb == c["bias"]:
-                self.ctx = c
-                self.state = ARMED
-                self.counts["htf_arm"] += 1
-                self._log("pb_armed", now, tf=tf, side=c["side"])
-                return True
-        return False
-
-    # ---- per trading-timeframe bar -------------------------------------
     def _on_m15(self, bar, ev):
         now = bar.close_time
         queue, self._htf_q = self._htf_q, []
@@ -164,12 +120,9 @@ class CycleRecorder(MapRecorder):
         self.counts["htf_bos_no_arm"] += 1
 
     def _check_bias(self, now):
-        hb = self._cycle_bias()
         if self.state == IDLE:
-            if bool(getattr(config, "MAJOR_HTF", False)) and hb is not None:
-                self._arm_from_bias(now)
             return
-        if hb == self.ctx["bias"]:
+        if self._cycle_bias() == self.ctx["bias"]:
             return
         if self.state == PULL:
             self._end_pullback(now, "bias_lost")
@@ -177,8 +130,6 @@ class CycleRecorder(MapRecorder):
         self.state = IDLE
         self.counts["disarmed_bias"] += 1
         self._log("pb_disarm", now, reason="bias_lost")
-        if bool(getattr(config, "MAJOR_HTF", False)) and hb is not None:
-            self._arm_from_bias(now)
 
     def _armed_step(self, bar, ev, now):
         if ev is None or ev["label"] != "CHoCH" or ev["direction"] != self.ctx["choch_dir"]:
@@ -186,7 +137,6 @@ class CycleRecorder(MapRecorder):
         self.counts["choch_armed"] += 1
         self._start_pullback(bar, ev, now)
 
-    # ---- pullback ------------------------------------------------------
     def _start_pullback(self, bar, ev, now):
         self._n_pb += 1
         zones = self._freeze_zones()
@@ -323,11 +273,9 @@ class CycleRecorder(MapRecorder):
             return
         near = box.low if up else box.high
         touched = bar.high >= near if up else bar.low <= near
-        if touched and not bool(getattr(config, "MAJOR_HTF", False)):
+        if touched:
             self.counts["ob_same_bar"] += 1
             return
-        if touched:
-            self.counts["ob_same_bar_rescued"] += 1
         self._place(s, "ob", box, bar, now)
 
     def _place(self, setup, kind, p, bar, now):
@@ -372,7 +320,6 @@ class CycleRecorder(MapRecorder):
     def _pull_step(self, bar, ev, now):
         pb = self._pb
         up = self.ctx["up"]
-        # (a) ceiling
         if pb["ceiling"] is not None and _beyond(bar.close, pb["ceiling"], up):
             if pb["locked"]:
                 self._end_pullback(now, "ceiling_break")
@@ -382,14 +329,14 @@ class CycleRecorder(MapRecorder):
                 self._log("pb_rearm", now, id=pb["id"])
                 return
             self._fail_attempt(now, "ceiling_break")
-        # (b) HTF zone touched
+            return
         z = self._zone_touched(bar)
         if z is not None:
             ceiling = pb["ceiling"]
             self._end_pullback(now, "zone")
             self.counts["end_zone"] += 1
             if ceiling is None:
-                self.state = ARMED if bool(getattr(config, "MAJOR_HTF", False)) else IDLE
+                self.state = IDLE
                 self.counts["zone_no_ceiling"] += 1
             else:
                 self.state = SCAN
@@ -397,13 +344,11 @@ class CycleRecorder(MapRecorder):
                 self._log("pb_zone", now, id=pb["id"], zone=z["id"], tf=z["tf"])
                 self._scan_step(bar, now)
             return
-        # (c) pending placements
         for s in pb["setups"]:
             if s["br"] == "wait":
                 self._try_breaker(s, bar, now, first=False)
             if s["ob"] == "wait_sweep":
                 self._try_ob(s, bar, now)
-        # (d) structure event
         if ev is None:
             return
         lab = ev["label"]
@@ -513,15 +458,10 @@ class CycleRecorder(MapRecorder):
         far = sc["zone"]["low"] if up else sc["zone"]["high"]
         if _beyond(bar.close, far, not up):
             self.counts["scan_far_break"] += 1
-            if bool(getattr(config, "MAJOR_HTF", False)):
-                self.counts["rearm"] += 1
-                self.state = ARMED
-            else:
-                self.state = IDLE
+            self.state = IDLE
             self._scan = None
             self._log("pb_scan_end", now, reason="far_edge_break")
 
-    # ---- outputs -------------------------------------------------------
     def funnel(self):
         return dict(self.counts)
 
