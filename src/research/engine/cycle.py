@@ -112,6 +112,23 @@ class CycleRecorder(MapRecorder):
     def _log(self, kind, now, **data):
         self.log.add(kind, now, now, **data)
 
+    def _cycle_bias(self):
+        hb = htf_bias(self.bias["D1"], self.bias["H4"])
+        if hb is not None or not bool(getattr(config, "MAJOR_HTF", False)):
+            return hb
+        return self.bias["H4"].bias or self.bias["D1"].bias
+
+    def _arm_from_bias(self, now, tf="BIAS"):
+        hb = self._cycle_bias()
+        for c in _CTX.values():
+            if hb == c["bias"]:
+                self.ctx = c
+                self.state = ARMED
+                self.counts["htf_arm"] += 1
+                self._log("pb_armed", now, tf=tf, side=c["side"])
+                return True
+        return False
+
     # ---- per trading-timeframe bar -------------------------------------
     def _on_m15(self, bar, ev):
         now = bar.close_time
@@ -136,7 +153,7 @@ class CycleRecorder(MapRecorder):
             return
         if self.state == ARMED:
             return
-        hb = htf_bias(self.bias["D1"], self.bias["H4"])
+        hb = self._cycle_bias()
         for c in _CTX.values():
             if hb == c["bias"] and ev["direction"] == c["htf_dir"]:
                 self.ctx = c
@@ -147,9 +164,12 @@ class CycleRecorder(MapRecorder):
         self.counts["htf_bos_no_arm"] += 1
 
     def _check_bias(self, now):
+        hb = self._cycle_bias()
         if self.state == IDLE:
+            if bool(getattr(config, "MAJOR_HTF", False)) and hb is not None:
+                self._arm_from_bias(now)
             return
-        if htf_bias(self.bias["D1"], self.bias["H4"]) == self.ctx["bias"]:
+        if hb == self.ctx["bias"]:
             return
         if self.state == PULL:
             self._end_pullback(now, "bias_lost")
@@ -157,6 +177,8 @@ class CycleRecorder(MapRecorder):
         self.state = IDLE
         self.counts["disarmed_bias"] += 1
         self._log("pb_disarm", now, reason="bias_lost")
+        if bool(getattr(config, "MAJOR_HTF", False)) and hb is not None:
+            self._arm_from_bias(now)
 
     def _armed_step(self, bar, ev, now):
         if ev is None or ev["label"] != "CHoCH" or ev["direction"] != self.ctx["choch_dir"]:
@@ -301,9 +323,11 @@ class CycleRecorder(MapRecorder):
             return
         near = box.low if up else box.high
         touched = bar.high >= near if up else bar.low <= near
-        if touched:
+        if touched and not bool(getattr(config, "MAJOR_HTF", False)):
             self.counts["ob_same_bar"] += 1
             return
+        if touched:
+            self.counts["ob_same_bar_rescued"] += 1
         self._place(s, "ob", box, bar, now)
 
     def _place(self, setup, kind, p, bar, now):
@@ -356,9 +380,8 @@ class CycleRecorder(MapRecorder):
                 self.state = ARMED
                 self.counts["rearm"] += 1
                 self._log("pb_rearm", now, id=pb["id"])
-            else:
-                self._fail_attempt(now, "ceiling_break")
-            return
+                return
+            self._fail_attempt(now, "ceiling_break")
         # (b) HTF zone touched
         z = self._zone_touched(bar)
         if z is not None:
@@ -366,7 +389,7 @@ class CycleRecorder(MapRecorder):
             self._end_pullback(now, "zone")
             self.counts["end_zone"] += 1
             if ceiling is None:
-                self.state = IDLE
+                self.state = ARMED if bool(getattr(config, "MAJOR_HTF", False)) else IDLE
                 self.counts["zone_no_ceiling"] += 1
             else:
                 self.state = SCAN
@@ -490,7 +513,11 @@ class CycleRecorder(MapRecorder):
         far = sc["zone"]["low"] if up else sc["zone"]["high"]
         if _beyond(bar.close, far, not up):
             self.counts["scan_far_break"] += 1
-            self.state = IDLE
+            if bool(getattr(config, "MAJOR_HTF", False)):
+                self.counts["rearm"] += 1
+                self.state = ARMED
+            else:
+                self.state = IDLE
             self._scan = None
             self._log("pb_scan_end", now, reason="far_edge_break")
 
