@@ -31,17 +31,16 @@ class ZoneRecorder(cy.CycleRecorder):
         self._zbos_time = None
         n = int(config.LTF_SWING_N)
         self._swin = deque(maxlen=2 * n + 1)
-        self._sw_hi = []   # unswept swing highs (trading TF), ascending
-        self._sw_lo = []   # unswept swing lows (trading TF), ascending
-        self._spent = set()   # zone ids spent by a real fill (rules on)
-        self._watch = []      # zone orders tracked for touch / fill (rules on)
-        self._prev15 = None   # last M15 bar, handled when the next one arrives
+        self._sw_hi = []
+        self._sw_lo = []
+        self._spent = set()
+        self._watch = []
+        self._prev15 = None
         if _rules():
             if not (float(SETTINGS.get("pip", 0.0)) > 0.0
                     and float(SETTINGS.get("spread", 0.0)) > 0.0):
                 raise ValueError("zone rules on: set SETTINGS pip and spread first")
 
-    # ---- feed hooks ----------------------------------------------------
     def on_bar_close(self, bar, feed):
         if _on():
             if bar.tf == self.ltf:
@@ -75,7 +74,6 @@ class ZoneRecorder(cy.CycleRecorder):
             if cl == min(lows) and cl < min(lows[:n]) and cl < min(lows[n + 1:]):
                 insort(self._sw_lo, cl)
 
-    # ---- rules: fill tracking, cancel, spent zones ---------------------
     def _cancel_dist(self):
         return float(config.ZONE_CANCEL_PIPS) * float(SETTINGS["pip"])
 
@@ -185,7 +183,6 @@ class ZoneRecorder(cy.CycleRecorder):
         self._ev = ev
         super()._on_m15(bar, ev)
 
-    # ---- cycle hooks (all pass straight through when zone trades are off) --
     def _start_pullback(self, bar, ev, now):
         self._zbos = False
         self._zbos_time = None
@@ -221,7 +218,6 @@ class ZoneRecorder(cy.CycleRecorder):
         self.counts["z_bos_seen"] += 1
         self._log("z_bos", now, direction=ev["direction"])
 
-    # ---- the scan = zone trading --------------------------------------
     def _scan_step(self, bar, now):
         if not _on():
             return super()._scan_step(bar, now)
@@ -263,9 +259,8 @@ class ZoneRecorder(cy.CycleRecorder):
                 self._z_new_choch(sc, bar, ev, now)
             else:
                 self.counts["z_choch_no_bos"] += 1
-            if not _rules():
-                self._zbos = False
-                self._zbos_time = None
+            self._zbos = False
+            self._zbos_time = None
         elif lab == "BOS" and d == c["other_dir"]:
             for s in sc["zsetups"]:
                 if s["ob"] == "wait_bos" and s["choch_time"] < ev["time"]:
@@ -336,11 +331,9 @@ class ZoneRecorder(cy.CycleRecorder):
             return
         near = box.low if tsell else box.high
         touched = bar.high >= near if tsell else bar.low <= near
-        if touched and not _rules():
+        if touched:
             self.counts["z_ob_same_bar"] += 1
             return
-        if touched:
-            self.counts["z_ob_same_bar_rescued"] += 1
         self._zplace(s, sc, "ob", box, bar, now)
 
     def _liq(self, entry, ceiling, tsell):
