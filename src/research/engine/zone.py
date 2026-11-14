@@ -208,7 +208,7 @@ class ZoneRecorder(cy.CycleRecorder):
 
     def _check_bias(self, now):
         if (_on() and self.state == cy.SCAN and self._scan is not None
-                and self._cycle_bias() != self.ctx["bias"]):
+                and htf_bias(self.bias["D1"], self.bias["H4"]) != self.ctx["bias"]):
             self._zend(self._scan, now, "bias_lost")
         super()._check_bias(now)
 
