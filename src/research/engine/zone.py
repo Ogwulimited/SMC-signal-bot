@@ -126,8 +126,6 @@ class ZoneRecorder(cy.CycleRecorder):
                     s["br"] = "none"
                     s["ob"] = "none"
                 self._zend(sc, now, "zone_spent")
-                self._scan = None
-                self.state = cy.IDLE
         self._watch = keep
 
     def _watch_orders(self, p, arrival):
@@ -210,7 +208,6 @@ class ZoneRecorder(cy.CycleRecorder):
         super()._on_m15(bar, ev)
 
     def _start_pullback(self, bar, ev, now):
-        # Stage 1A: First-touch _zbos unlock on Zone OB SELL only (Bear trend -> ctx["up"] is False)
         unlock_sell = _rules() and (not self.ctx["up"])
         self._zbos = unlock_sell
         self._zbos_time = ev["time"] if unlock_sell else None
@@ -266,6 +263,8 @@ class ZoneRecorder(cy.CycleRecorder):
             why = "ceiling_break" if self.state == cy.ARMED else "zone_far_break"
             self._zend(sc, now, why)
             return
+        if _rules() and sc["zone"]["id"] in self._spent:
+            return
         for s in sc["zsetups"]:
             if s["br"] == "wait":
                 self._z_try_breaker(s, sc, bar, now)
@@ -287,8 +286,9 @@ class ZoneRecorder(cy.CycleRecorder):
                 self._z_new_choch(sc, bar, ev, now)
             else:
                 self.counts["z_choch_no_bos"] += 1
-            self._zbos = False
-            self._zbos_time = None
+            if not c["up"]:
+                self._zbos = False
+                self._zbos_time = None
         elif lab == "BOS" and d == c["other_dir"]:
             for s in sc["zsetups"]:
                 if s["ob"] == "wait_bos" and s["choch_time"] < ev["time"]:
