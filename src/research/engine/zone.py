@@ -184,8 +184,8 @@ class ZoneRecorder(cy.CycleRecorder):
         super()._on_m15(bar, ev)
 
     def _start_pullback(self, bar, ev, now):
-        self._zbos = False
-        self._zbos_time = None
+        self._zbos = _rules()
+        self._zbos_time = ev["time"] if _rules() else None
         super()._start_pullback(bar, ev, now)
 
     def _pull_step(self, bar, ev, now):
