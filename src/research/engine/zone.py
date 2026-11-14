@@ -203,7 +203,7 @@ class ZoneRecorder(cy.CycleRecorder):
         super()._on_bos(ev, now)
 
     def _on_choch_other(self, now):
-        if _on() and self._zbos:
+        if _on() and self._zbos and not _rules():
             self.counts["z_bos_cleared_by_choch"] += 1
             self._zbos = False
             self._zbos_time = None
@@ -211,7 +211,7 @@ class ZoneRecorder(cy.CycleRecorder):
 
     def _check_bias(self, now):
         if (_on() and self.state == cy.SCAN and self._scan is not None
-                and htf_bias(self.bias["D1"], self.bias["H4"]) != self.ctx["bias"]):
+                and self._cycle_bias() != self.ctx["bias"]):
             self._zend(self._scan, now, "bias_lost")
         super()._check_bias(now)
 
@@ -263,8 +263,9 @@ class ZoneRecorder(cy.CycleRecorder):
                 self._z_new_choch(sc, bar, ev, now)
             else:
                 self.counts["z_choch_no_bos"] += 1
-            self._zbos = False
-            self._zbos_time = None
+            if not _rules():
+                self._zbos = False
+                self._zbos_time = None
         elif lab == "BOS" and d == c["other_dir"]:
             for s in sc["zsetups"]:
                 if s["ob"] == "wait_bos" and s["choch_time"] < ev["time"]:
@@ -277,6 +278,8 @@ class ZoneRecorder(cy.CycleRecorder):
                         s["ob"] = "wait_sweep"
                         self.counts["z_idm_set"] += 1
         elif lab == "CHoCH" and d == c["choch_dir"]:
+            if _rules():
+                self._mark_bos(ev, now)
             for s in sc["zsetups"]:
                 if s["ob"] == "wait_bos":
                     s["ob"] = "none"
@@ -331,12 +334,13 @@ class ZoneRecorder(cy.CycleRecorder):
         if box.state != "fresh" and not bool(config.TRADE_USED_POIS):
             self.counts["z_ob_box_used"] += 1
             return
-        near = box.low if tsell else bar.low
         near = box.low if tsell else box.high
         touched = bar.high >= near if tsell else bar.low <= near
-        if touched:
+        if touched and not _rules():
             self.counts["z_ob_same_bar"] += 1
             return
+        if touched:
+            self.counts["z_ob_same_bar_rescued"] += 1
         self._zplace(s, sc, "ob", box, bar, now)
 
     def _liq(self, entry, ceiling, tsell):
