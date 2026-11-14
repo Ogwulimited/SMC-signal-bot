@@ -82,11 +82,18 @@ class ZoneRecorder(cy.CycleRecorder):
             return
         keep = []
         now = bar.close_time
+        spent_now = set()
         for w in self._watch:
+            o = w["o"]
+            zid = o["zone_id"]
+            if zid in self._spent or zid in spent_now:
+                if o["end_time"] is None:
+                    o["end_time"] = now
+                    o["end_reason"] = "zone_spent"
+                continue
             if w["st"] != "touched":
                 keep.append(w)
                 continue
-            o = w["o"]
             sell = o["side"] == "sell"
             fill = float(bar.open)
             stop = float(o["stop"])
@@ -97,11 +104,30 @@ class ZoneRecorder(cy.CycleRecorder):
             if float(SETTINGS["spread"]) / risk > float(config.MAX_SPREAD_RISK_RATIO):
                 self.counts["z_fill_skipped_spread"] += 1
                 continue
-            zid = o["zone_id"]
-            if zid not in self._spent:
-                self._spent.add(zid)
-                self.counts["z_zone_spent"] += 1
-                self._log("z_spent", now, zone=zid, order=o["id"])
+            self._spent.add(zid)
+            spent_now.add(zid)
+            self.counts["z_zone_spent"] += 1
+            self._log("z_spent", now, zone=zid, order=o["id"])
+        if spent_now:
+            still = []
+            for w in keep:
+                o = w["o"]
+                if o["zone_id"] in spent_now:
+                    if o["end_time"] is None:
+                        o["end_time"] = now
+                        o["end_reason"] = "zone_spent"
+                    continue
+                still.append(w)
+            keep = still
+            if (self.state == cy.SCAN and self._scan is not None
+                    and self._scan["zone"]["id"] in spent_now):
+                sc = self._scan
+                for s in sc.get("zsetups", []):
+                    s["br"] = "none"
+                    s["ob"] = "none"
+                self._zend(sc, now, "zone_spent")
+                self._scan = None
+                self.state = cy.IDLE
         self._watch = keep
 
     def _watch_orders(self, p, arrival):
@@ -184,8 +210,10 @@ class ZoneRecorder(cy.CycleRecorder):
         super()._on_m15(bar, ev)
 
     def _start_pullback(self, bar, ev, now):
-        self._zbos = _rules()
-        self._zbos_time = ev["time"] if _rules() else None
+        # Stage 1A: First-touch _zbos unlock on Zone OB SELL only (Bear trend -> ctx["up"] is False)
+        unlock_sell = _rules() and (not self.ctx["up"])
+        self._zbos = unlock_sell
+        self._zbos_time = ev["time"] if unlock_sell else None
         super()._start_pullback(bar, ev, now)
 
     def _pull_step(self, bar, ev, now):
