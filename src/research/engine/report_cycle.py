@@ -4,10 +4,9 @@ Reads data/phase4_cycle/{pair}_{trades.csv,funnel.json,lookahead.json}.
 Env: REPORT_LABEL (file name label), EXPECT_PAIRS (comma list).
 Writes reports/phase4/report_cycle_<label>.md and the GitHub step summary.
 
-Three scorecards, never mixed:
+Two static 1:3 scorecards plus their combined view:
   zone / static      = MAIN (the six sections), with-trend trades, 1:3 target
-  zone / liquidity   = same entries, liquidity target
-  pullback / static  = counter-trend trades
+  pullback / static  = counter-trend trades, 1:3 target
 """
 import json
 import math
@@ -181,7 +180,6 @@ def main():
     else:
         full["leg"] = full["leg"].astype(object)
     zall, zres = card(full, "zone", "static")
-    lall, lres = card(full, "zone", "liquidity")
     pall, pres = card(full, "pullback", "static")
     allr, res = zall, zres          # the six sections show the MAIN card
 
@@ -203,11 +201,9 @@ def main():
           "- Variant: plain (no FVG).",
           "- MAIN scorecard (sections 1-6): ZONE trades = with the trend (buys in an uptrend, "
           "sells in a downtrend), static 1:3 target, breaker + OB together.",
-          "- Zone liquidity-target scorecard and the pullback scorecard "
-          "(counter-trend, V1 rules) are reported apart in Extras. They are never mixed.",
+          "- Pullback scorecard (counter-trend, static 1:3) and COMBINED (Zone + Pullback) "
+          "are shown in Signal Frequency and Extras.",
           "- Basis: stacking (every filled trade). Net R = gross R minus one spread cost.",
-          "- Rule assumptions A1-A8 (cycle.py), Z1-Z10 and T1-T2 (zone.py) and "
-          "'one box serves one CHoCH' are not confirmed by you yet.",
           ""]
 
     s = stats(res)
@@ -240,7 +236,6 @@ def main():
     comb_trades = len(res) + len(pres)
     comb_per_month = comb_trades / win_months if win_months > 0 else np.nan
     comb_net_static = float(res["net_r"].sum()) + float(pres["net_r"].sum())
-    comb_net_liq = float(lres["net_r"].sum()) + float(pres["net_r"].sum())
     if len(res):
         per_month = len(res) / win_months
         per_pair = per_month / max(len(expect), 1)
@@ -261,7 +256,6 @@ def main():
          fmt(comb_per_month, 2)],
         ["COMBINED total resolved trades (Zone + Pullback)", comb_trades],
         ["COMBINED Net R (Zone static 1:3 + Pullback static 1:3)", fmt(comb_net_static, 2)],
-        ["COMBINED Net R (Zone liquidity + Pullback static 1:3)", fmt(comb_net_liq, 2)],
         [f"ZONE trades per month, since first Zone trade ({first_txt})",
          fmt(per_month_since, 2)],
         [f"ZONE trades per month per pair ({len(expect)} pair(s))", fmt(per_pair, 2)],
@@ -302,9 +296,8 @@ def main():
     L.append("")
 
     # ------------------------------------------------------------ Extras
-    L += ["## Extras", "", "### Scorecards side by side (never mixed)"]
+    L += ["## Extras", "", "### Scorecards side by side (Static 1:3)"]
     cards = (("ZONE static 1:3 (MAIN)", zall, zres),
-             ("ZONE liquidity target", lall, lres),
              ("PULLBACK static 1:3", pall, pres))
     r1, r2 = [], []
     for name, a, r in cards:
@@ -317,29 +310,21 @@ def main():
         r2.append([name, fmt(st["pf"]), fmt(d2), fmt(tr, 2),
                    int((a["outcome"] == "open_at_cutoff").sum())])
     comb_st_df = pd.concat([zres, pres], ignore_index=True)
-    comb_lq_df = pd.concat([lres, pres], ignore_index=True)
-    for cname, cdf in (("COMBINED (Zone static + Pullback)", comb_st_df),
-                       ("COMBINED (Zone liq + Pullback)", comb_lq_df)):
-        cst = stats(cdf)
-        ctpm = cst["n"] / win_months if win_months > 0 else np.nan
-        r1.append([cname, cst["n"], fmt(ctpm, 2), fmt(cst["net"]), fmt(cst["wr"], 1), fmt(cst["exp"], 3)])
+    cst = stats(comb_st_df)
+    cd2, _ = dd_streak(comb_st_df)
+    ctpm = cst["n"] / win_months if win_months > 0 else np.nan
+    r1.append(["COMBINED (Zone + Pullback)", cst["n"], fmt(ctpm, 2), fmt(cst["net"]),
+               fmt(cst["wr"], 1), fmt(cst["exp"], 3)])
+    r2.append(["COMBINED (Zone + Pullback)", fmt(cst["pf"]), fmt(cd2), "3.00",
+               int((zall["outcome"] == "open_at_cutoff").sum()) + int((pall["outcome"] == "open_at_cutoff").sum())])
     L += table(["Scorecard", "Trades", "Trades/mo", "Net R", "Win %", "Expectancy"], r1)
     L.append("")
     L += table(["Scorecard", "PF", "Max DD R", "Avg planned target (R)", "Open at cutoff"], r2)
     L.append("")
-    L.append("- Win % counts trades that reached their target. For the liquidity card the "
-             "break-even win rate is not 25%: it depends on the planned target R shown above.")
     L.append(f"- Pullback check against V1 (only meaningful in a zt or v1 run): V1 had "
              f"{V1_PULLBACK[0]} trades, {fmt(V1_PULLBACK[1])} R. This run: {len(pres)} trades, "
              f"{fmt(pres['net_r'].sum())} R. Equal: "
              f"{'YES' if (len(pres) == V1_PULLBACK[0] and abs(float(pres['net_r'].sum()) - V1_PULLBACK[1]) < 0.015) else 'NO'}.")
-    L.append("")
-
-    L += ["### Zone liquidity targets: what was used"]
-    fl = lall[lall["status"] == "filled"]
-    kc = fl["target_kind"].value_counts()
-    L += table(["Target kind", "Filled trades"],
-               [[k, int(kc.get(k, 0))] for k in ("swing", "ceiling")])
     L.append("")
 
     L += ["### Buy / sell split by entry model"]
@@ -447,19 +432,17 @@ def main():
     L.append("")
 
     L += ["### Open at cutoff (counted separately)"]
-    L.append(f"- Zone static: {n_open}; zone liquidity: "
-             f"{int((lall['outcome'] == 'open_at_cutoff').sum())}; pullback: "
+    L.append(f"- Zone static: {n_open}; pullback: "
              f"{int((pall['outcome'] == 'open_at_cutoff').sum())} filled trade(s) were still "
              f"unresolved at the practice cutoff.")
     L.append("")
 
     L += ["### Orders that did not become trades"]
     s1 = zall["status"].value_counts()
-    s2 = lall["status"].value_counts()
     s3 = pall["status"].value_counts()
-    keys = sorted(set(s1.index) | set(s2.index) | set(s3.index))
-    L += table(["Status", "Zone static", "Zone liquidity", "Pullback"],
-               [[k, int(s1.get(k, 0)), int(s2.get(k, 0)), int(s3.get(k, 0))] for k in keys])
+    keys = sorted(set(s1.index) | set(s3.index))
+    L += table(["Status", "Zone static", "Pullback"],
+               [[k, int(s1.get(k, 0)), int(s3.get(k, 0))] for k in keys])
     canc = zall[zall["status"] == "unfilled_cancelled"]["end_reason"].value_counts()
     if len(canc):
         L.append("")
