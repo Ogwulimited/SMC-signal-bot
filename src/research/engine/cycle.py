@@ -86,18 +86,8 @@ class CycleRecorder(MapRecorder):
         for hev in queue:
             self._on_htf_event(hev, now)
         self._check_bias(now)
-        if self.state == IDLE and ev is not None:
-            if ev["label"] == "CHoCH":
-                self.counts["choch_idle"] += 1
-            elif ev["label"] == "BOS" and bool(getattr(config, "MAJOR_HTF", False)):
-                hb = htf_bias(self.bias["D1"], self.bias["H4"])
-                for c in _CTX.values():
-                    if hb == c["bias"] and ev["direction"] == c["htf_dir"]:
-                        self.ctx = c
-                        self.state = ARMED
-                        self.counts["m15_bos_arm"] += 1
-                        self._log("pb_armed", now, tf=self.ltf, side=c["side"])
-                        break
+        if ev is not None and ev["label"] == "CHoCH" and self.state == IDLE:
+            self.counts["choch_idle"] += 1
         if self.state == ARMED:
             self._armed_step(bar, ev, now)
         elif self.state == PULL:
@@ -296,10 +286,10 @@ class CycleRecorder(MapRecorder):
             return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
         stop = edge + buf if up else edge - buf
-        if self._spread > 0.0 and kind == "ob" and up:
+        if self._spread > 0.0 and kind == "ob":
             min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
             if abs(entry - stop) < min_risk:
-                stop = entry + min_risk
+                stop = entry + min_risk if up else entry - min_risk
                 self.counts[kind + "_min_risk_padded"] += 1
         pb = self._pb
         self._n_order += 1
