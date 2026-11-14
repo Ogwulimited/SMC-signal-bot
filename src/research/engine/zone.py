@@ -227,7 +227,7 @@ class ZoneRecorder(cy.CycleRecorder):
         super()._on_bos(ev, now)
 
     def _on_choch_other(self, now):
-        if _on() and self._zbos and not _rules():
+        if _on() and self._zbos and (not _rules() or self.ctx["up"]):
             self.counts["z_bos_cleared_by_choch"] += 1
             self._zbos = False
             self._zbos_time = None
@@ -303,7 +303,7 @@ class ZoneRecorder(cy.CycleRecorder):
                         s["ob"] = "wait_sweep"
                         self.counts["z_idm_set"] += 1
         elif lab == "CHoCH" and d == c["choch_dir"]:
-            if _rules():
+            if _rules() and (not c["up"]):
                 self._mark_bos(ev, now)
             for s in sc["zsetups"]:
                 if s["ob"] == "wait_bos":
