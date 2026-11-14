@@ -4,9 +4,10 @@ Reads data/phase4_cycle/{pair}_{trades.csv,funnel.json,lookahead.json}.
 Env: REPORT_LABEL (file name label), EXPECT_PAIRS (comma list).
 Writes reports/phase4/report_cycle_<label>.md and the GitHub step summary.
 
-Two static 1:3 scorecards plus their combined view:
-  zone / static      = MAIN (the six sections), with-trend trades, 1:3 target
-  pullback / static  = counter-trend trades, 1:3 target
+Static 1:3 scorecards:
+  combined / static  = MAIN (sections 1-6), Zone + Pullback together, 1:3 target
+  zone / static      = with-trend zone trades, 1:3 target
+  pullback / static  = counter-trend pullback trades, 1:3 target
 """
 import json
 import math
@@ -181,7 +182,9 @@ def main():
         full["leg"] = full["leg"].astype(object)
     zall, zres = card(full, "zone", "static")
     pall, pres = card(full, "pullback", "static")
-    allr, res = zall, zres          # the six sections show the MAIN card
+    call = pd.concat([zall, pall], ignore_index=True)
+    cres = pd.concat([zres, pres], ignore_index=True)
+    allr, res = call, cres          # the six sections show the COMBINED MAIN card
 
     miss = [p for p in expect if p not in looks]
     failed = [p for p, v in looks.items() if not v.get("pass")]
@@ -199,10 +202,9 @@ def main():
           f"- Practice years only: start of data to {config.PRACTICE_END}. Exam years are sealed.",
           "- Bad days are NOT excluded in this run.",
           "- Variant: plain (no FVG).",
-          "- MAIN scorecard (sections 1-6): ZONE trades = with the trend (buys in an uptrend, "
-          "sells in a downtrend), static 1:3 target, breaker + OB together.",
-          "- Pullback scorecard (counter-trend, static 1:3) and COMBINED (Zone + Pullback) "
-          "are shown in Signal Frequency and Extras.",
+          "- MAIN scorecard (sections 1-6): COMBINED (Zone + Pullback) at static 1:3 target.",
+          "- Separate ZONE static 1:3 and PULLBACK static 1:3 scorecards are shown in "
+          "Signal Frequency and Extras.",
           "- Basis: stacking (every filled trade). Net R = gross R minus one spread cost.",
           ""]
 
@@ -232,34 +234,34 @@ def main():
     t_start = pd.Timestamp(DATA_START, tz="UTC")
     t_end = pd.Timestamp(config.PRACTICE_END, tz="UTC")
     win_months = (t_end - t_start).days / 30.44
+    z_per_month = len(zres) / win_months if win_months > 0 else np.nan
     pb_per_month = len(pres) / win_months if win_months > 0 else np.nan
-    comb_trades = len(res) + len(pres)
+    comb_trades = len(res)
     comb_per_month = comb_trades / win_months if win_months > 0 else np.nan
-    comb_net_static = float(res["net_r"].sum()) + float(pres["net_r"].sum())
+    comb_net_static = float(res["net_r"].sum())
     if len(res):
-        per_month = len(res) / win_months
-        per_pair = per_month / max(len(expect), 1)
+        per_pair = comb_per_month / max(len(expect), 1)
         first_fill = res["fill_time"].min()
         since_months = max((t_end - first_fill).days / 30.44, 1.0)
         per_month_since = len(res) / since_months
         first_txt = first_fill.strftime("%Y-%m-%d")
         within = float((res["dur_hours"] <= 24).mean() * 100)
     else:
-        per_month = per_pair = per_month_since = within = np.nan
+        per_pair = per_month_since = within = np.nan
         first_txt = "n/a"
     L += table(["Metric", "Value"], [
-        [f"ZONE trades per month, all pairs ({fmt(win_months, 0)} months)",
-         fmt(per_month, 2)],
-        [f"PULLBACK trades per month, all pairs ({fmt(win_months, 0)} months)",
-         fmt(pb_per_month, 2)],
         [f"COMBINED trades per month (Zone + Pullback, {fmt(win_months, 0)} months)",
          fmt(comb_per_month, 2)],
+        [f"ZONE trades per month, all pairs ({fmt(win_months, 0)} months)",
+         fmt(z_per_month, 2)],
+        [f"PULLBACK trades per month, all pairs ({fmt(win_months, 0)} months)",
+         fmt(pb_per_month, 2)],
         ["COMBINED total resolved trades (Zone + Pullback)", comb_trades],
         ["COMBINED Net R (Zone static 1:3 + Pullback static 1:3)", fmt(comb_net_static, 2)],
-        [f"ZONE trades per month, since first Zone trade ({first_txt})",
+        [f"COMBINED trades per month, since first trade ({first_txt})",
          fmt(per_month_since, 2)],
-        [f"ZONE trades per month per pair ({len(expect)} pair(s))", fmt(per_pair, 2)],
-        ["% closed within 24h (Zone trades)", fmt(within, 1)]])
+        [f"COMBINED trades per month per pair ({len(expect)} pair(s))", fmt(per_pair, 2)],
+        ["% closed within 24h (Combined trades)", fmt(within, 1)]])
     L.append("")
 
     pair_net = {}
@@ -297,7 +299,8 @@ def main():
 
     # ------------------------------------------------------------ Extras
     L += ["## Extras", "", "### Scorecards side by side (Static 1:3)"]
-    cards = (("ZONE static 1:3 (MAIN)", zall, zres),
+    cards = (("COMBINED (Zone + Pullback) (MAIN)", call, cres),
+             ("ZONE static 1:3", zall, zres),
              ("PULLBACK static 1:3", pall, pres))
     r1, r2 = [], []
     for name, a, r in cards:
@@ -309,14 +312,6 @@ def main():
         r1.append([name, st["n"], fmt(tpm, 2), fmt(st["net"]), fmt(st["wr"], 1), fmt(st["exp"], 3)])
         r2.append([name, fmt(st["pf"]), fmt(d2), fmt(tr, 2),
                    int((a["outcome"] == "open_at_cutoff").sum())])
-    comb_st_df = pd.concat([zres, pres], ignore_index=True)
-    cst = stats(comb_st_df)
-    cd2, _ = dd_streak(comb_st_df)
-    ctpm = cst["n"] / win_months if win_months > 0 else np.nan
-    r1.append(["COMBINED (Zone + Pullback)", cst["n"], fmt(ctpm, 2), fmt(cst["net"]),
-               fmt(cst["wr"], 1), fmt(cst["exp"], 3)])
-    r2.append(["COMBINED (Zone + Pullback)", fmt(cst["pf"]), fmt(cd2), "3.00",
-               int((zall["outcome"] == "open_at_cutoff").sum()) + int((pall["outcome"] == "open_at_cutoff").sum())])
     L += table(["Scorecard", "Trades", "Trades/mo", "Net R", "Win %", "Expectancy"], r1)
     L.append("")
     L += table(["Scorecard", "PF", "Max DD R", "Avg planned target (R)", "Open at cutoff"], r2)
@@ -333,7 +328,7 @@ def main():
         L += table(["Group", "Trades", "Win %", "Net R", "Expectancy"], split_rows(r))
         L.append("")
 
-    L += ["### All pairs (MAIN card: zone, static)"]
+    L += ["### All pairs (MAIN card: Combined Zone + Pullback, static 1:3)"]
     prow, warns = [], []
     for p in expect:
         t = res[res["pair"] == p]
@@ -405,10 +400,14 @@ def main():
                 "Filled (static)"], zrows)
     L.append("")
 
-    L += ["### Stacking vs one-at-a-time (MAIN card, kept per pair)"]
+    L += ["### Stacking vs one-at-a-time (kept per pair)"]
     kept = res[res["kept_1at"]]
+    zkept = zres[zres["kept_1at"]]
     crow = []
-    for name, t in (("Stacking (all)", res), ("One-at-a-time", kept)):
+    for name, t in (("Combined Stacking (all)", res),
+                    ("Combined One-at-a-time", kept),
+                    ("Zone Stacking (all)", zres),
+                    ("Zone One-at-a-time", zkept)):
         st = stats(t)
         d2, s2 = dd_streak(t)
         crow.append([name, st["n"], fmt(st["net"]), fmt(st["exp"], 3), fmt(st["pf"]),
@@ -432,7 +431,7 @@ def main():
     L.append("")
 
     L += ["### Open at cutoff (counted separately)"]
-    L.append(f"- Zone static: {n_open}; pullback: "
+    L.append(f"- Zone static: {int((zall['outcome'] == 'open_at_cutoff').sum())}; pullback: "
              f"{int((pall['outcome'] == 'open_at_cutoff').sum())} filled trade(s) were still "
              f"unresolved at the practice cutoff.")
     L.append("")
@@ -463,7 +462,7 @@ def main():
              "earlier). On the M15 chart check: the BOS against the trend, the leg touching "
              "the HTF zone, the CHoCH (level = high/low of that leg), the box and the entry.")
     L.append("")
-    sheet = res.sort_values("fill_time").head(10)
+    sheet = zres.sort_values("fill_time").head(10)
     if len(sheet):
         for i, (_, r) in enumerate(sheet.iterrows(), 1):
             L.append(sheet_line(i, r))
@@ -473,7 +472,7 @@ def main():
 
     L += ["### Zone trade sheet: first 5 resolved zone SELLS by fill time"]
     L.append("")
-    sells = res[res["side"] == "sell"].sort_values("fill_time").head(5)
+    sells = zres[zres["side"] == "sell"].sort_values("fill_time").head(5)
     if len(sells):
         for i, (_, r) in enumerate(sells.iterrows(), 1):
             L.append(sheet_line(i, r))
