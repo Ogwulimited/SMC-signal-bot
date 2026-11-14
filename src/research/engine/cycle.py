@@ -80,20 +80,24 @@ class CycleRecorder(MapRecorder):
     def _log(self, kind, now, **data):
         self.log.add(kind, now, now, **data)
 
-    def _cycle_bias(self):
-        hb = htf_bias(self.bias["D1"], self.bias["H4"])
-        if hb is not None or not bool(getattr(config, "MAJOR_HTF", False)):
-            return hb
-        return self.bias["H4"].bias or self.bias["D1"].bias
-
     def _on_m15(self, bar, ev):
         now = bar.close_time
         queue, self._htf_q = self._htf_q, []
         for hev in queue:
             self._on_htf_event(hev, now)
         self._check_bias(now)
-        if ev is not None and ev["label"] == "CHoCH" and self.state == IDLE:
-            self.counts["choch_idle"] += 1
+        if self.state == IDLE and ev is not None:
+            if ev["label"] == "CHoCH":
+                self.counts["choch_idle"] += 1
+            elif ev["label"] == "BOS" and bool(getattr(config, "MAJOR_HTF", False)):
+                hb = htf_bias(self.bias["D1"], self.bias["H4"])
+                for c in _CTX.values():
+                    if hb == c["bias"] and ev["direction"] == c["htf_dir"]:
+                        self.ctx = c
+                        self.state = ARMED
+                        self.counts["m15_bos_arm"] += 1
+                        self._log("pb_armed", now, tf=self.ltf, side=c["side"])
+                        break
         if self.state == ARMED:
             self._armed_step(bar, ev, now)
         elif self.state == PULL:
@@ -109,7 +113,7 @@ class CycleRecorder(MapRecorder):
             return
         if self.state == ARMED:
             return
-        hb = self._cycle_bias()
+        hb = htf_bias(self.bias["D1"], self.bias["H4"])
         for c in _CTX.values():
             if hb == c["bias"] and ev["direction"] == c["htf_dir"]:
                 self.ctx = c
@@ -122,7 +126,7 @@ class CycleRecorder(MapRecorder):
     def _check_bias(self, now):
         if self.state == IDLE:
             return
-        if self._cycle_bias() == self.ctx["bias"]:
+        if htf_bias(self.bias["D1"], self.bias["H4"]) == self.ctx["bias"]:
             return
         if self.state == PULL:
             self._end_pullback(now, "bias_lost")
