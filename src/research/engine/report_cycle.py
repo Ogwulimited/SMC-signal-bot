@@ -236,6 +236,11 @@ def main():
     t_start = pd.Timestamp(DATA_START, tz="UTC")
     t_end = pd.Timestamp(config.PRACTICE_END, tz="UTC")
     win_months = (t_end - t_start).days / 30.44
+    pb_per_month = len(pres) / win_months if win_months > 0 else np.nan
+    comb_trades = len(res) + len(pres)
+    comb_per_month = comb_trades / win_months if win_months > 0 else np.nan
+    comb_net_static = float(res["net_r"].sum()) + float(pres["net_r"].sum())
+    comb_net_liq = float(lres["net_r"].sum()) + float(pres["net_r"].sum())
     if len(res):
         per_month = len(res) / win_months
         per_pair = per_month / max(len(expect), 1)
@@ -248,12 +253,19 @@ def main():
         per_month = per_pair = per_month_since = within = np.nan
         first_txt = "n/a"
     L += table(["Metric", "Value"], [
-        [f"Trades per month, all pairs, whole practice window ({fmt(win_months, 0)} months)",
+        [f"ZONE trades per month, all pairs ({fmt(win_months, 0)} months)",
          fmt(per_month, 2)],
-        [f"Trades per month, all pairs, since the first trade ({first_txt})",
+        [f"PULLBACK trades per month, all pairs ({fmt(win_months, 0)} months)",
+         fmt(pb_per_month, 2)],
+        [f"COMBINED trades per month (Zone + Pullback, {fmt(win_months, 0)} months)",
+         fmt(comb_per_month, 2)],
+        ["COMBINED total resolved trades (Zone + Pullback)", comb_trades],
+        ["COMBINED Net R (Zone static 1:3 + Pullback static 1:3)", fmt(comb_net_static, 2)],
+        ["COMBINED Net R (Zone liquidity + Pullback static 1:3)", fmt(comb_net_liq, 2)],
+        [f"ZONE trades per month, since first Zone trade ({first_txt})",
          fmt(per_month_since, 2)],
-        [f"Trades per month per pair ({len(expect)} pair(s))", fmt(per_pair, 2)],
-        ["% closed within 24h", fmt(within, 1)]])
+        [f"ZONE trades per month per pair ({len(expect)} pair(s))", fmt(per_pair, 2)],
+        ["% closed within 24h (Zone trades)", fmt(within, 1)]])
     L.append("")
 
     pair_net = {}
@@ -300,10 +312,18 @@ def main():
         d2, _ = dd_streak(r)
         fl = a[a["status"] == "filled"]
         tr = float(fl["target_r"].mean()) if len(fl) else np.nan
-        r1.append([name, st["n"], fmt(st["net"]), fmt(st["wr"], 1), fmt(st["exp"], 3)])
+        tpm = st["n"] / win_months if win_months > 0 else np.nan
+        r1.append([name, st["n"], fmt(tpm, 2), fmt(st["net"]), fmt(st["wr"], 1), fmt(st["exp"], 3)])
         r2.append([name, fmt(st["pf"]), fmt(d2), fmt(tr, 2),
                    int((a["outcome"] == "open_at_cutoff").sum())])
-    L += table(["Scorecard", "Trades", "Net R", "Win %", "Expectancy"], r1)
+    comb_st_df = pd.concat([zres, pres], ignore_index=True)
+    comb_lq_df = pd.concat([lres, pres], ignore_index=True)
+    for cname, cdf in (("COMBINED (Zone static + Pullback)", comb_st_df),
+                       ("COMBINED (Zone liq + Pullback)", comb_lq_df)):
+        cst = stats(cdf)
+        ctpm = cst["n"] / win_months if win_months > 0 else np.nan
+        r1.append([cname, cst["n"], fmt(ctpm, 2), fmt(cst["net"]), fmt(cst["wr"], 1), fmt(cst["exp"], 3)])
+    L += table(["Scorecard", "Trades", "Trades/mo", "Net R", "Win %", "Expectancy"], r1)
     L.append("")
     L += table(["Scorecard", "PF", "Max DD R", "Avg planned target (R)", "Open at cutoff"], r2)
     L.append("")
