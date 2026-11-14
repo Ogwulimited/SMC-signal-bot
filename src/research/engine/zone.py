@@ -82,11 +82,12 @@ class ZoneRecorder(cy.CycleRecorder):
             return
         keep = []
         now = bar.close_time
-        spent_now = set()
+        spent_sell_now = set()
         for w in self._watch:
             o = w["o"]
             zid = o["zone_id"]
-            if zid in self._spent or zid in spent_now:
+            sell = o["side"] == "sell"
+            if sell and (zid in self._spent or zid in spent_sell_now):
                 if o["end_time"] is None:
                     o["end_time"] = now
                     o["end_reason"] = "zone_spent"
@@ -94,7 +95,6 @@ class ZoneRecorder(cy.CycleRecorder):
             if w["st"] != "touched":
                 keep.append(w)
                 continue
-            sell = o["side"] == "sell"
             fill = float(bar.open)
             stop = float(o["stop"])
             if (sell and fill >= stop) or ((not sell) and fill <= stop):
@@ -104,15 +104,17 @@ class ZoneRecorder(cy.CycleRecorder):
             if float(SETTINGS["spread"]) / risk > float(config.MAX_SPREAD_RISK_RATIO):
                 self.counts["z_fill_skipped_spread"] += 1
                 continue
-            self._spent.add(zid)
-            spent_now.add(zid)
-            self.counts["z_zone_spent"] += 1
-            self._log("z_spent", now, zone=zid, order=o["id"])
-        if spent_now:
+            if zid not in self._spent:
+                self._spent.add(zid)
+                self.counts["z_zone_spent"] += 1
+                self._log("z_spent", now, zone=zid, order=o["id"])
+            if sell:
+                spent_sell_now.add(zid)
+        if spent_sell_now:
             still = []
             for w in keep:
                 o = w["o"]
-                if o["zone_id"] in spent_now:
+                if o["side"] == "sell" and o["zone_id"] in spent_sell_now:
                     if o["end_time"] is None:
                         o["end_time"] = now
                         o["end_reason"] = "zone_spent"
@@ -120,7 +122,7 @@ class ZoneRecorder(cy.CycleRecorder):
                 still.append(w)
             keep = still
             if (self.state == cy.SCAN and self._scan is not None
-                    and self._scan["zone"]["id"] in spent_now):
+                    and self._scan["zone"]["id"] in spent_sell_now):
                 sc = self._scan
                 for s in sc.get("zsetups", []):
                     s["br"] = "none"
@@ -263,7 +265,7 @@ class ZoneRecorder(cy.CycleRecorder):
             why = "ceiling_break" if self.state == cy.ARMED else "zone_far_break"
             self._zend(sc, now, why)
             return
-        if _rules() and sc["zone"]["id"] in self._spent:
+        if _rules() and (not self.ctx["up"]) and sc["zone"]["id"] in self._spent:
             return
         for s in sc["zsetups"]:
             if s["br"] == "wait":
