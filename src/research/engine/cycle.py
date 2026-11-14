@@ -1,478 +1,789 @@
-"""Phase 4 cycle engine, rebuild 2: pullbacks / reversals.
+from __future__ import annotations
 
-Sell side in a bull context; the buy side is the exact mirror. Bar by bar, no
-lookahead. Sits on top of MapRecorder (structure, POI books, bias, ATR).
+from collections import deque
+from datetime import datetime, timedelta, timezone
+from typing import Any, Deque, Dict, List, Optional
 
-The trading timeframe is self.ltf (M15 by default, H1 when config.LTF_TF is
-"H1"). Method names such as _on_m15 keep their old names; they run on bars of
-the trading timeframe.
-"""
-from bisect import bisect_left
-from collections import defaultdict
-import math
-
-import pandas as pd
-
-from src import config
-from src.research.engine import poi as poi_mod
-from src.research.engine.bias import htf_bias
-from src.research.engine.mapper import MapRecorder
-from src.research.lookahead_guard import DataFeed, DecisionLog
-
-IDLE = "idle"
-ARMED = "armed"
-PULL = "pullback"
-SCAN = "buy_scan"
-
-_CTX = {
-    "sell": {"side": "sell", "bias": "bull", "htf_dir": "up", "choch_dir": "down",
-             "other_dir": "up", "zone_side": "buy", "up": True},
-    "buy": {"side": "buy", "bias": "bear", "htf_dir": "down", "choch_dir": "up",
-            "other_dir": "down", "zone_side": "sell", "up": False},
-}
+from ..data.oanda import to_utc
+from ..structure.swings import SwingDetector
+from ..zones.pois import POIDetector, _overlap
+from ... import config
 
 
-def _num(x):
-    try:
-        v = float(x)
-    except (TypeError, ValueError):
-        return None
-    return None if math.isnan(v) else v
+class CycleRecorder:
+    def __init__(self, pair: str, ltf: str = "M15", htf1: str = "H4", htf2: str = "D1"):
+        self.pair = pair
+        self.ltf = str(ltf).upper()
+        self.htf1 = str(htf1).upper()
+        self.htf2 = str(htf2).upper()
 
+        self.swing = {
+            self.ltf: SwingDetector(n=int(getattr(config, "LTF_SWING_N", 2))),
+            self.htf1: SwingDetector(n=int(getattr(config, "MAJOR_H4_SWING_N", 8))),
+            self.htf2: SwingDetector(n=int(getattr(config, "MAJOR_D1_SWING_N", 8))),
+        }
+        self.pois = POIDetector()
 
-def _beyond(price, level, up):
-    return price > level if up else price < level
+        self.last_bar: Dict[str, Any] = {self.ltf: None, self.htf1: None, self.htf2: None}
+        self.bias: Dict[str, Optional[str]] = {self.htf1: None, self.htf2: None}
+        self.bias_flip_bar: Dict[str, int] = {self.htf1: -10**9, self.htf2: -10**9}
+        self.bias_bars: Dict[str, int] = {self.htf1: 0, self.htf2: 0}
 
+        self.state = "IDLE"  # IDLE -> ARMED -> SCAN -> WAIT_BOS -> DONE
+        self.arm_bar = -10**9
+        self.idm: Optional[Dict[str, Any]] = None
+        self.bos: Optional[Dict[str, Any]] = None
+        self.sweep: Optional[Dict[str, Any]] = None
 
-class CycleRecorder(MapRecorder):
-    def __init__(self, log, first_read=None):
-        super().__init__(log)
-        if first_read is not None:
-            for tr in self.bias.values():
-                tr.first_read = int(first_read)
-        self.counts = defaultdict(int)
-        self.orders = []
-        self.pullbacks = []
-        self.state = IDLE
-        self.ctx = None
-        self._pb = None
-        self._scan = None
-        self._htf_q = []
-        self._h4 = {}
-        self._h4_times = []
-        self._n_pb = 0
-        self._n_setup = 0
-        self._n_order = 0
+        self.setups: List[Dict[str, Any]] = []
+        self.trades: List[Dict[str, Any]] = []
+        self.pending: List[Dict[str, Any]] = []
+        self._zone_orders: List[Dict[str, Any]] = []
+
+        self._bar_idx = -1
+        self._equity = 0.0
+        self.ctx: Dict[str, Any] = {}
         self._spread = 0.0
 
-    def on_bar_close(self, bar, feed):
-        n0 = len(self.events)
-        super().on_bar_close(bar, feed)
-        if bar.tf == "H4":
-            self._h4[bar.open_time] = bar
-            self._h4_times.append(bar.open_time)
-        new = self.events[n0:]
-        if bar.tf in ("H4", "D1"):
-            self._htf_q.extend(new)
-        elif bar.tf == self.ltf:
-            self._on_m15(bar, new[0] if new else None)
+        self._ob_recent: Deque[Dict[str, Any]] = deque(maxlen=10)
+        self._idm_recent: Deque[Dict[str, Any]] = deque(maxlen=10)
 
-    def _log(self, kind, now, **data):
-        self.log.add(kind, now, now, **data)
+        self._stats: Dict[str, int] = {
+            "bars_total": 0,
+            "ltf_bars": 0,
+            "htf_bars": 0,
+            "attempted": 0,
+            "placed": 0,
+            "filled": 0,
+            "win": 0,
+            "loss": 0,
+            "be": 0,
+            "open": 0,
+            "rearm": 0,
+            "sweep_found": 0,
+            "idm_found": 0,
+            "bos_found": 0,
+            "ob_found": 0,
+            "breaker_found": 0,
+            "scan_locked": 0,
+            "scan_no_idm": 0,
+            "scan_far_break": 0,
+            "scan_ceiling": 0,
+            "wait_locked": 0,
+            "wait_no_bos": 0,
+            "wait_no_ob": 0,
+            "wait_same_bar": 0,
+            "ob_same_bar": 0,
+            "ob_used": 0,
+            "ob_miti_past": 0,
+            "orders_ob": 0,
+            "orders_br": 0,
+            "cancel_spread": 0,
+            "cancel_expired": 0,
+            "fill_limit": 0,
+            "fill_next_open": 0,
+            "orders_left_open": 0,
+            "setups_closed": 0,
+            "setups_open_left": 0,
+        }
 
-    def _on_m15(self, bar, ev):
-        now = bar.close_time
-        queue, self._htf_q = self._htf_q, []
-        for hev in queue:
-            self._on_htf_event(hev, now)
-        self._check_bias(now)
-        if ev is not None and ev["label"] == "CHoCH" and self.state == IDLE:
-            self.counts["choch_idle"] += 1
-        if self.state == ARMED:
-            self._armed_step(bar, ev, now)
-        elif self.state == PULL:
-            self._pull_step(bar, ev, now)
-        elif self.state == SCAN:
-            self._scan_step(bar, now)
+    # ---------------- public API ----------------
+    def on_bar(self, tf: str, bar: Dict[str, Any], spread: float = 0.0):
+        tf = str(tf).upper()
+        self._spread = float(spread or 0.0)
+        self._bar_idx += 1
+        self.last_bar[tf] = bar
+        self._stats["bars_total"] += 1
 
-    def _on_htf_event(self, ev, now):
-        if ev["label"] != "BOS":
+        if tf in (self.htf1, self.htf2):
+            self._stats["htf_bars"] += 1
+            self._on_htf(tf, bar)
             return
-        if self.state in (PULL, SCAN):
-            self.counts["htf_bos_ignored_in_pullback"] += 1
+
+        if tf != self.ltf:
             return
-        if self.state == ARMED:
+
+        self._stats["ltf_bars"] += 1
+
+        sc = self.swing[self.ltf].update(bar)
+        self._expire_pending(bar)
+        self._resolve_fills(bar)
+
+        ev = sc.get("event")
+        if ev:
+            self._on_ltf_event(bar, ev)
+
+        self._maybe_arm_from_sweep(bar)
+        self._maybe_scan(bar)
+        self._maybe_wait_bos(bar)
+
+    def close_all_open(self, reason: str = "end"):
+        last = self.last_bar.get(self.ltf) or {}
+        t = last.get("time")
+        o = _f(last.get("open"))
+        h = _f(last.get("high"))
+        l = _f(last.get("low"))
+        c = _f(last.get("close"))
+        if o is None or h is None or l is None or c is None:
             return
-        hb = htf_bias(self.bias["D1"], self.bias["H4"])
-        for c in _CTX.values():
-            if hb == c["bias"] and ev["direction"] == c["htf_dir"]:
-                self.ctx = c
-                self.state = ARMED
-                self.counts["htf_arm"] += 1
-                self._log("pb_armed", now, tf=ev["tf"], side=c["side"])
-                return
-        self.counts["htf_bos_no_arm"] += 1
 
-    def _check_bias(self, now):
-        if self.state == IDLE:
+        still = []
+        for tr in self.trades:
+            if str(tr.get("status", "")).lower() != "open":
+                continue
+            px = c
+            rr = self._rr(tr, px)
+            tr["status"] = "be"
+            tr["exit"] = float(px)
+            tr["exit_time"] = t
+            tr["pnl_r"] = float(rr)
+            tr["exit_reason"] = str(reason)
+            self._stats["be"] += 1
+            self._stats["open"] = max(0, self._stats["open"] - 1)
+            self._equity += float(rr)
+            still.append(tr)
+
+        self.trades.extend(still)
+        self.pending.clear()
+        self._zone_orders.clear()
+        self.state = "DONE"
+        self.ctx = {}
+        self.idm = None
+        self.bos = None
+        self.sweep = None
+
+    def snapshot(self) -> Dict[str, Any]:
+        closed = [t for t in self.trades if str(t.get("status")) in ("win", "loss", "be")]
+        wins = [t for t in closed if t["status"] == "win"]
+        losses = [t for t in closed if t["status"] == "loss"]
+        gross_win = sum(float(t["pnl_r"]) for t in wins)
+        gross_loss = abs(sum(float(t["pnl_r"]) for t in losses))
+        pf = (gross_win / gross_loss) if gross_loss > 1e-12 else (999.0 if gross_win > 0 else 0.0)
+
+        eq = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        for t in closed:
+            eq += float(t.get("pnl_r", 0.0))
+            peak = max(peak, eq)
+            max_dd = max(max_dd, peak - eq)
+
+        ob_buy = [t for t in closed if t.get("kind") == "ob" and t.get("side") == "buy"]
+        ob_sell = [t for t in closed if t.get("kind") == "ob" and t.get("side") == "sell"]
+        br_buy = [t for t in closed if t.get("kind") == "breaker" and t.get("side") == "buy"]
+        br_sell = [t for t in closed if t.get("kind") == "breaker" and t.get("side") == "sell"]
+
+        return {
+            "pair": self.pair,
+            "ltf": self.ltf,
+            "htf1": self.htf1,
+            "htf2": self.htf2,
+            "bias": dict(self.bias),
+            "state": self.state,
+            "trades_total": len(closed),
+            "wins": len(wins),
+            "losses": len(losses),
+            "be": len([t for t in closed if t["status"] == "be"]),
+            "open_left": len([t for t in self.trades if t.get("status") == "open"]),
+            "pending_left": len(self.pending),
+            "winrate": (len(wins) / len(closed) * 100.0) if closed else 0.0,
+            "net_r": round(sum(float(t.get("pnl_r", 0.0)) for t in closed), 4),
+            "profit_factor": round(pf, 4),
+            "max_drawdown_r": round(max_dd, 4),
+            "ob_buy": {"n": len(ob_buy), "r": round(sum(float(t["pnl_r"]) for t in ob_buy), 4)},
+            "ob_sell": {"n": len(ob_sell), "r": round(sum(float(t["pnl_r"]) for t in ob_sell), 4)},
+            "breaker_buy": {"n": len(br_buy), "r": round(sum(float(t["pnl_r"]) for t in br_buy), 4)},
+            "breaker_sell": {"n": len(br_sell), "r": round(sum(float(t["pnl_r"]) for t in br_sell), 4)},
+            "stats": dict(self._stats),
+        }
+
+    # ---------------- HTF bias ----------------
+    def _on_htf(self, tf: str, bar: Dict[str, Any]):
+        sc = self.swing[tf].update(bar)
+        ev = sc.get("event")
+        if not ev:
             return
-        if htf_bias(self.bias["D1"], self.bias["H4"]) == self.ctx["bias"]:
+        self._check_bias(tf, ev)
+
+    def _check_bias(self, tf: str, ev: Dict[str, Any]):
+        if str(ev.get("type", "")).upper() != "BOS":
             return
-        if self.state == PULL:
-            self._end_pullback(now, "bias_lost")
-        self._scan = None
-        self.state = IDLE
-        self.counts["disarmed_bias"] += 1
-        self._log("pb_disarm", now, reason="bias_lost")
-
-    def _armed_step(self, bar, ev, now):
-        if ev is None or ev["label"] != "CHoCH" or ev["direction"] != self.ctx["choch_dir"]:
+        direction = str(ev.get("direction", "")).lower()
+        if direction not in ("up", "down"):
             return
-        self.counts["choch_armed"] += 1
-        self._start_pullback(bar, ev, now)
+        nb = "buy" if direction == "up" else "sell"
 
-    def _start_pullback(self, bar, ev, now):
-        self._n_pb += 1
-        zones = self._freeze_zones()
-        pb = {"id": f"PB{self._n_pb}", "side": self.ctx["side"], "start": now,
-              "zones": zones, "ceiling": None, "locked": False, "attempt": None,
-              "setups": [], "orders": [], "end_time": None, "end_reason": None}
-        self._pb = pb
-        self.pullbacks.append(pb)
-        self.state = PULL
-        self.counts["pullbacks"] += 1
-        if not zones:
-            self.counts["no_zone"] += 1
-        self._log("pb_start", now, id=pb["id"], side=pb["side"], zones=len(zones))
-        self._new_choch(bar, ev, now)
-
-    def _freeze_zones(self):
-        buy_zone = self.ctx["zone_side"] == "buy"
-        inc = bool(config.TRADE_USED_POIS)
-        out = []
-        for tf in ("D1", "H4"):
-            for p in self.books[tf].usable(self.ctx["zone_side"], include_used=inc):
-                out.append(self._refine(p, buy_zone))
-        return out
-
-    def _refine(self, p, buy_zone):
-        zone = {"id": p.id, "tf": p.tf, "poi": p, "low": p.low, "high": p.high,
-                "refined": False}
-        if p.tf != "D1":
-            return zone
-        t0 = p.candle_time
-        t1 = t0 + pd.Timedelta(days=1)
-        i = bisect_left(self._h4_times, t0)
-        bars = []
-        while i < len(self._h4_times) and self._h4_times[i] < t1:
-            bars.append(self._h4[self._h4_times[i]])
-            i += 1
-        if not bars:
-            self.counts["refine_none"] += 1
-            return zone
-        if buy_zone:
-            k = min(range(len(bars)), key=lambda j: bars[j].low)
-        else:
-            k = max(range(len(bars)), key=lambda j: bars[j].high)
-
-        def right(b):
-            return b.close < b.open if buy_zone else b.close > b.open
-
-        pick = k
-        if poi_mod.REQUIRE_COLOUR and not right(bars[k]):
-            step = -1 if config.WRONG_COLOUR_SEARCH_DIRECTION == "back" else 1
-            pick = None
-            for d in range(1, int(config.OB_SEARCH_BACK_MAX) + 1):
-                j = k + step * d
-                if j < 0 or j >= len(bars):
-                    break
-                if right(bars[j]):
-                    pick = j
-                    break
-            if pick is None:
-                pick = k
-                self.counts["refine_cap"] += 1
-        b = bars[pick]
-        zone["low"] = b.low
-        zone["high"] = b.high
-        zone["refined"] = True
-        return zone
-
-    def _choch_poi(self, ev):
-        pois = self.books[self.ltf].pois
-        if pois and pois[-1].origin == "CHoCH" and pois[-1].born_time == ev["time"]:
-            return pois[-1]
-        return None
-
-    def _new_choch(self, bar, ev, now):
-        pb = self._pb
-        if pb["ceiling"] is None:
-            c = _num(ev["last_opposite_price"])
-            if c is None:
-                self.counts["no_ceiling"] += 1
-                return
-            pb["ceiling"] = c
-            pb["locked"] = False
-            pb["attempt"] = {"choch_time": ev["time"], "after": 0}
-            self._log("pb_ceiling", now, id=pb["id"], ceiling=c, locked=False)
-        else:
-            self.counts["choch_in_pullback"] += 1
-        self._n_setup += 1
-        box = self._choch_poi(ev)
-        breaker = self.books[self.ltf].choch_breaker.get(ev["time"])
-        setup = {"id": f"{pb['id']}-S{self._n_setup}", "choch_time": ev["time"],
-                 "box": box, "breaker": breaker,
-                 "attempt": None if pb["locked"] else pb["attempt"],
-                 "br": "none", "ob": "none", "idm": None}
-        pb["setups"].append(setup)
-        self.counts["setups"] += 1
-        skip_br_sell = bool(getattr(config, "MAJOR_HTF", False)) and self.ctx["side"] == "sell"
-        if breaker is None:
-            self.counts["no_breaker"] += 1
-        elif skip_br_sell:
-            self.counts["breaker_sell_skipped"] += 1
-        else:
-            setup["br"] = "wait"
-            self._try_breaker(setup, bar, now, first=True)
-            if setup["br"] == "wait":
-                self.counts["breaker_wait"] += 1
-        if box is None:
-            self.counts["no_choch_box"] += 1
-        else:
-            setup["ob"] = "wait_bos"
-
-    def _try_breaker(self, s, bar, now, first):
-        p = s["breaker"]
-        if p.state != "dead":
+        prev = self.bias.get(tf)
+        if prev == nb:
             return
-        s["br"] = "none"
-        if self._place(s, "breaker", p, bar, now) is not None and not first:
-            self.counts["breaker_late"] += 1
 
-    def _try_ob(self, s, bar, now):
-        up = self.ctx["up"]
-        box = s["box"]
-        if box.state == "dead":
-            s["ob"] = "none"
-            self.counts["ob_box_dead"] += 1
+        self.bias[tf] = nb
+        self.bias_flip_bar[tf] = self._bar_idx
+        self.bias_bars[tf] = 0
+
+        if self.state in ("ARMED", "SCAN", "WAIT_BOS"):
+            self._reset_cycle("htf_bias_flip")
+
+    # ---------------- LTF flow ----------------
+    def _on_ltf_event(self, bar: Dict[str, Any], ev: Dict[str, Any]):
+        et = str(ev.get("type", "")).upper()
+        direction = str(ev.get("direction", "")).lower()
+        side = self._htf_side()
+        if side is None:
             return
-        idm = s["idm"]
-        swept = bar.high > idm if up else bar.low < idm
+
+        up = (side == "buy")
+
+        if self.state == "IDLE":
+            if up and et == "BOS" and direction == "down":
+                self._arm_from_sweep_event(bar, ev, side)
+            elif (not up) and et == "BOS" and direction == "up":
+                self._arm_from_sweep_event(bar, ev, side)
+            return
+
+        if self.state == "ARMED":
+            if up and et == "CHoCH" and direction == "down":
+                self.sweep = _mk_level("sweep", ev, bar)
+                self._stats["sweep_found"] += 1
+            elif (not up) and et == "CHoCH" and direction == "up":
+                self.sweep = _mk_level("sweep", ev, bar)
+                self._stats["sweep_found"] += 1
+
+            if self.sweep is not None:
+                self.state = "SCAN"
+                self.ctx = {"side": side, "up": up}
+            return
+
+        if self.state == "SCAN":
+            if up and et == "CHoCH" and direction == "down":
+                self.sweep = _mk_level("sweep", ev, bar)
+                self._stats["sweep_found"] += 1
+            elif (not up) and et == "CHoCH" and direction == "up":
+                self.sweep = _mk_level("sweep", ev, bar)
+                self._stats["sweep_found"] += 1
+            return
+
+        if self.state == "WAIT_BOS":
+            if up and et == "BOS" and direction == "up":
+                self.bos = _mk_level("bos", ev, bar)
+                self._stats["bos_found"] += 1
+            elif (not up) and et == "BOS" and direction == "down":
+                self.bos = _mk_level("bos", ev, bar)
+                self._stats["bos_found"] += 1
+
+    def _arm_from_sweep_event(self, bar: Dict[str, Any], ev: Dict[str, Any], side: str):
+        self._reset_cycle("arm")
+        self.state = "ARMED"
+        self.arm_bar = self._bar_idx
+        self.sweep = _mk_level("sweep", ev, bar)
+        self.ctx = {"side": side, "up": side == "buy"}
+        self._stats["sweep_found"] += 1
+
+    def _maybe_arm_from_sweep(self, bar: Dict[str, Any]):
+        return
+
+    def _maybe_scan(self, bar: Dict[str, Any]):
+        if self.state != "SCAN":
+            return
+        if self.sweep is None:
+            return
+
+        side = self.ctx.get("side")
+        up = bool(self.ctx.get("up"))
+        if side is None:
+            self._reset_cycle("scan_no_side")
+            return
+
+        high = _f(bar.get("high"))
+        low = _f(bar.get("low"))
+        if high is None or low is None:
+            return
+
+        sweep_px = _f(self.sweep.get("price"))
+        if sweep_px is None:
+            self._reset_cycle("scan_bad_sweep")
+            return
+
+        swept = (low <= sweep_px <= high) if up else (low <= sweep_px <= high)
         if not swept:
+            age = self._bar_idx - int(self.sweep.get("bar_idx", self._bar_idx))
+            if age > 24:
+                self._stats["scan_ceiling"] += 1
+                self._reset_cycle("scan_ceiling")
             return
-        s["ob"] = "none"
-        allow_used = bool(config.TRADE_USED_POIS) or bool(getattr(config, "MAJOR_HTF", False))
-        if box.state != "fresh" and not allow_used:
-            self.counts["ob_box_used"] += 1
-            return
-        near = box.low if up else box.high
-        touched = bar.high >= near if up else bar.low <= near
-        if touched:
-            self.counts["ob_same_bar"] += 1
-            return
-        self._place(s, "ob", box, bar, now)
 
-    def _place(self, setup, kind, p, bar, now):
-        up = self.ctx["up"]
-        atr = self.atr.value_at(p.candle_time)
-        if atr is None:
-            self.counts[kind + "_no_atr"] += 1
-            return None
-        entry = p.low if up else p.high
-        edge = p.high if up else p.low
-        ahead = bar.close < entry if up else bar.close > entry
-        if not ahead:
-            self.counts[kind + "_entry_not_ahead"] += 1
-            return None
-        buf = float(config.STOP_BUFFER_ATR) * float(atr)
-        stop = edge + buf if up else edge - buf
-        if self._spread > 0.0 and kind == "ob":
+        idm = self._find_idm_against(side)
+        if idm is None:
+            self._stats["scan_no_idm"] += 1
+            age = self._bar_idx - int(self.sweep.get("bar_idx", self._bar_idx))
+            if age > 30:
+                self._reset_cycle("scan_no_idm_timeout")
+            return
+
+        self.idm = idm
+        self._stats["idm_found"] += 1
+        self.state = "WAIT_BOS"
+
+    def _maybe_wait_bos(self, bar: Dict[str, Any]):
+        if self.state != "WAIT_BOS":
+            return
+        if self.bos is None:
+            age = self._bar_idx - int((self.idm or {}).get("bar_idx", self.arm_bar))
+            if age > 40:
+                self._stats["wait_no_bos"] += 1
+                self._reset_cycle("wait_bos_timeout")
+            return
+
+        side = self.ctx.get("side")
+        up = bool(self.ctx.get("up"))
+        if side is None:
+            self._reset_cycle("wait_no_side")
+            return
+
+        self._place_ob(bar, side, up)
+        self._place_breaker(bar, side, up)
+
+        if not self.pending and not self._zone_orders:
+            self._stats["wait_no_ob"] += 1
+            self._reset_cycle("wait_no_setup")
+            return
+
+        self.state = "DONE"
+        self.ctx["done_bar"] = self._bar_idx
+
+    # ---------------- setup builders ----------------
+    def _place_ob(self, bar: Dict[str, Any], side: str, up: bool):
+        allow_used = bool(config.TRADE_USED_POIS) or bool(getattr(config, "MAJOR_HTF", False))
+        box = self.pois.last_ob(
+            self.swing[self.ltf].swings,
+            side=side,
+            allow_used=allow_used,
+            require_fresh=not allow_used,
+        )
+        if not box:
+            return
+
+        entry = _f(box.get("top")) if up else _f(box.get("bottom"))
+        stop = _f(box.get("bottom")) if up else _f(box.get("top"))
+        if entry is None or stop is None:
+            return
+
+        if (not up and entry <= stop) or (up and entry >= stop):
+            return
+
+        if self._overlap_idm(box):
+            return
+
+        if self._overlap_recent_ob(box):
+            return
+
+        if self._ob_touched_now(bar, box):
+            self._stats["ob_same_bar"] += 1
+            return
+
+        # Stage 1A: min_risk stop padding only on Pullback OB SELL
+        if self._spread > 0.0 and not up:
             min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
             if abs(entry - stop) < min_risk:
-                stop = entry + min_risk if up else entry - min_risk
-                self.counts[kind + "_min_risk_padded"] += 1
-        pb = self._pb
-        self._n_order += 1
-        breaker = setup["breaker"]
-        order = {"id": f"O{self._n_order}", "pullback": pb["id"], "setup": setup["id"],
-                 "variant": "plain", "kind": kind, "side": self.ctx["side"],
-                 "placed_time": now, "entry": float(entry), "stop": float(stop),
-                 "stop_edge": float(edge), "box_low": float(p.low),
-                 "box_high": float(p.high), "atr": float(atr),
-                 "ceiling": pb["ceiling"], "ceiling_locked": pb["locked"],
-                 "breaker_id": breaker.id if breaker is not None else None,
-                 "anchor_id": None, "end_time": None, "end_reason": None,
-                 "fill": "limit" if kind == "ob" else "next_open"}
-        self.orders.append(order)
-        pb["orders"].append(order)
-        self.counts["orders_" + kind] += 1
-        self._log("pb_order", now, id=order["id"], order_kind=kind,
-                  side=order["side"], entry=order["entry"], stop=order["stop"],
-                  setup=setup["id"])
-        return order
+                stop = entry - min_risk
 
-    def _pull_step(self, bar, ev, now):
-        pb = self._pb
-        up = self.ctx["up"]
-        if pb["ceiling"] is not None and _beyond(bar.close, pb["ceiling"], up):
-            if pb["locked"]:
-                self._end_pullback(now, "ceiling_break")
-                self.counts["end_ceiling_break"] += 1
-                self.state = ARMED
-                self.counts["rearm"] += 1
-                self._log("pb_rearm", now, id=pb["id"])
-                return
-            self._fail_attempt(now, "ceiling_break")
+        self._place(
+            kind="ob",
+            side=side,
+            up=up,
+            entry=float(entry),
+            stop=float(stop),
+            box=box,
+            bar=bar,
+            fill="limit",
+        )
+        self._stats["ob_found"] += 1
+        self._ob_recent.append(
+            {
+                "top": _f(box.get("top")),
+                "bottom": _f(box.get("bottom")),
+                "bar_idx": int(box.get("bar_idx", self._bar_idx)),
+            }
+        )
+
+    def _place_breaker(self, bar: Dict[str, Any], side: str, up: bool):
+        skip_br_sell = bool(getattr(config, "MAJOR_HTF", False)) and side == "sell"
+        if skip_br_sell:
             return
-        z = self._zone_touched(bar)
-        if z is not None:
-            ceiling = pb["ceiling"]
-            self._end_pullback(now, "zone")
-            self.counts["end_zone"] += 1
-            if ceiling is None:
-                self.state = IDLE
-                self.counts["zone_no_ceiling"] += 1
-            else:
-                self.state = SCAN
-                self._scan = {"zone": z, "ceiling": ceiling}
-                self._log("pb_zone", now, id=pb["id"], zone=z["id"], tf=z["tf"])
-                self._scan_step(bar, now)
+
+        box = self.pois.last_breaker(
+            self.swing[self.ltf].swings,
+            side=side,
+            allow_used=False,
+        )
+        if not box:
             return
-        for s in pb["setups"]:
-            if s["br"] == "wait":
-                self._try_breaker(s, bar, now, first=False)
-            if s["ob"] == "wait_sweep":
-                self._try_ob(s, bar, now)
-        if ev is None:
+
+        entry = _f(box.get("top")) if up else _f(box.get("bottom"))
+        stop = _f(box.get("bottom")) if up else _f(box.get("top"))
+        if entry is None or stop is None:
             return
-        lab = ev["label"]
-        d = ev["direction"]
-        if lab == "CHoCH" and d == self.ctx["choch_dir"]:
-            self._new_choch(bar, ev, now)
-        elif lab == "BOS" and d == self.ctx["choch_dir"]:
-            self._on_bos(ev, now)
-        elif lab == "CHoCH" and d == self.ctx["other_dir"]:
-            self._on_choch_other(now)
 
-    def _on_bos(self, ev, now):
-        pb = self._pb
-        for s in pb["setups"]:
-            if s["ob"] == "wait_bos" and s["choch_time"] < ev["time"]:
-                p = _num(ev["last_opposite_price"])
-                if p is None:
-                    s["ob"] = "none"
-                    self.counts["ob_no_idm"] += 1
-                else:
-                    s["idm"] = p
-                    s["ob"] = "wait_sweep"
-                    self.counts["idm_set"] += 1
-        a = pb["attempt"]
-        if not pb["locked"] and a is not None:
-            a["after"] += 1
-            if a["after"] >= 2:
-                self._lock(now)
+        if (not up and entry <= stop) or (up and entry >= stop):
+            return
 
-    def _on_choch_other(self, now):
-        pb = self._pb
-        for s in pb["setups"]:
-            if s["ob"] == "wait_bos":
-                s["ob"] = "none"
-                self.counts["ob_no_bos"] += 1
-        a = pb["attempt"]
-        if not pb["locked"] and a is not None:
-            if a["after"] == 0:
-                self._fail_attempt(now, "choch_against")
-            else:
-                self._lock(now)
+        if self._overlap_idm(box):
+            return
 
-    def _lock(self, now):
-        pb = self._pb
-        pb["locked"] = True
-        self.counts["ceiling_locked"] += 1
-        self._log("pb_lock", now, id=pb["id"], ceiling=pb["ceiling"])
+        self._place(
+            kind="breaker",
+            side=side,
+            up=up,
+            entry=float(entry),
+            stop=float(stop),
+            box=box,
+            bar=bar,
+            fill="next_open",
+        )
+        self._stats["breaker_found"] += 1
 
-    def _fail_attempt(self, now, why):
-        pb = self._pb
-        a = pb["attempt"]
-        ids = set()
-        for s in pb["setups"]:
-            if a is not None and s["attempt"] is a:
-                s["br"] = "none"
-                s["ob"] = "none"
-                ids.add(s["id"])
-        reason = "ceiling_break" if why == "ceiling_break" else "attempt_failed"
-        for o in pb["orders"]:
-            if o["setup"] in ids and o["end_time"] is None:
-                o["end_time"] = now
-                o["end_reason"] = reason
-        pb["ceiling"] = None
-        pb["attempt"] = None
-        pb["locked"] = False
-        self.counts["attempt_failed_" + why] += 1
-        self._log("pb_fail", now, id=pb["id"], why=why)
+    def _place(self, kind: str, side: str, up: bool, entry: float, stop: float, box: Dict[str, Any], bar: Dict[str, Any], fill: str):
+        risk = abs(entry - stop)
+        if risk <= 1e-12:
+            return
 
-    def _end_pullback(self, now, reason):
-        pb = self._pb
-        for o in pb["orders"]:
-            if o["end_time"] is None:
-                o["end_time"] = now
-                o["end_reason"] = reason
-        pb["end_time"] = now
-        pb["end_reason"] = reason
-        self._log("pb_end", now, id=pb["id"], reason=reason)
-        self._pb = None
+        max_risk = risk
+        spr = float(self._spread or 0.0)
+        if spr > 0.0:
+            max_risk = spr / max(1e-9, float(getattr(config, "MAX_SPREAD_RISK_RATIO", 0.15)))
 
-    def _zone_touched(self, bar):
-        up = self.ctx["up"]
-        ok = ("fresh", "used") if config.TRADE_USED_POIS else ("fresh",)
-        best = None
-        for z in self._pb["zones"]:
-            if z["poi"].state not in ok:
+        if risk > (max_risk + 1e-12):
+            self._stats["cancel_spread"] += 1
+            return
+
+        rr = float(getattr(config, "RR_STATIC", 3.0))
+        tp = entry + (risk * rr) if up else entry - (risk * rr)
+
+        setup = {
+            "id": len(self.setups) + 1,
+            "pair": self.pair,
+            "ltf": self.ltf,
+            "htf1": self.htf1,
+            "htf2": self.htf2,
+            "kind": kind,
+            "side": side,
+            "up": bool(up),
+            "entry": float(entry),
+            "stop": float(stop),
+            "tp": float(tp),
+            "risk": float(risk),
+            "rr": float(rr),
+            "state": "pending",
+            "created_time": bar.get("time"),
+            "created_bar_idx": self._bar_idx,
+            "expire_bar_idx": self._bar_idx + 24,
+            "fill_mode": str(fill),
+            "zone_id": None,
+            "box": {
+                "top": _f(box.get("top")),
+                "bottom": _f(box.get("bottom")),
+                "time": box.get("time"),
+                "bar_idx": box.get("bar_idx"),
+            },
+            "idm_price": _f((self.idm or {}).get("price")),
+            "bos_price": _f((self.bos or {}).get("price")),
+            "sweep_price": _f((self.sweep or {}).get("price")),
+        }
+        self.setups.append(setup)
+
+        order = {
+            "setup_id": setup["id"],
+            "kind": kind,
+            "side": side,
+            "up": bool(up),
+            "entry": float(entry),
+            "stop": float(stop),
+            "tp": float(tp),
+            "risk": float(risk),
+            "rr": float(rr),
+            "created_bar_idx": self._bar_idx,
+            "expire_bar_idx": self._bar_idx + 24,
+            "fill_mode": str(fill),
+            "zone_id": None,
+            "status": "pending",
+        }
+        self.pending.append(order)
+        self._stats["attempted"] += 1
+        self._stats["placed"] += 1
+        if kind == "ob":
+            self._stats["orders_ob"] += 1
+        else:
+            self._stats["orders_br"] += 1
+
+    # ---------------- fills / exits ----------------
+    def _expire_pending(self, bar: Dict[str, Any]):
+        if not self.pending:
+            return
+        keep = []
+        for od in self.pending:
+            if self._bar_idx > int(od.get("expire_bar_idx", self._bar_idx)):
+                self._cancel_setup(od.get("setup_id"), "expired")
+                self._stats["cancel_expired"] += 1
                 continue
-            if up:
-                hit = bar.low <= z["high"]
-                near = z["high"]
-            else:
-                hit = bar.high >= z["low"]
-                near = z["low"]
-            if hit and (best is None or (near > best[0] if up else near < best[0])):
-                best = (near, z)
-        return best[1] if best is not None else None
+            keep.append(od)
+        self.pending = keep
 
-    def _scan_step(self, bar, now):
-        sc = self._scan
-        up = self.ctx["up"]
-        if _beyond(bar.close, sc["ceiling"], up):
-            self.counts["scan_ceiling_break"] += 1
-            self.counts["rearm"] += 1
-            self.state = ARMED
-            self._scan = None
-            self._log("pb_scan_end", now, reason="ceiling_break")
+    def _resolve_fills(self, bar: Dict[str, Any]):
+        if not self.pending:
             return
-        far = sc["zone"]["low"] if up else sc["zone"]["high"]
-        if _beyond(bar.close, far, not up):
-            self.counts["scan_far_break"] += 1
-            self.state = IDLE
-            self._scan = None
-            self._log("pb_scan_end", now, reason="far_edge_break")
 
-    def funnel(self):
-        return dict(self.counts)
+        high = _f(bar.get("high"))
+        low = _f(bar.get("low"))
+        open_ = _f(bar.get("open"))
+        close = _f(bar.get("close"))
+        t = bar.get("time")
+        if high is None or low is None or open_ is None or close is None:
+            return
 
-    def pullback_rows(self):
-        return [{"id": pb["id"], "side": pb["side"], "start": pb["start"],
-                 "end_time": pb["end_time"], "end_reason": pb["end_reason"],
-                 "ceiling": pb["ceiling"], "locked": pb["locked"],
-                 "zones": len(pb["zones"]), "setups": len(pb["setups"]),
-                 "orders": len(pb["orders"])} for pb in self.pullbacks]
+        still = []
+        for od in self.pending:
+            up = bool(od.get("up"))
+            entry = _f(od.get("entry"))
+            stop = _f(od.get("stop"))
+            tp = _f(od.get("tp"))
+            if entry is None or stop is None or tp is None:
+                continue
+
+            fill_mode = str(od.get("fill_mode", "limit"))
+
+            if fill_mode == "limit":
+                touched = (low <= entry <= high) if up else (low <= entry <= high)
+                if not touched:
+                    still.append(od)
+                    continue
+
+                bad = close <= stop if up else close >= stop
+                if bad:
+                    self._cancel_setup(od.get("setup_id"), "filled_through_stop")
+                    continue
+
+                self._open_trade(od, fill_price=float(entry), fill_time=t, fill_reason="limit_touch")
+                self._stats["fill_limit"] += 1
+                continue
+
+            # next_open
+            if int(od.get("created_bar_idx", self._bar_idx)) >= self._bar_idx:
+                still.append(od)
+                continue
+
+            fill_px = float(open_)
+            if up and fill_px <= stop:
+                self._cancel_setup(od.get("setup_id"), "next_open_through_stop")
+                continue
+            if (not up) and fill_px >= stop:
+                self._cancel_setup(od.get("setup_id"), "next_open_through_stop")
+                continue
+
+            self._open_trade(od, fill_price=float(fill_px), fill_time=t, fill_reason="next_open")
+            self._stats["fill_next_open"] += 1
+
+        self.pending = still
+
+        for tr in self.trades:
+            if str(tr.get("status", "")).lower() != "open":
+                continue
+
+            up = bool(tr.get("up"))
+            stop = _f(tr.get("stop"))
+            tp = _f(tr.get("tp"))
+            if stop is None or tp is None:
+                continue
+
+            if up:
+                if low <= stop:
+                    tr["status"] = "loss"
+                    tr["exit"] = float(stop)
+                    tr["exit_time"] = t
+                    tr["exit_reason"] = "sl"
+                    tr["pnl_r"] = -1.0
+                    self._stats["loss"] += 1
+                    self._stats["open"] = max(0, self._stats["open"] - 1)
+                    self._equity += -1.0
+                    continue
+                if high >= tp:
+                    tr["status"] = "win"
+                    tr["exit"] = float(tp)
+                    tr["exit_time"] = t
+                    tr["exit_reason"] = "tp"
+                    tr["pnl_r"] = float(tr.get("rr", 3.0))
+                    self._stats["win"] += 1
+                    self._stats["open"] = max(0, self._stats["open"] - 1)
+                    self._equity += float(tr.get("rr", 3.0))
+                    continue
+            else:
+                if high >= stop:
+                    tr["status"] = "loss"
+                    tr["exit"] = float(stop)
+                    tr["exit_time"] = t
+                    tr["exit_reason"] = "sl"
+                    tr["pnl_r"] = -1.0
+                    self._stats["loss"] += 1
+                    self._stats["open"] = max(0, self._stats["open"] - 1)
+                    self._equity += -1.0
+                    continue
+                if low <= tp:
+                    tr["status"] = "win"
+                    tr["exit"] = float(tp)
+                    tr["exit_time"] = t
+                    tr["exit_reason"] = "tp"
+                    tr["pnl_r"] = float(tr.get("rr", 3.0))
+                    self._stats["win"] += 1
+                    self._stats["open"] = max(0, self._stats["open"] - 1)
+                    self._equity += float(tr.get("rr", 3.0))
+                    continue
+
+    def _open_trade(self, od: Dict[str, Any], fill_price: float, fill_time: Any, fill_reason: str):
+        tr = {
+            "id": len(self.trades) + 1,
+            "setup_id": od.get("setup_id"),
+            "pair": self.pair,
+            "ltf": self.ltf,
+            "htf1": self.htf1,
+            "htf2": self.htf2,
+            "kind": od.get("kind"),
+            "side": od.get("side"),
+            "up": bool(od.get("up")),
+            "entry": float(fill_price),
+            "stop": float(od.get("stop")),
+            "tp": float(od.get("tp")),
+            "risk": float(od.get("risk")),
+            "rr": float(od.get("rr", 3.0)),
+            "status": "open",
+            "entry_time": fill_time,
+            "created_time": od.get("created_time", fill_time),
+            "fill_reason": fill_reason,
+            "zone_id": od.get("zone_id"),
+        }
+        self.trades.append(tr)
+        self._stats["filled"] += 1
+        self._stats["open"] += 1
+        self._mark_setup(od.get("setup_id"), "filled")
+
+    def _cancel_setup(self, setup_id: Any, reason: str):
+        for st in self.setups:
+            if int(st.get("id", -1)) == int(setup_id or -1) and st.get("state") == "pending":
+                st["state"] = "cancelled"
+                st["cancel_reason"] = reason
+                self._stats["setups_closed"] += 1
+                break
+
+    def _mark_setup(self, setup_id: Any, state: str):
+        for st in self.setups:
+            if int(st.get("id", -1)) == int(setup_id or -1):
+                st["state"] = state
+                break
+
+    # ---------------- helpers ----------------
+    def _htf_side(self) -> Optional[str]:
+        b1 = self.bias.get(self.htf1)
+        b2 = self.bias.get(self.htf2)
+        if b1 in ("buy", "sell") and b1 == b2:
+            return b1
+        return None
+
+    def _reset_cycle(self, reason: str = ""):
+        self.state = "IDLE"
+        self.arm_bar = -10**9
+        self.idm = None
+        self.bos = None
+        self.sweep = None
+        self.ctx = {}
+        self.pending.clear()
+        self._zone_orders.clear()
+        if reason:
+            self._stats["rearm"] += 1
+
+    def _find_idm_against(self, side: str) -> Optional[Dict[str, Any]]:
+        swings = list(self.swing[self.ltf].swings or [])
+        if len(swings) < 2:
+            return None
+
+        if side == "buy":
+            pivots = [s for s in swings if str(s.get("type")) == "low"]
+            if not pivots:
+                return None
+            pivots = sorted(pivots, key=lambda x: int(x.get("bar_idx", -1)))
+            return dict(pivots[-1])
+
+        pivots = [s for s in swings if str(s.get("type")) == "high"]
+        if not pivots:
+            return None
+        pivots = sorted(pivots, key=lambda x: int(x.get("bar_idx", -1)))
+        return dict(pivots[-1])
+
+    def _overlap_idm(self, box: Dict[str, Any]) -> bool:
+        idm = self.idm or {}
+        ip = _f(idm.get("price"))
+        if ip is None:
+            return False
+        top = _f(box.get("top"))
+        bot = _f(box.get("bottom"))
+        if top is None or bot is None:
+            return False
+        return bot <= ip <= top
+
+    def _overlap_recent_ob(self, box: Dict[str, Any]) -> bool:
+        top = _f(box.get("top"))
+        bot = _f(box.get("bottom"))
+        if top is None or bot is None:
+            return False
+        for old in self._ob_recent:
+            ot = _f(old.get("top"))
+            ob = _f(old.get("bottom"))
+            if ot is None or ob is None:
+                continue
+            if _overlap(top, bot, ot, ob):
+                return True
+        return False
+
+    def _ob_touched_now(self, bar: Dict[str, Any], box: Dict[str, Any]) -> bool:
+        high = _f(bar.get("high"))
+        low = _f(bar.get("low"))
+        top = _f(box.get("top"))
+        bot = _f(box.get("bottom"))
+        if None in (high, low, top, bot):
+            return False
+        return not (high < bot or low > top)
+
+    def _rr(self, tr: Dict[str, Any], px: float) -> float:
+        entry = _f(tr.get("entry"))
+        stop = _f(tr.get("stop"))
+        up = bool(tr.get("up"))
+        if entry is None or stop is None:
+            return 0.0
+        risk = abs(entry - stop)
+        if risk <= 1e-12:
+            return 0.0
+        if up:
+            return (float(px) - float(entry)) / risk
+        return (float(entry) - float(px)) / risk
 
 
-def run_cycle(m15, first_read=None):
-    log = DecisionLog()
-    rec = CycleRecorder(log, first_read)
-    DataFeed(m15, htf=("H1", "H4", "D1")).run(rec)
-    return rec, log
+def _f(x: Any) -> Optional[float]:
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except Exception:
+        return None
 
 
-def run_cycle_pipeline(m15):
-    return run_cycle(m15)[1].items
+def _mk_level(kind: str, ev: Dict[str, Any], bar: Dict[str, Any]) -> Dict[str, Any]:
+    px = _f(ev.get("level"))
+    if px is None:
+        px = _f(ev.get("price"))
+    if px is None:
+        px = _f(bar.get("close"))
+    return {
+        "kind": kind,
+        "price": float(px) if px is not None else None,
+        "time": ev.get("time", bar.get("time")),
+        "bar_idx": int(ev.get("bar_idx", -1)),
+        "direction": str(ev.get("direction", "")).lower(),
+        "source": str(ev.get("type", "")).upper(),
+    }
