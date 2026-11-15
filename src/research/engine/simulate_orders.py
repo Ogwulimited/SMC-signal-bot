@@ -23,9 +23,11 @@ Takes the orders the cycle produced and plays them on M15 bars.
   * Spread cost = SPREAD_PRICE[pair] / risk. Above MAX_SPREAD_RISK_RATIO -> skipped_spread.
   * Stop wins a same-bar tie. A bar that OPENS beyond the stop fills the loss
     at that open (loss can exceed 1R).
-  * Break-Even Stop Protection (Stage 2): once price reaches BE_TRIGGER_R (+2.0R)
-    in favor of the trade without hitting the stop or target in that bar, the
-    stop loss moves to the entry price (fill) from the NEXT M15 bar onward.
+  * Break-Even Stop Protection (Stage 2, Option A): on counter-trend pullback
+    sells against a Bull HTF (leg == "pullback", kind == "ob", side == "sell"),
+    once price reaches BE_TRIGGER_R (+2.0R) in favor of the trade without
+    hitting the stop or target in that bar, the stop loss moves to the entry
+    price (fill) from the NEXT M15 bar onward.
   * Order ended by zone / attempt_failed / bias_lost / zone_far_break: the ending
     bar cannot touch. Ended by ceiling_break: the ending bar can touch.
   * Unresolved = open_at_cutoff.
@@ -85,12 +87,13 @@ def _liq_target(o, fill, risk, sell):
 def simulate_order(o, a, spread, pair, mode="static"):
     sell = o["side"] == "sell"
     limit = o.get("fill") == "limit"
+    leg = o.get("leg", "pullback")
     rec = {c: None for c in TRADE_COLS}
     rec["pair"] = pair
     rec["order_id"] = o["id"]
     for k in _COPY:
         rec[k] = o[k]
-    rec["leg"] = o.get("leg", "pullback")
+    rec["leg"] = leg
     rec["target_mode"] = mode
     for k in _ZONE_COPY:
         rec[k] = o.get(k)
@@ -163,41 +166,41 @@ def simulate_order(o, a, spread, pair, mode="static"):
     h = a["h"][f:]
     l = a["l"][f:]
     op = a["o"][f:]
-    be_trig = fill - float(BE_TRIGGER_R) * risk if sell else fill + float(BE_TRIGGER_R) * risk
     if sell:
         stop_hit = h >= stop
         tgt_hit = l <= target
         gap = op >= stop
-        be_hit = l <= be_trig
     else:
         stop_hit = l <= stop
         tgt_hit = h >= target
         gap = op <= stop
-        be_hit = h >= be_trig
     gap[0] = False
     if limit and not open_fill:
-        # Mid-bar edge fill: target and BE trigger cannot be counted in the fill bar.
+        # Mid-bar edge fill: the target cannot be counted in the fill bar.
         tgt_hit[0] = False
-        be_hit[0] = False
     si = int(np.argmax(stop_hit)) if stop_hit.any() else None
     ti = int(np.argmax(tgt_hit)) if tgt_hit.any() else None
-    bi = int(np.argmax(be_hit)) if be_hit.any() else None
 
-    # Check if Break-Even activates before original stop or target is hit.
+    use_be = (leg == "pullback" and sell and o["kind"] == "ob")
+    bi = None
+    if use_be:
+        be_trig = fill - float(BE_TRIGGER_R) * risk
+        be_hit = l <= be_trig
+        if limit and not open_fill:
+            be_hit[0] = False
+        bi = int(np.argmax(be_hit)) if be_hit.any() else None
+
     be_active = (
-        bi is not None
+        use_be
+        and bi is not None
         and (si is None or bi < si)
         and (ti is None or bi < ti)
         and (bi + 1 < len(h))
     )
     if be_active:
         start = bi + 1
-        if sell:
-            be_stop_hit = h[start:] >= fill
-            be_gap = op[start:] >= fill
-        else:
-            be_stop_hit = l[start:] <= fill
-            be_gap = op[start:] <= fill
+        be_stop_hit = h[start:] >= fill
+        be_gap = op[start:] >= fill
         bsi = (start + int(np.argmax(be_stop_hit))) if be_stop_hit.any() else None
         if bsi is not None and (ti is None or bsi <= ti):
             idx = bsi
