@@ -14,6 +14,7 @@ import math
 import pandas as pd
 
 from src import config
+from src.research.engine import fvg as fvg_mod
 from src.research.engine import poi as poi_mod
 from src.research.engine.bias import htf_bias
 from src.research.engine.mapper import MapRecorder
@@ -249,6 +250,13 @@ class CycleRecorder(MapRecorder):
         if self._place(s, "breaker", p, bar, now) is not None and not first:
             self.counts["breaker_late"] += 1
 
+    def _has_fvg(self, t_start, t_end, direction):
+        candles = self.books[self.ltf].window(t_start, t_end)
+        for g in fvg_mod.find_fvgs(candles, self.atr.value_at):
+            if g.direction == direction:
+                return True
+        return False
+
     def _try_ob(self, s, bar, now):
         up = self.ctx["up"]
         box = s["box"]
@@ -270,6 +278,11 @@ class CycleRecorder(MapRecorder):
         if touched:
             self.counts["ob_same_bar"] += 1
             if up:
+                return
+        req_sell_fvg = bool(config.PULLBACK_SELL_REQUIRES_FVG) or bool(getattr(config, "MAJOR_HTF", False))
+        if up and req_sell_fvg:
+            if not self._has_fvg(box.candle_time, now, "down"):
+                self.counts["ob_no_fvg"] += 1
                 return
         self._place(s, "ob", box, bar, now)
 
