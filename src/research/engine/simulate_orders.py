@@ -23,9 +23,12 @@ Takes the orders the cycle produced and plays them on M15 bars.
   * Spread cost = SPREAD_PRICE[pair] / risk. Above MAX_SPREAD_RISK_RATIO -> skipped_spread.
   * Stop wins a same-bar tie. A bar that OPENS beyond the stop fills the loss
     at that open (loss can exceed 1R).
+  * Break-Even Stop Protection (Stage 2): once price reaches BE_TRIGGER_R (+2.0R)
+    in favor of the trade without hitting the stop or target in that bar, the
+    stop loss moves to the entry price (fill) from the NEXT M15 bar onward.
   * Order ended by zone / attempt_failed / bias_lost / zone_far_break: the ending
     bar cannot touch. Ended by ceiling_break: the ending bar can touch.
-  * No management after entry, no time stop. Unresolved = open_at_cutoff.
+  * Unresolved = open_at_cutoff.
   * Net R = gross R - spread_cost_r.
 """
 import numpy as np
@@ -36,6 +39,7 @@ from src import config
 STEP = pd.Timedelta(minutes=15)
 FAR = pd.Timestamp("2262-01-01", tz="UTC")
 LIQ_MIN_R = 3.0
+BE_TRIGGER_R = 2.0
 
 TRADE_COLS = [
     "pair", "order_id", "pullback", "setup", "variant", "kind", "side",
@@ -159,36 +163,73 @@ def simulate_order(o, a, spread, pair, mode="static"):
     h = a["h"][f:]
     l = a["l"][f:]
     op = a["o"][f:]
+    be_trig = fill - float(BE_TRIGGER_R) * risk if sell else fill + float(BE_TRIGGER_R) * risk
     if sell:
         stop_hit = h >= stop
         tgt_hit = l <= target
         gap = op >= stop
+        be_hit = l <= be_trig
     else:
         stop_hit = l <= stop
         tgt_hit = h >= target
         gap = op <= stop
+        be_hit = h >= be_trig
     gap[0] = False
     if limit and not open_fill:
-        # Mid-bar edge fill: the target cannot be counted in the fill bar.
+        # Mid-bar edge fill: target and BE trigger cannot be counted in the fill bar.
         tgt_hit[0] = False
+        be_hit[0] = False
     si = int(np.argmax(stop_hit)) if stop_hit.any() else None
     ti = int(np.argmax(tgt_hit)) if tgt_hit.any() else None
-    if si is None and ti is None:
-        rec["outcome"] = "open_at_cutoff"
-        return rec
+    bi = int(np.argmax(be_hit)) if be_hit.any() else None
 
-    if ti is None or (si is not None and si <= ti):
-        idx = si
-        if gap[si]:
-            ex = float(op[si])
-            out = "stop_gap"
+    # Check if Break-Even activates before original stop or target is hit.
+    be_active = (
+        bi is not None
+        and (si is None or bi < si)
+        and (ti is None or bi < ti)
+        and (bi + 1 < len(h))
+    )
+    if be_active:
+        start = bi + 1
+        if sell:
+            be_stop_hit = h[start:] >= fill
+            be_gap = op[start:] >= fill
         else:
-            ex = stop
-            out = "stop"
+            be_stop_hit = l[start:] <= fill
+            be_gap = op[start:] <= fill
+        bsi = (start + int(np.argmax(be_stop_hit))) if be_stop_hit.any() else None
+        if bsi is not None and (ti is None or bsi <= ti):
+            idx = bsi
+            if be_gap[bsi - start]:
+                ex = float(op[bsi])
+                out = "stop_gap"
+            else:
+                ex = fill
+                out = "stop"
+        elif ti is not None:
+            idx = ti
+            ex = target
+            out = "target"
+        else:
+            rec["outcome"] = "open_at_cutoff"
+            return rec
     else:
-        idx = ti
-        ex = target
-        out = "target"
+        if si is None and ti is None:
+            rec["outcome"] = "open_at_cutoff"
+            return rec
+        if ti is None or (si is not None and si <= ti):
+            idx = si
+            if gap[si]:
+                ex = float(op[si])
+                out = "stop_gap"
+            else:
+                ex = stop
+                out = "stop"
+        else:
+            idx = ti
+            ex = target
+            out = "target"
 
     gross = (fill - ex) / risk if sell else (ex - fill) / risk
     exit_time = a["close_t"][f + idx]
