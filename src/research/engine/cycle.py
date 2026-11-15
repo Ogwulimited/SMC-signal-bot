@@ -98,24 +98,12 @@ class CycleRecorder(MapRecorder):
     def _on_htf_event(self, ev, now):
         if ev["label"] != "BOS":
             return
-        hb = htf_bias(self.bias["D1"], self.bias["H4"])
-        if self.state == PULL:
-            if (self.ctx is not None and hb == self.ctx["bias"]
-                    and ev["direction"] == self.ctx["htf_dir"]):
-                pb_id = self._pb["id"]
-                self._end_pullback(now, "htf_bos_rearm")
-                self.state = ARMED
-                self.counts["htf_bos_rearm"] += 1
-                self.counts["rearm"] += 1
-                self._log("pb_rearm", now, id=pb_id, tf=ev["tf"])
-                return
-            self.counts["htf_bos_ignored_in_pullback"] += 1
-            return
-        if self.state == SCAN:
+        if self.state in (PULL, SCAN):
             self.counts["htf_bos_ignored_in_pullback"] += 1
             return
         if self.state == ARMED:
             return
+        hb = htf_bias(self.bias["D1"], self.bias["H4"])
         for c in _CTX.values():
             if hb == c["bias"] and ev["direction"] == c["htf_dir"]:
                 self.ctx = c
