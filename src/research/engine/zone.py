@@ -363,7 +363,6 @@ class ZoneRecorder(cy.CycleRecorder):
         touched = bar.high >= near if tsell else bar.low <= near
         if touched:
             self.counts["z_ob_same_bar"] += 1
-            return
         self._zplace(s, sc, "ob", box, bar, now)
 
     def _liq(self, entry, ceiling, tsell):
