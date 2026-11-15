@@ -279,11 +279,6 @@ class CycleRecorder(MapRecorder):
             self.counts["ob_same_bar"] += 1
             if up:
                 return
-        req_sell_fvg = bool(config.PULLBACK_SELL_REQUIRES_FVG) or bool(getattr(config, "MAJOR_HTF", False))
-        if up and req_sell_fvg:
-            if not self._has_fvg(box.candle_time, now, "down"):
-                self.counts["ob_no_fvg"] += 1
-                return
         self._place(s, "ob", box, bar, now)
 
     def _place(self, setup, kind, p, bar, now):
@@ -329,6 +324,7 @@ class CycleRecorder(MapRecorder):
     def _pull_step(self, bar, ev, now):
         pb = self._pb
         up = self.ctx["up"]
+        this_bar = bar
         if pb["ceiling"] is not None and _beyond(bar.close, pb["ceiling"], up):
             if pb["locked"]:
                 self._end_pullback(now, "ceiling_break")
@@ -365,9 +361,28 @@ class CycleRecorder(MapRecorder):
         if lab == "CHoCH" and d == self.ctx["choch_dir"]:
             self._new_choch(bar, ev, now)
         elif lab == "BOS" and d == self.ctx["choch_dir"]:
-            self._on_bos(ev, now)
+            self._on_bos_bar(this_bar, ev, now)
         elif lab == "CHoCH" and d == self.ctx["other_dir"]:
             self._on_choch_other(now)
+
+    def _on_bos_bar(self, bar, ev, now):
+        self._on_bos(ev, now)
+        if not bool(config.OB_NO_IDM_REQUIRES_FVG):
+            return
+        pb = self._pb
+        allow_used = bool(config.TRADE_USED_POIS) or bool(getattr(config, "MAJOR_HTF", False))
+        for s in pb["setups"]:
+            if s.get("ob_no_idm_at") == now:
+                box = s["box"]
+                if box.state == "dead":
+                    self.counts["ob_box_dead"] += 1
+                    continue
+                if box.state != "fresh" and not allow_used:
+                    self.counts["ob_box_used"] += 1
+                    continue
+                if self._has_fvg(box.candle_time, now, self.ctx["choch_dir"]):
+                    self.counts["ob_no_idm_fvg"] += 1
+                    self._place(s, "ob", box, bar, now)
 
     def _on_bos(self, ev, now):
         pb = self._pb
@@ -376,6 +391,7 @@ class CycleRecorder(MapRecorder):
                 p = _num(ev["last_opposite_price"])
                 if p is None:
                     s["ob"] = "none"
+                    s["ob_no_idm_at"] = now
                     self.counts["ob_no_idm"] += 1
                 else:
                     s["idm"] = p
