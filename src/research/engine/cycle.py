@@ -269,7 +269,6 @@ class CycleRecorder(MapRecorder):
         touched = bar.high >= near if up else bar.low <= near
         if touched:
             self.counts["ob_same_bar"] += 1
-            return
         self._place(s, "ob", box, bar, now)
 
     def _place(self, setup, kind, p, bar, now):
