@@ -226,11 +226,11 @@ class CycleRecorder(MapRecorder):
                  "br": "none", "ob": "none", "idm": None}
         pb["setups"].append(setup)
         self.counts["setups"] += 1
-        skip_br_sell = bool(getattr(config, "MAJOR_HTF", False)) and self.ctx["side"] == "sell"
+        skip_br = bool(getattr(config, "MAJOR_HTF", False))
         if breaker is None:
             self.counts["no_breaker"] += 1
-        elif skip_br_sell:
-            self.counts["breaker_sell_skipped"] += 1
+        elif skip_br:
+            self.counts["breaker_" + self.ctx["side"] + "_skipped"] += 1
         else:
             setup["br"] = "wait"
             self._try_breaker(setup, bar, now, first=True)
