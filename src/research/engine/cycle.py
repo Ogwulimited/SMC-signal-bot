@@ -59,6 +59,7 @@ class CycleRecorder(MapRecorder):
         self._pb = None
         self._scan = None
         self._leg_ext = None
+        self._cur_bar = None
         self._htf_q = []
         self._h4 = {}
         self._h4_times = []
@@ -93,6 +94,7 @@ class CycleRecorder(MapRecorder):
             self._leg_ext = max(self._leg_ext, val) if up else min(self._leg_ext, val)
 
     def _on_m15(self, bar, ev):
+        self._cur_bar = bar
         now = bar.close_time
         queue, self._htf_q = self._htf_q, []
         for hev in queue:
@@ -354,7 +356,7 @@ class CycleRecorder(MapRecorder):
                 self.counts["rearm"] += 1
                 self._log("pb_rearm", now, id=pb["id"])
                 return
-            self._fail_attempt(bar, now, "ceiling_break")
+            self._fail_attempt(now, "ceiling_break")
             return
         z = self._zone_touched(bar)
         if z is not None:
@@ -385,7 +387,7 @@ class CycleRecorder(MapRecorder):
         elif lab == "BOS" and d == self.ctx["choch_dir"]:
             self._on_bos(ev, now)
         elif lab == "CHoCH" and d == self.ctx["other_dir"]:
-            self._on_choch_other(bar, now)
+            self._on_choch_other(now)
 
     def _on_bos(self, ev, now):
         pb = self._pb
@@ -405,7 +407,7 @@ class CycleRecorder(MapRecorder):
             if a["after"] >= 2:
                 self._lock(now)
 
-    def _on_choch_other(self, bar, now):
+    def _on_choch_other(self, now):
         pb = self._pb
         for s in pb["setups"]:
             if s["ob"] == "wait_bos":
@@ -414,7 +416,7 @@ class CycleRecorder(MapRecorder):
         a = pb["attempt"]
         if not pb["locked"] and a is not None:
             if a["after"] == 0:
-                self._fail_attempt(bar, now, "choch_against")
+                self._fail_attempt(now, "choch_against")
             else:
                 self._lock(now)
 
@@ -424,7 +426,7 @@ class CycleRecorder(MapRecorder):
         self.counts["ceiling_locked"] += 1
         self._log("pb_lock", now, id=pb["id"], ceiling=pb["ceiling"])
 
-    def _fail_attempt(self, bar, now, why):
+    def _fail_attempt(self, now, why):
         pb = self._pb
         a = pb["attempt"]
         ids = set()
@@ -441,8 +443,9 @@ class CycleRecorder(MapRecorder):
         pb["ceiling"] = None
         pb["attempt"] = None
         pb["locked"] = False
-        up = self.ctx["up"]
-        self._leg_ext = bar.high if up else bar.low
+        if self._cur_bar is not None and self.ctx is not None:
+            up = self.ctx["up"]
+            self._leg_ext = self._cur_bar.high if up else self._cur_bar.low
         self.counts["attempt_failed_" + why] += 1
         self._log("pb_fail", now, id=pb["id"], why=why)
 
