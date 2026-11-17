@@ -243,10 +243,10 @@ class CycleRecorder(MapRecorder):
             setup["ob"] = "wait_bos"
 
     def _unicorn_fvg(self, s, p, now):
-        t0 = s["box"].candle_time if s["box"] is not None else p.candle_time
-        t_start = t0 - pd.Timedelta(minutes=15)
+        t_start = p.dead_time - pd.Timedelta(minutes=45)
         candles = self.books[self.ltf].window(t_start, now)
-        fvgs = fvg_mod.find_fvgs(candles, self.atr.value_at)
+        fvgs = [f for f in fvg_mod.find_fvgs(candles, self.atr.value_at)
+                if f.time >= p.dead_time]
         d = "down" if self.ctx["up"] else "up"
         return fvg_mod.pick_for_breaker(fvgs, d, p.low, p.high)
 
@@ -254,7 +254,8 @@ class CycleRecorder(MapRecorder):
         p = s["breaker"]
         if p.state != "dead":
             return
-        if p.dead_time > s["choch_time"] + pd.Timedelta(hours=1):
+        if (p.dead_time - p.candle_time > pd.Timedelta(hours=2)
+                or p.dead_time > s["choch_time"] + pd.Timedelta(hours=1)):
             s["br"] = "none"
             self.counts["breaker_slow_skipped"] += 1
             return
@@ -272,7 +273,7 @@ class CycleRecorder(MapRecorder):
                 return
         fvg = self._unicorn_fvg(s, p, now)
         if fvg is None:
-            if now >= p.dead_time + pd.Timedelta(minutes=30):
+            if now >= p.dead_time + pd.Timedelta(minutes=15):
                 s["br"] = "none"
                 self.counts["breaker_no_unicorn_fvg"] += 1
             return
@@ -335,7 +336,7 @@ class CycleRecorder(MapRecorder):
                  "ceiling": pb["ceiling"], "ceiling_locked": pb["locked"],
                  "breaker_id": breaker.id if breaker is not None else None,
                  "anchor_id": None, "end_time": None, "end_reason": None,
-                 "fill": "limit" if kind == "ob" else "next_open"}
+                 "fill": "limit"}
         self.orders.append(order)
         pb["orders"].append(order)
         self.counts["orders_" + kind] += 1
