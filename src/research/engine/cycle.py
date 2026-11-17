@@ -84,7 +84,7 @@ class CycleRecorder(MapRecorder):
         self.log.add(kind, now, now, **data)
 
     def _update_leg_ext(self, bar):
-        if self.ctx is None:
+        if self.ctx is None or bar is None:
             return
         up = self.ctx["up"]
         val = bar.high if up else bar.low
@@ -280,6 +280,26 @@ class CycleRecorder(MapRecorder):
                 return True
         return False
 
+    def _has_zone_room(self, entry, stop):
+        pb = self._pb
+        if pb is None or not pb["zones"]:
+            return True
+        up = self.ctx["up"]
+        risk = abs(entry - stop)
+        rr = float(config.RR_STATIC)
+        target = entry - rr * risk if up else entry + rr * risk
+        ok = ("fresh", "used") if config.TRADE_USED_POIS else ("fresh",)
+        for z in pb["zones"]:
+            if z["poi"].state not in ok:
+                continue
+            if up:
+                if z["high"] < entry and target < z["high"]:
+                    return False
+            else:
+                if z["low"] > entry and target > z["low"]:
+                    return False
+        return True
+
     def _try_ob(self, s, bar, now):
         up = self.ctx["up"]
         box = s["box"]
@@ -324,6 +344,9 @@ class CycleRecorder(MapRecorder):
             if abs(entry - stop) < min_risk:
                 stop = entry + min_risk if up else entry - min_risk
                 self.counts[kind + "_min_risk_padded"] += 1
+        if not self._has_zone_room(entry, stop):
+            self.counts[kind + "_no_zone_room"] += 1
+            return None
         pb = self._pb
         self._n_order += 1
         breaker = setup["breaker"]
@@ -443,9 +466,7 @@ class CycleRecorder(MapRecorder):
         pb["ceiling"] = None
         pb["attempt"] = None
         pb["locked"] = False
-        if self._cur_bar is not None and self.ctx is not None:
-            up = self.ctx["up"]
-            self._leg_ext = self._cur_bar.high if up else self._cur_bar.low
+        self._update_leg_ext(self._cur_bar)
         self.counts["attempt_failed_" + why] += 1
         self._log("pb_fail", now, id=pb["id"], why=why)
 
