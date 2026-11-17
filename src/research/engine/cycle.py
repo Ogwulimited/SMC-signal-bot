@@ -254,7 +254,7 @@ class CycleRecorder(MapRecorder):
         p = s["breaker"]
         if p.state != "dead":
             return
-        if (p.dead_time - p.candle_time > pd.Timedelta(hours=2)
+        if (p.dead_time - p.candle_time > pd.Timedelta(hours=6)
                 or p.dead_time > s["choch_time"] + pd.Timedelta(hours=1)):
             s["br"] = "none"
             self.counts["breaker_slow_skipped"] += 1
