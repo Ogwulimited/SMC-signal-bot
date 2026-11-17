@@ -1,8 +1,11 @@
 from bisect import bisect_left, bisect_right, insort
 from collections import deque
 
+import pandas as pd
+
 from src import config
 from src.research.engine import cycle as cy
+from src.research.engine import fvg as fvg_mod
 from src.research.engine.bias import htf_bias
 
 SETTINGS = {"enabled": False, "rules": False, "pip": 0.0001, "spread": 0.0}
@@ -34,6 +37,7 @@ class ZoneRecorder(cy.CycleRecorder):
         self._sw_hi = []
         self._sw_lo = []
         self._spent = set()
+        self._spent_br = set()
         self._watch = []
         self._prev15 = None
         if _rules():
@@ -83,11 +87,18 @@ class ZoneRecorder(cy.CycleRecorder):
         keep = []
         now = bar.close_time
         spent_sell_now = set()
+        spent_br_sell_now = set()
         for w in self._watch:
             o = w["o"]
             zid = o["zone_id"]
             sell = o["side"] == "sell"
-            if sell and (zid in self._spent or zid in spent_sell_now):
+            is_br = o["kind"] == "breaker"
+            if sell and not is_br and (zid in self._spent or zid in spent_sell_now):
+                if o["end_time"] is None:
+                    o["end_time"] = now
+                    o["end_reason"] = "zone_spent"
+                continue
+            if sell and is_br and (zid in self._spent_br or zid in spent_br_sell_now):
                 if o["end_time"] is None:
                     o["end_time"] = now
                     o["end_reason"] = "zone_spent"
@@ -104,17 +115,32 @@ class ZoneRecorder(cy.CycleRecorder):
             if float(SETTINGS["spread"]) / risk > float(config.MAX_SPREAD_RISK_RATIO):
                 self.counts["z_fill_skipped_spread"] += 1
                 continue
-            if zid not in self._spent:
-                self._spent.add(zid)
-                self.counts["z_zone_spent"] += 1
-                self._log("z_spent", now, zone=zid, order=o["id"])
-            if sell:
-                spent_sell_now.add(zid)
-        if spent_sell_now:
+            if is_br:
+                if zid not in self._spent_br:
+                    self._spent_br.add(zid)
+                    self.counts["z_zone_br_spent"] += 1
+                if sell:
+                    spent_br_sell_now.add(zid)
+            else:
+                if zid not in self._spent:
+                    self._spent.add(zid)
+                    self.counts["z_zone_spent"] += 1
+                    self._log("z_spent", now, zone=zid, order=o["id"])
+                if sell:
+                    spent_sell_now.add(zid)
+        if spent_sell_now or spent_br_sell_now:
             still = []
             for w in keep:
                 o = w["o"]
-                if o["side"] == "sell" and o["zone_id"] in spent_sell_now:
+                is_br = o["kind"] == "breaker"
+                if (o["side"] == "sell" and not is_br
+                        and o["zone_id"] in spent_sell_now):
+                    if o["end_time"] is None:
+                        o["end_time"] = now
+                        o["end_reason"] = "zone_spent"
+                    continue
+                if (o["side"] == "sell" and is_br
+                        and o["zone_id"] in spent_br_sell_now):
                     if o["end_time"] is None:
                         o["end_time"] = now
                         o["end_reason"] = "zone_spent"
@@ -321,26 +347,59 @@ class ZoneRecorder(cy.CycleRecorder):
         sc["zsetups"].append(s)
         self.counts["z_setups"] += 1
         self._log("z_setup", now, setup=s["id"], choch_level=float(s["choch_level"] or 0.0))
-        skip_br_buy = _rules() and self.ltf == "M15" and self.ctx["up"]
-        skip_br_sell = _rules() and (not self.ctx["up"])
         if breaker is None:
             self.counts["z_no_breaker"] += 1
-        elif skip_br_buy:
-            self.counts["z_breaker_buy_skipped"] += 1
-        elif skip_br_sell:
-            self.counts["z_breaker_sell_skipped"] += 1
         else:
             s["br"] = "wait"
             self._z_try_breaker(s, sc, bar, now)
+            if s["br"] == "wait":
+                self.counts["z_breaker_wait"] += 1
         if box is None:
             self.counts["z_no_choch_box"] += 1
         else:
             s["ob"] = "wait_bos"
 
+    def _z_unicorn_fvg(self, p, now):
+        t_start = p.dead_time - pd.Timedelta(minutes=45)
+        candles = self.books[self.ltf].window(t_start, now)
+        fvgs = [f for f in fvg_mod.find_fvgs(candles, self.atr.value_at)
+                if f.time >= p.dead_time]
+        tsell = not self.ctx["up"]
+        d = "down" if tsell else "up"
+        return fvg_mod.pick_for_breaker(fvgs, d, p.low, p.high)
+
     def _z_try_breaker(self, s, sc, bar, now):
         p = s["breaker"]
         if p.state != "dead":
             return
+        if _rules():
+            tsell = not self.ctx["up"]
+            if tsell and sc["zone"]["id"] in self._spent_br:
+                s["br"] = "none"
+                self.counts["z_breaker_zone_spent"] += 1
+                return
+            if (p.dead_time - p.candle_time > pd.Timedelta(hours=4)
+                    or p.dead_time > s["choch_time"] + pd.Timedelta(hours=1)):
+                s["br"] = "none"
+                self.counts["z_breaker_slow_skipped"] += 1
+                return
+            if not (6 <= now.hour < 20):
+                s["br"] = "none"
+                self.counts["z_breaker_asian_skipped"] += 1
+                return
+            near = p.low if tsell else p.high
+            if now > p.dead_time:
+                touched = bar.high >= near if tsell else bar.low <= near
+                if touched:
+                    s["br"] = "none"
+                    self.counts["z_breaker_retrace_before_fvg"] += 1
+                    return
+            fvg = self._z_unicorn_fvg(p, now)
+            if fvg is None:
+                if now >= p.dead_time + pd.Timedelta(minutes=15):
+                    s["br"] = "none"
+                    self.counts["z_breaker_no_unicorn_fvg"] += 1
+                return
         s["br"] = "none"
         self._zplace(s, sc, "breaker", p, bar, now)
 
@@ -392,7 +451,7 @@ class ZoneRecorder(cy.CycleRecorder):
             return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
         stop = edge + buf if tsell else edge - buf
-        if self._spread > 0.0:
+        if self._spread > 0.0 and kind == "ob":
             min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
             if abs(entry - stop) < min_risk:
                 stop = entry + min_risk if tsell else entry - min_risk
