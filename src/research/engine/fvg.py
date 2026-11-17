@@ -44,15 +44,12 @@ def find_fvgs(candles, atr_at, min_atr=None):
 
 
 def pick_for_breaker(fvgs, direction, box_low, box_high):
-    """The gap used by the FVG variant of a breaker entry.
+    """The gap used by the ICT Unicorn (Breaker + overlapping FVG) entry.
 
     direction is the trade direction: "up" = breaker buy, "down" = breaker sell.
-    Breaker buy: a bullish gap lying wholly at or below the box top; the one
-    nearest the box is chosen. Breaker sell: a bearish gap wholly at or above
-    the box bottom; the one nearest the box is chosen. None if there is none.
+    The gap must directly overlap [box_low, box_high]. If multiple gaps overlap
+    the breaker box, the most recent one is chosen. None if there is none.
     """
-    if direction == "up":
-        ok = [f for f in fvgs if f.direction == "up" and f.high <= box_high]
-        return max(ok, key=lambda f: f.high) if ok else None
-    ok = [f for f in fvgs if f.direction == "down" and f.low >= box_low]
-    return min(ok, key=lambda f: f.low) if ok else None
+    ok = [f for f in fvgs
+          if f.direction == direction and f.low <= box_high and f.high >= box_low]
+    return ok[-1] if ok else None
