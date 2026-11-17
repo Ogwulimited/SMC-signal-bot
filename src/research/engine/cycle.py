@@ -58,8 +58,6 @@ class CycleRecorder(MapRecorder):
         self.ctx = None
         self._pb = None
         self._scan = None
-        self._leg_ext = None
-        self._cur_bar = None
         self._htf_q = []
         self._h4 = {}
         self._h4_times = []
@@ -83,18 +81,7 @@ class CycleRecorder(MapRecorder):
     def _log(self, kind, now, **data):
         self.log.add(kind, now, now, **data)
 
-    def _update_leg_ext(self, bar):
-        if self.ctx is None or bar is None:
-            return
-        up = self.ctx["up"]
-        val = bar.high if up else bar.low
-        if self._leg_ext is None:
-            self._leg_ext = val
-        else:
-            self._leg_ext = max(self._leg_ext, val) if up else min(self._leg_ext, val)
-
     def _on_m15(self, bar, ev):
-        self._cur_bar = bar
         now = bar.close_time
         queue, self._htf_q = self._htf_q, []
         for hev in queue:
@@ -103,11 +90,8 @@ class CycleRecorder(MapRecorder):
         if ev is not None and ev["label"] == "CHoCH" and self.state == IDLE:
             self.counts["choch_idle"] += 1
         if self.state == ARMED:
-            self._update_leg_ext(bar)
             self._armed_step(bar, ev, now)
         elif self.state == PULL:
-            if self._pb is not None and self._pb["ceiling"] is None:
-                self._update_leg_ext(bar)
             self._pull_step(bar, ev, now)
         elif self.state == SCAN:
             self._scan_step(bar, now)
@@ -125,7 +109,6 @@ class CycleRecorder(MapRecorder):
             if hb == c["bias"] and ev["direction"] == c["htf_dir"]:
                 self.ctx = c
                 self.state = ARMED
-                self._leg_ext = None
                 self.counts["htf_arm"] += 1
                 self._log("pb_armed", now, tf=ev["tf"], side=c["side"])
                 return
@@ -139,7 +122,6 @@ class CycleRecorder(MapRecorder):
         if self.state == PULL:
             self._end_pullback(now, "bias_lost")
         self._scan = None
-        self._leg_ext = None
         self.state = IDLE
         self.counts["disarmed_bias"] += 1
         self._log("pb_disarm", now, reason="bias_lost")
@@ -225,17 +207,11 @@ class CycleRecorder(MapRecorder):
 
     def _new_choch(self, bar, ev, now):
         pb = self._pb
-        box = self._choch_poi(ev)
         if pb["ceiling"] is None:
             c = _num(ev["last_opposite_price"])
             if c is None:
                 self.counts["no_ceiling"] += 1
                 return
-            up = self.ctx["up"]
-            if self._leg_ext is not None:
-                c = max(c, self._leg_ext) if up else min(c, self._leg_ext)
-            if box is not None:
-                c = max(c, box.high) if up else min(c, box.low)
             pb["ceiling"] = c
             pb["locked"] = False
             pb["attempt"] = {"choch_time": ev["time"], "after": 0}
@@ -243,6 +219,7 @@ class CycleRecorder(MapRecorder):
         else:
             self.counts["choch_in_pullback"] += 1
         self._n_setup += 1
+        box = self._choch_poi(ev)
         breaker = self.books[self.ltf].choch_breaker.get(ev["time"])
         setup = {"id": f"{pb['id']}-S{self._n_setup}", "choch_time": ev["time"],
                  "box": box, "breaker": breaker,
@@ -250,7 +227,7 @@ class CycleRecorder(MapRecorder):
                  "br": "none", "ob": "none", "idm": None}
         pb["setups"].append(setup)
         self.counts["setups"] += 1
-        skip_br = bool(getattr(config, "MAJOR_HTF", False))
+        skip_br = self.ctx["up"]
         if breaker is None:
             self.counts["no_breaker"] += 1
         elif skip_br:
@@ -265,40 +242,43 @@ class CycleRecorder(MapRecorder):
         else:
             setup["ob"] = "wait_bos"
 
+    def _unicorn_fvg(self, s, p, now):
+        t0 = s["box"].candle_time if s["box"] is not None else p.candle_time
+        t_start = t0 - pd.Timedelta(minutes=15)
+        candles = self.books[self.ltf].window(t_start, now)
+        fvgs = fvg_mod.find_fvgs(candles, self.atr.value_at)
+        d = "down" if self.ctx["up"] else "up"
+        return fvg_mod.pick_for_breaker(fvgs, d, p.low, p.high)
+
     def _try_breaker(self, s, bar, now, first):
         p = s["breaker"]
         if p.state != "dead":
             return
+        if p.dead_time > s["choch_time"] + pd.Timedelta(hours=1):
+            s["br"] = "none"
+            self.counts["breaker_slow_skipped"] += 1
+            return
+        if not (6 <= now.hour < 20):
+            s["br"] = "none"
+            self.counts["breaker_asian_skipped"] += 1
+            return
+        up = self.ctx["up"]
+        near = p.low if up else p.high
+        if now > p.dead_time:
+            touched = bar.high >= near if up else bar.low <= near
+            if touched:
+                s["br"] = "none"
+                self.counts["breaker_retrace_before_fvg"] += 1
+                return
+        fvg = self._unicorn_fvg(s, p, now)
+        if fvg is None:
+            if now >= p.dead_time + pd.Timedelta(minutes=30):
+                s["br"] = "none"
+                self.counts["breaker_no_unicorn_fvg"] += 1
+            return
         s["br"] = "none"
         if self._place(s, "breaker", p, bar, now) is not None and not first:
             self.counts["breaker_late"] += 1
-
-    def _has_fvg(self, t_start, t_end, direction):
-        candles = self.books[self.ltf].window(t_start, t_end)
-        for g in fvg_mod.find_fvgs(candles, self.atr.value_at):
-            if g.direction == direction:
-                return True
-        return False
-
-    def _has_zone_room(self, entry, stop):
-        pb = self._pb
-        if pb is None or not pb["zones"]:
-            return True
-        up = self.ctx["up"]
-        risk = abs(entry - stop)
-        rr = float(config.RR_STATIC)
-        target = entry - rr * risk if up else entry + rr * risk
-        ok = ("fresh", "used") if config.TRADE_USED_POIS else ("fresh",)
-        for z in pb["zones"]:
-            if z["poi"].state not in ok:
-                continue
-            if up:
-                if z["high"] < entry and target < z["high"]:
-                    return False
-            else:
-                if z["low"] > entry and target > z["low"]:
-                    return False
-        return True
 
     def _try_ob(self, s, bar, now):
         up = self.ctx["up"]
@@ -344,9 +324,6 @@ class CycleRecorder(MapRecorder):
             if abs(entry - stop) < min_risk:
                 stop = entry + min_risk if up else entry - min_risk
                 self.counts[kind + "_min_risk_padded"] += 1
-        if not self._has_zone_room(entry, stop):
-            self.counts[kind + "_no_zone_room"] += 1
-            return None
         pb = self._pb
         self._n_order += 1
         breaker = setup["breaker"]
@@ -375,7 +352,6 @@ class CycleRecorder(MapRecorder):
                 self._end_pullback(now, "ceiling_break")
                 self.counts["end_ceiling_break"] += 1
                 self.state = ARMED
-                self._leg_ext = bar.high if up else bar.low
                 self.counts["rearm"] += 1
                 self._log("pb_rearm", now, id=pb["id"])
                 return
@@ -388,7 +364,6 @@ class CycleRecorder(MapRecorder):
             self.counts["end_zone"] += 1
             if ceiling is None:
                 self.state = IDLE
-                self._leg_ext = None
                 self.counts["zone_no_ceiling"] += 1
             else:
                 self.state = SCAN
@@ -466,7 +441,6 @@ class CycleRecorder(MapRecorder):
         pb["ceiling"] = None
         pb["attempt"] = None
         pb["locked"] = False
-        self._update_leg_ext(self._cur_bar)
         self.counts["attempt_failed_" + why] += 1
         self._log("pb_fail", now, id=pb["id"], why=why)
 
@@ -505,7 +479,6 @@ class CycleRecorder(MapRecorder):
             self.counts["scan_ceiling_break"] += 1
             self.counts["rearm"] += 1
             self.state = ARMED
-            self._leg_ext = bar.high if up else bar.low
             self._scan = None
             self._log("pb_scan_end", now, reason="ceiling_break")
             return
@@ -513,7 +486,6 @@ class CycleRecorder(MapRecorder):
         if _beyond(bar.close, far, not up):
             self.counts["scan_far_break"] += 1
             self.state = IDLE
-            self._leg_ext = None
             self._scan = None
             self._log("pb_scan_end", now, reason="far_edge_break")
 
