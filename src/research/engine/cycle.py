@@ -293,7 +293,9 @@ class CycleRecorder(MapRecorder):
         if not swept:
             return
         s["ob"] = "none"
-        allow_used = bool(config.TRADE_USED_POIS) or bool(getattr(config, "MAJOR_HTF", False))
+        allow_used = bool(config.TRADE_USED_POIS) or (
+            bool(getattr(config, "MAJOR_HTF", False)) and not up
+        )
         if box.state != "fresh" and not allow_used:
             self.counts["ob_box_used"] += 1
             return
