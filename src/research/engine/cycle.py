@@ -59,6 +59,7 @@ class CycleRecorder(MapRecorder):
         self._pb = None
         self._scan = None
         self._rearm_after_scan = False
+        self._after_far_break = False
         self._htf_q = []
         self._h4 = {}
         self._h4_times = []
@@ -106,16 +107,20 @@ class CycleRecorder(MapRecorder):
     def _on_htf_event(self, ev, now):
         if ev["label"] != "BOS":
             return
+        hb = htf_bias(self.bias["D1"], self.bias["H4"])
+        if (self.ctx is not None and hb == self.ctx["bias"]
+                and ev["direction"] == self.ctx["htf_dir"]):
+            self._after_far_break = False
         if self.state in (PULL, SCAN):
             self.counts["htf_bos_ignored_in_pullback"] += 1
             return
         if self.state == ARMED:
             return
-        hb = htf_bias(self.bias["D1"], self.bias["H4"])
         for c in _CTX.values():
             if hb == c["bias"] and ev["direction"] == c["htf_dir"]:
                 self.ctx = c
                 self.state = ARMED
+                self._after_far_break = False
                 self.counts["htf_arm"] += 1
                 self._log("pb_armed", now, tf=ev["tf"], side=c["side"])
                 return
@@ -130,6 +135,7 @@ class CycleRecorder(MapRecorder):
             self._end_pullback(now, "bias_lost")
         self._scan = None
         self._rearm_after_scan = False
+        self._after_far_break = False
         self.state = IDLE
         self.counts["disarmed_bias"] += 1
         self._log("pb_disarm", now, reason="bias_lost")
@@ -314,6 +320,9 @@ class CycleRecorder(MapRecorder):
         self._place(s, "ob", box, bar, now)
 
     def _place(self, setup, kind, p, bar, now):
+        if self._after_far_break:
+            self.counts["pb_deep_skipped"] += 1
+            return None
         up = self.ctx["up"]
         atr = self.atr.value_at(p.candle_time)
         if atr is None:
@@ -497,6 +506,7 @@ class CycleRecorder(MapRecorder):
             self.counts["scan_far_break"] += 1
             self.state = IDLE
             self._scan = None
+            self._after_far_break = True
             self._rearm_after_scan = True
             self._log("pb_scan_end", now, reason="far_edge_break")
 
