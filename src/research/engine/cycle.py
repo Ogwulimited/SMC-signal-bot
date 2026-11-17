@@ -58,6 +58,7 @@ class CycleRecorder(MapRecorder):
         self.ctx = None
         self._pb = None
         self._scan = None
+        self._rearm_after_scan = False
         self._htf_q = []
         self._h4 = {}
         self._h4_times = []
@@ -95,6 +96,12 @@ class CycleRecorder(MapRecorder):
             self._pull_step(bar, ev, now)
         elif self.state == SCAN:
             self._scan_step(bar, now)
+            if self._rearm_after_scan:
+                self._rearm_after_scan = False
+                self.state = ARMED
+                self.counts["rearm"] += 1
+                self.counts["rearm_far_break"] += 1
+                self._log("pb_rearm", now, reason="far_edge_break")
 
     def _on_htf_event(self, ev, now):
         if ev["label"] != "BOS":
@@ -122,6 +129,7 @@ class CycleRecorder(MapRecorder):
         if self.state == PULL:
             self._end_pullback(now, "bias_lost")
         self._scan = None
+        self._rearm_after_scan = False
         self.state = IDLE
         self.counts["disarmed_bias"] += 1
         self._log("pb_disarm", now, reason="bias_lost")
@@ -293,9 +301,7 @@ class CycleRecorder(MapRecorder):
         if not swept:
             return
         s["ob"] = "none"
-        allow_used = bool(config.TRADE_USED_POIS) or (
-            bool(getattr(config, "MAJOR_HTF", False)) and not up
-        )
+        allow_used = bool(config.TRADE_USED_POIS) or bool(getattr(config, "MAJOR_HTF", False))
         if box.state != "fresh" and not allow_used:
             self.counts["ob_box_used"] += 1
             return
@@ -487,9 +493,11 @@ class CycleRecorder(MapRecorder):
             return
         far = sc["zone"]["low"] if up else sc["zone"]["high"]
         if _beyond(bar.close, far, not up):
+            sc["zone"]["poi"].state = "dead"
             self.counts["scan_far_break"] += 1
             self.state = IDLE
             self._scan = None
+            self._rearm_after_scan = True
             self._log("pb_scan_end", now, reason="far_edge_break")
 
     def funnel(self):
