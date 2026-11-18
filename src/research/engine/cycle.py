@@ -307,9 +307,6 @@ class CycleRecorder(MapRecorder):
         if not swept:
             return
         s["ob"] = "none"
-        if up and not (6 <= now.hour < 20):
-            self.counts["ob_sell_asian_skipped"] += 1
-            return
         allow_used = bool(config.TRADE_USED_POIS) or bool(getattr(config, "MAJOR_HTF", False))
         if box.state != "fresh" and not allow_used:
             self.counts["ob_box_used"] += 1
