@@ -26,8 +26,8 @@ Takes the orders the cycle produced and plays them on M15 bars.
   * Break-Even Stop Protection (Stage 2, Option A): on counter-trend pullback
     sells against a Bull HTF (leg == "pullback", kind == "ob", side == "sell"),
     once price reaches BE_TRIGGER_R (+2.0R) in favor of the trade without
-    hitting the stop or target in that bar, the stop loss moves to the entry
-    price (fill) from the NEXT M15 bar onward.
+    hitting the stop or target in that bar, the stop loss moves to lock in
+    spread plus BE_LOCK_NET_R (+0.10R net) from the NEXT M15 bar onward.
   * Order ended by zone / attempt_failed / bias_lost / zone_far_break: the ending
     bar cannot touch. Ended by ceiling_break: the ending bar can touch.
   * Unresolved = open_at_cutoff.
@@ -42,6 +42,7 @@ STEP = pd.Timedelta(minutes=15)
 FAR = pd.Timestamp("2262-01-01", tz="UTC")
 LIQ_MIN_R = 3.0
 BE_TRIGGER_R = 2.0
+BE_LOCK_NET_R = 0.10
 
 TRADE_COLS = [
     "pair", "order_id", "pullback", "setup", "variant", "kind", "side",
@@ -199,8 +200,9 @@ def simulate_order(o, a, spread, pair, mode="static"):
     )
     if be_active:
         start = bi + 1
-        be_stop_hit = h[start:] >= fill
-        be_gap = op[start:] >= fill
+        be_stop = fill - float(spread) - float(BE_LOCK_NET_R) * risk
+        be_stop_hit = h[start:] >= be_stop
+        be_gap = op[start:] >= be_stop
         bsi = (start + int(np.argmax(be_stop_hit))) if be_stop_hit.any() else None
         if bsi is not None and (ti is None or bsi <= ti):
             idx = bsi
@@ -208,7 +210,7 @@ def simulate_order(o, a, spread, pair, mode="static"):
                 ex = float(op[bsi])
                 out = "stop_gap"
             else:
-                ex = fill
+                ex = be_stop
                 out = "stop"
         elif ti is not None:
             idx = ti
