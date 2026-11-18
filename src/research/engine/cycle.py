@@ -307,6 +307,9 @@ class CycleRecorder(MapRecorder):
         if not swept:
             return
         s["ob"] = "none"
+        if up and not (6 <= now.hour < 20):
+            self.counts["ob_sell_asian_skipped"] += 1
+            return
         allow_used = bool(config.TRADE_USED_POIS) or bool(getattr(config, "MAJOR_HTF", False))
         if box.state != "fresh" and not allow_used:
             self.counts["ob_box_used"] += 1
@@ -336,9 +339,8 @@ class CycleRecorder(MapRecorder):
             return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
         stop = edge + buf if up else edge - buf
-        # Stage 1A + ATR qualification: pad Pullback OB SELL only when the OB candle
-        # has a genuine range (>= 0.50 * ATR), avoiding micro-doji stop distortion.
-        if self._spread > 0.0 and kind == "ob" and up and (p.high - p.low) >= 0.5 * float(atr):
+        # Stage 1A: min_risk stop padding only on Pullback OB SELL
+        if self._spread > 0.0 and kind == "ob" and up:
             min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
             if abs(entry - stop) < min_risk:
                 stop = entry + min_risk if up else entry - min_risk
