@@ -336,6 +336,13 @@ class CycleRecorder(MapRecorder):
             return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
         stop = edge + buf if up else edge - buf
+        # Stage 1A + ATR qualification: pad Pullback OB SELL only when the OB candle
+        # has a genuine range (>= 0.50 * ATR), avoiding micro-doji stop distortion.
+        if self._spread > 0.0 and kind == "ob" and up and (p.high - p.low) >= 0.5 * float(atr):
+            min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
+            if abs(entry - stop) < min_risk:
+                stop = entry + min_risk if up else entry - min_risk
+                self.counts[kind + "_min_risk_padded"] += 1
         pb = self._pb
         self._n_order += 1
         breaker = setup["breaker"]
