@@ -7,9 +7,6 @@ from src.research.engine.bias import htf_bias
 
 SETTINGS = {"enabled": False, "rules": False, "pip": 0.0001, "spread": 0.0}
 LIQ_CAP = 100
-# Run 39: zone orders rest as limit orders and fill at the box edge inside the
-# touch bar (False = Run 34 behaviour, fill at the next bar open).
-ZONE_LIMIT_FILL = True
 
 
 def _on():
@@ -98,17 +95,7 @@ class ZoneRecorder(cy.CycleRecorder):
             if w["st"] != "touched":
                 keep.append(w)
                 continue
-            if o.get("fill") == "limit":
-                # Resting limit: filled in the touch bar. If that bar opened at
-                # or past the entry the fill is at the open, else at the entry.
-                entry = float(o["entry"])
-                t_open = float(w.get("t_open", entry))
-                if sell:
-                    fill = t_open if t_open >= entry else entry
-                else:
-                    fill = t_open if t_open <= entry else entry
-            else:
-                fill = float(bar.open)
+            fill = float(bar.open)
             stop = float(o["stop"])
             if (sell and fill >= stop) or ((not sell) and fill <= stop):
                 self.counts["z_fill_beyond_stop"] += 1
@@ -182,7 +169,6 @@ class ZoneRecorder(cy.CycleRecorder):
             touched = float(p.high) >= entry if sell else float(p.low) <= entry
             if touched:
                 w["st"] = "touched"
-                w["t_open"] = float(p.open)
                 keep.append(w)
             elif end is None or pclose < end:
                 keep.append(w)
@@ -427,8 +413,6 @@ class ZoneRecorder(cy.CycleRecorder):
                  "zone_tf": z["tf"], "zone_low": float(z["low"]),
                  "zone_high": float(z["high"]), "choch_time": s["choch_time"],
                  "choch_level": s["choch_level"], "zone_id": z["id"]}
-        if ZONE_LIMIT_FILL and _rules():
-            order["fill"] = "limit"
         sc["zorders"].append(order)
         self.zorders.append(order)
         if _rules():
