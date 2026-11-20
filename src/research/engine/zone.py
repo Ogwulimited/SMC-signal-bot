@@ -82,23 +82,20 @@ class ZoneRecorder(cy.CycleRecorder):
             return
         keep = []
         now = bar.close_time
-        spent_sell_now = {}
+        spent_sell_now = set()
         for w in self._watch:
             o = w["o"]
             zid = o["zone_id"]
             sell = o["side"] == "sell"
-            limit = o.get("fill") == "limit"
-            tbar = w.get("touch_bar", bar)
-            fill_time = tbar.close_time if limit else now
             if sell and (zid in self._spent or zid in spent_sell_now):
-                if o["end_time"] is None and o.get("filled_time") is None:
-                    o["end_time"] = spent_sell_now.get(zid, fill_time)
+                if o["end_time"] is None:
+                    o["end_time"] = now
                     o["end_reason"] = "zone_spent"
                 continue
             if w["st"] != "touched":
                 keep.append(w)
                 continue
-            fill = float(o["entry"]) if limit else float(bar.open)
+            fill = float(bar.open)
             stop = float(o["stop"])
             if (sell and fill >= stop) or ((not sell) and fill <= stop):
                 self.counts["z_fill_beyond_stop"] += 1
@@ -107,21 +104,19 @@ class ZoneRecorder(cy.CycleRecorder):
             if float(SETTINGS["spread"]) / risk > float(config.MAX_SPREAD_RISK_RATIO):
                 self.counts["z_fill_skipped_spread"] += 1
                 continue
-            o["filled_time"] = fill_time
             if zid not in self._spent:
                 self._spent.add(zid)
                 self.counts["z_zone_spent"] += 1
                 self._log("z_spent", now, zone=zid, order=o["id"])
-            if sell and zid not in spent_sell_now:
-                spent_sell_now[zid] = fill_time
+            if sell:
+                spent_sell_now.add(zid)
         if spent_sell_now:
             still = []
             for w in keep:
                 o = w["o"]
-                zid = o["zone_id"]
-                if o["side"] == "sell" and zid in spent_sell_now:
-                    if o["end_time"] is None and o.get("filled_time") is None:
-                        o["end_time"] = spent_sell_now[zid]
+                if o["side"] == "sell" and o["zone_id"] in spent_sell_now:
+                    if o["end_time"] is None:
+                        o["end_time"] = now
                         o["end_reason"] = "zone_spent"
                     continue
                 still.append(w)
@@ -129,11 +124,10 @@ class ZoneRecorder(cy.CycleRecorder):
             if (self.state == cy.SCAN and self._scan is not None
                     and self._scan["zone"]["id"] in spent_sell_now):
                 sc = self._scan
-                zid = sc["zone"]["id"]
                 for s in sc.get("zsetups", []):
                     s["br"] = "none"
                     s["ob"] = "none"
-                self._zend(sc, now, "zone_spent", end_time=spent_sell_now[zid])
+                self._zend(sc, now, "zone_spent")
         self._watch = keep
 
     def _watch_orders(self, p, arrival):
@@ -175,7 +169,6 @@ class ZoneRecorder(cy.CycleRecorder):
             touched = float(p.high) >= entry if sell else float(p.low) <= entry
             if touched:
                 w["st"] = "touched"
-                w["touch_bar"] = p
                 keep.append(w)
             elif end is None or pclose < end:
                 keep.append(w)
@@ -363,7 +356,7 @@ class ZoneRecorder(cy.CycleRecorder):
         if not swept:
             return
         s["ob"] = "none"
-        if box.state != "fresh" and not bool(config.TRADE_USED_POIS):
+        if box.state != "fresh" and not _rules() and not bool(config.TRADE_USED_POIS):
             self.counts["z_ob_box_used"] += 1
             return
         near = box.low if tsell else box.high
@@ -410,7 +403,6 @@ class ZoneRecorder(cy.CycleRecorder):
         order = {"id": f"ZO{self._n_zo}", "pullback": sc["pb_id"], "setup": s["id"],
                  "variant": "plain", "kind": kind, "leg": "zone",
                  "side": "sell" if tsell else "buy",
-                 "fill": "limit" if _rules() else "open",
                  "placed_time": now, "entry": float(entry), "stop": float(stop),
                  "stop_edge": float(edge), "box_low": float(p.low),
                  "box_high": float(p.high), "atr": float(atr),
@@ -431,12 +423,11 @@ class ZoneRecorder(cy.CycleRecorder):
                   liq_n=len(order["liq"]))
         return order
 
-    def _zend(self, sc, now, reason, end_time=None):
+    def _zend(self, sc, now, reason):
         n = 0
-        et = end_time if end_time is not None else now
         for o in sc.get("zorders", []):
-            if o["end_time"] is None and o.get("filled_time") is None:
-                o["end_time"] = et
+            if o["end_time"] is None:
+                o["end_time"] = now
                 o["end_reason"] = reason
                 n += 1
         self.counts["z_end_" + reason] += 1
