@@ -1,11 +1,9 @@
 """Report for the cycle run (practice years only, exam years sealed).
-
 Reads data/phase4_cycle/{pair}_{trades.csv,funnel.json,lookahead.json}.
 Env: REPORT_LABEL (file name label), EXPECT_PAIRS (comma list).
 Writes reports/phase4/report_cycle_<label>.md and the GitHub step summary.
-
 Static 1:3 scorecards:
-  combined / static  = MAIN (sections 1-6), Zone + Pullback together, 1:3 target
+  combined / static  = MAIN (sections 1-7), Zone + Pullback together, 1:3 target
   zone / static      = with-trend zone trades, 1:3 target
   pullback / static  = counter-trend pullback trades, 1:3 target
 """
@@ -14,24 +12,24 @@ import math
 import os
 from collections import Counter
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
-
 from src import config
 from src.research.engine import simulate_orders as so
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "data" / "phase4_cycle"
 DATA_START = "2016-01-03"
+FIXED_MONTHS = 78.0
 ALL_PAIRS = ("eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eurgbp,"
              "audjpy,eurchf,eurcad,euraud,eurnzd,gbpchf,gbpcad,gbpaud,gbpnzd,audcad,"
              "audchf,audnzd,nzdjpy,nzdcad,nzdchf,cadjpy,cadchf,chfjpy").split(",")
 NEW_PAIRS = set(ALL_PAIRS[11:])
 TIME_COLS = ("placed_time", "end_time", "touch_time", "fill_time", "exit_time",
              "bos_time", "zone_touch_time", "choch_time")
-NUM_COLS = ("net_r", "r_gross", "dur_hours", "spread_cost_r", "risk_r", "target_r",
-            "entry", "stop", "target_price", "zone_low", "zone_high", "choch_level")
+NUM_COLS = ("net_r", "r_gross", "dur_hours", "mfe_r", "mae_r", "spread_cost_r",
+            "risk_r", "target_r", "entry", "fill_price", "stop", "target_price",
+            "exit_price", "zone_low", "zone_high", "choch_level")
 DONE = ["target", "stop", "stop_gap"]
 V1_PULLBACK = (1455, -21.13)
 
@@ -154,15 +152,27 @@ def sheet_line(i, r):
             f"zone {r['zone_tf']} {fmt(r['zone_low'], 5)} to {fmt(r['zone_high'], 5)} touched "
             f"{ftime(r['zone_touch_time'])}; CHoCH {ftime(r['choch_time'])} "
             f"(level {fmt(r['choch_level'], 5)}); placed {ftime(r['placed_time'])}, "
-            f"filled {ftime(r['fill_time'])}, entry {fmt(r['entry'], 5)}, "
-            f"stop {fmt(r['stop'], 5)}, target {fmt(r['target_price'], 5)} -> "
-            f"{r['outcome']} at {ftime(r['exit_time'])}, net R {fmt(r['net_r'], 2)}")
+            f"filled {ftime(r['fill_time'])}, trigger {fmt(r['entry'], 5)}, "
+            f"fill {fmt(r['fill_price'], 5)}, stop {fmt(r['stop'], 5)}, "
+            f"target {fmt(r['target_price'], 5)} (planned {fmt(r['target_r'], 2)}R) -> "
+            f"{r['outcome']} at {ftime(r['exit_time'])} ({fmt(r['exit_price'], 5)}), "
+            f"gross R {fmt(r['r_gross'], 2)}, spread {fmt(r['spread_cost_r'], 2)}R, "
+            f"net R {fmt(r['net_r'], 2)}")
+
+
+def win_loss_be_counts(sub):
+    if len(sub) == 0:
+        return 0, 0, 0
+    wins = int((sub["outcome"] == "target").sum())
+    non_win = sub[sub["outcome"] != "target"]
+    be = int((non_win["r_gross"].astype(float).abs() < 1e-6).sum())
+    losses = len(sub) - wins - be
+    return wins, losses, be
 
 
 def main():
     label = os.environ.get("REPORT_LABEL", "run")
     expect = [p for p in os.environ.get("EXPECT_PAIRS", "").split(",") if p] or ALL_PAIRS
-
     frames, funnels, looks = [], {}, {}
     for p in expect:
         df = read_trades(p)
@@ -181,11 +191,11 @@ def main():
     else:
         full["leg"] = full["leg"].astype(object)
     zall, zres = card(full, "zone", "static")
+    zlall, zlres = card(full, "zone", "liquidity")
     pall, pres = card(full, "pullback", "static")
     call = pd.concat([zall, pall], ignore_index=True)
     cres = pd.concat([zres, pres], ignore_index=True)
-    allr, res = call, cres          # the six sections show the COMBINED MAIN card
-
+    allr, res = call, cres          # the main sections show the COMBINED MAIN card
     miss = [p for p in expect if p not in looks]
     failed = [p for p, v in looks.items() if not v.get("pass")]
     look_ok = (not miss) and (not failed) and bool(looks)
@@ -202,19 +212,17 @@ def main():
           f"- Practice years only: start of data to {config.PRACTICE_END}. Exam years are sealed.",
           "- Bad days are NOT excluded in this run.",
           "- Variant: plain (no FVG).",
-          "- MAIN scorecard (sections 1-6): COMBINED (Zone + Pullback) at static 1:3 target.",
-          "- Separate ZONE static 1:3 and PULLBACK static 1:3 scorecards are shown in "
-          "Signal Frequency and Extras.",
+          "- MAIN scorecard (sections 1-7): COMBINED (Zone + Pullback) at static 1:3 target.",
+          "- Separate ZONE static 1:3, ZONE liquidity, and PULLBACK static 1:3 scorecards are "
+          "shown in Signal Frequency and Extras.",
           "- Basis: stacking (every filled trade). Net R = gross R minus one spread cost.",
           ""]
-
     s = stats(res)
     L += ["## 1. Executive Summary"]
     L += table(["Metric", "Value"], [
         ["Total Net R", fmt(s["net"])], ["Win Rate %", fmt(s["wr"], 1)],
         ["Profit Factor", fmt(s["pf"])], ["Verdict", verdict(look_ok, s)]])
     L.append("")
-
     L += ["## 2. Core Performance Metrics"]
     n_open = int((allr["outcome"] == "open_at_cutoff").sum())
     L += table(["Metric", "Value"], [
@@ -223,13 +231,11 @@ def main():
         ["Avg R:R (avg winning net R / avg losing net R)", fmt(s["rr"])],
         ["open_at_cutoff (not in the numbers)", n_open]])
     L.append("")
-
     dd, streak = dd_streak(res)
     L += ["## 3. Drawdown & Risk"]
     L += table(["Metric", "Value"], [["Max Drawdown R", fmt(dd)],
                                       ["Longest Losing Streak (trades)", streak]])
     L.append("")
-
     L += ["## 4. Signal Frequency"]
     t_start = pd.Timestamp(DATA_START, tz="UTC")
     t_end = pd.Timestamp(config.PRACTICE_END, tz="UTC")
@@ -238,6 +244,7 @@ def main():
     pb_per_month = len(pres) / win_months if win_months > 0 else np.nan
     comb_trades = len(res)
     comb_per_month = comb_trades / win_months if win_months > 0 else np.nan
+    comb_per_78 = comb_trades / FIXED_MONTHS
     comb_net_static = float(res["net_r"].sum())
     if len(res):
         per_pair = comb_per_month / max(len(expect), 1)
@@ -250,11 +257,13 @@ def main():
         per_pair = per_month_since = within = np.nan
         first_txt = "n/a"
     L += table(["Metric", "Value"], [
-        [f"COMBINED trades per month (Zone + Pullback, {fmt(win_months, 0)} months)",
+        [f"COMBINED trades per month (Zone + Pullback, {fmt(win_months, 2)} months)",
          fmt(comb_per_month, 2)],
-        [f"ZONE trades per month, all pairs ({fmt(win_months, 0)} months)",
+        ["COMBINED trades per month (strict 78-calendar-month denominator)",
+         fmt(comb_per_78, 2)],
+        [f"ZONE trades per month, all pairs ({fmt(win_months, 2)} months)",
          fmt(z_per_month, 2)],
-        [f"PULLBACK trades per month, all pairs ({fmt(win_months, 0)} months)",
+        [f"PULLBACK trades per month, all pairs ({fmt(win_months, 2)} months)",
          fmt(pb_per_month, 2)],
         ["COMBINED total resolved trades (Zone + Pullback)", comb_trades],
         ["COMBINED Net R (Zone static 1:3 + Pullback static 1:3)", fmt(comb_net_static, 2)],
@@ -263,7 +272,6 @@ def main():
         [f"COMBINED trades per month per pair ({len(expect)} pair(s))", fmt(per_pair, 2)],
         ["% closed within 24h (Combined trades)", fmt(within, 1)]])
     L.append("")
-
     pair_net = {}
     for p in expect:
         t = res[res["pair"] == p]
@@ -283,7 +291,6 @@ def main():
                [[p + (" (assumed spread)" if p in NEW_PAIRS else ""), pair_net[p][1],
                  fmt(pair_net[p][0])] for p in bot])
     L.append("")
-
     L += ["## 6. Performance by Year (by entry year; exam years sealed)"]
     yrows = []
     for y in range(2016, 2027):
@@ -297,10 +304,113 @@ def main():
     L += table(["Year", "Trades", "Net R", "Win %", "PF"], yrows)
     L.append("")
 
+    # ------------------------------------------------------------ Section 7: Monthly Performance
+    L += ["## 7. Monthly Consistency & Individual Month Spotlight (15+ Trades)"]
+    all_months = pd.period_range("2016-01", "2022-06", freq="M")
+    if len(res):
+        res_m = res.copy()
+        res_m["ym"] = res_m["fill_time"].dt.tz_localize(None).dt.to_period("M")
+    else:
+        res_m = res.copy()
+        res_m["ym"] = pd.Series(dtype="period[M]")
+
+    m_counts = []
+    m_records = []
+    for ym in all_months:
+        sub = res_m[res_m["ym"] == ym] if len(res_m) else res_m
+        st = stats(sub)
+        wins, losses, be = win_loss_be_counts(sub)
+        m_counts.append(st["n"])
+        m_records.append({
+            "ym": str(ym), "sub": sub, "n": st["n"], "wins": wins,
+            "losses": losses, "be": be, "wr": st["wr"], "net": st["net"],
+            "pf": st["pf"], "exp": st["exp"]
+        })
+    m_arr = np.array(m_counts, dtype=float)
+    active_arr = m_arr[m_arr > 0] if (m_arr > 0).any() else m_arr
+    L += table(["Monthly Consistency Metric (78 Calendar Months: 2016-01 to 2022-06)", "Value"], [
+        ["Average resolved trades / month (all 78 months)", fmt(float(m_arr.mean()), 2)],
+        ["Median resolved trades / month (all 78 months)", fmt(float(np.median(m_arr)), 1)],
+        ["Median resolved trades / month (active trading months only)",
+         fmt(float(np.median(active_arr)), 1)],
+        ["Months with >= 15 trades (count and % of 78 months)",
+         f"{int((m_arr >= 15).sum())} / {len(m_arr)} ({fmt(float((m_arr >= 15).mean() * 100), 1)}%)"],
+        ["Months with >= 16 trades (count and % of 78 months)",
+         f"{int((m_arr >= 16).sum())} / {len(m_arr)} ({fmt(float((m_arr >= 16).mean() * 100), 1)}%)"],
+        ["Lowest monthly trade count (all 78 months / post-2016 warmup)",
+         f"{int(m_arr.min())} / {int(m_arr[12:].min()) if len(m_arr) > 12 else int(m_arr.min())}"],
+        ["Highest monthly trade count", f"{int(m_arr.max())}"],
+        ["Positive Net R months (out of active trading months)",
+         f"{sum(1 for r in m_records if r['n'] > 0 and r['net'] > 0)} / "
+         f"{sum(1 for r in m_records if r['n'] > 0)}"]
+    ])
+    L.append("")
+
+    qual_15 = [r for r in m_records if r["n"] >= 15]
+    if qual_15:
+        qual_sorted = sorted(qual_15, key=lambda x: x["n"])
+        rep_m = qual_sorted[len(qual_sorted) // 2]
+        peak_m = qual_sorted[-1]
+        first_15 = qual_15[0]
+        spotlights = [("Typical (Median) 15+ Trade Month", rep_m),
+                      ("First 15+ Trade Month", first_15),
+                      ("Highest-Volume 15+ Trade Month", peak_m)]
+        L.append("### Single-Month Deep Spotlight (Wins vs. Losses on 15+ Trade Months)")
+        s_rows = []
+        for label_m, mr in spotlights:
+            sub = mr["sub"]
+            gross_sum = float(sub["r_gross"].sum()) if len(sub) else 0.0
+            sp_sum = float(sub["spread_cost_r"].sum()) if len(sub) else 0.0
+            s_rows.append([
+                label_m, mr["ym"], mr["n"], mr["wins"], mr["losses"], mr["be"],
+                fmt(mr["wr"], 1), fmt(gross_sum, 2), fmt(sp_sum, 2),
+                fmt(mr["net"], 2), fmt(mr["pf"], 2)
+            ])
+        L += table(["Spotlight Type", "Month", "Trades", "Wins (+3R)", "Losses (-1R)",
+                    "Break-Even (0R gross)", "Win %", "Gross R", "Spread Cost R",
+                    "Net R", "PF"], s_rows)
+        L.append("")
+
+        # Model breakdown inside the Typical (Median) 15+ Trade Month
+        L.append(f"**Entry Model Breakdown Inside Spotlight Month ({rep_m['ym']}: "
+                 f"{rep_m['n']} Trades, {rep_m['wins']} Wins, {rep_m['losses']} Losses, "
+                 f"{rep_m['be']} Break-Even, Net {fmt(rep_m['net'], 2)} R)**")
+        ms_rows = []
+        sub_rep = rep_m["sub"]
+        for leg_name, kind_name, side_name, label_g in (
+            ("zone", "ob", "buy", "Zone OB Buy"),
+            ("zone", "ob", "sell", "Zone OB Sell"),
+            ("pullback", "ob", "buy", "Pullback OB Buy"),
+            ("pullback", "ob", "sell", "Pullback OB Sell"),
+            ("pullback", "breaker", "buy", "Pullback Breaker Buy"),
+        ):
+            g_sub = sub_rep[(sub_rep["leg"] == leg_name)
+                            & (sub_rep["kind"] == kind_name)
+                            & (sub_rep["side"] == side_name)]
+            if len(g_sub) == 0:
+                continue
+            gw, gl, gbe = win_loss_be_counts(g_sub)
+            gst = stats(g_sub)
+            ms_rows.append([label_g, gst["n"], gw, gl, gbe, fmt(gst["wr"], 1), fmt(gst["net"], 2)])
+        L += table(["Model", "Trades", "Wins", "Losses", "Break-Even", "Win %", "Net R"], ms_rows)
+        L.append("")
+
+        L.append(f"### All {len(qual_15)} Individual Months with 15+ Trades (Chronological)")
+        q_rows = []
+        for mr in qual_15:
+            q_rows.append([
+                mr["ym"], mr["n"], mr["wins"], mr["losses"], mr["be"],
+                fmt(mr["wr"], 1), fmt(mr["net"], 2), fmt(mr["exp"], 3), fmt(mr["pf"], 2)
+            ])
+        L += table(["Month", "Trades", "Wins", "Losses", "Break-Even", "Win %",
+                    "Net R", "Expectancy", "PF"], q_rows)
+        L.append("")
+
     # ------------------------------------------------------------ Extras
-    L += ["## Extras", "", "### Scorecards side by side (Static 1:3)"]
+    L += ["## Extras", "", "### Scorecards side by side (Static 1:3 & Zone Liquidity)"]
     cards = (("COMBINED (Zone + Pullback) (MAIN)", call, cres),
              ("ZONE static 1:3", zall, zres),
+             ("ZONE liquidity target", zlall, zlres),
              ("PULLBACK static 1:3", pall, pres))
     r1, r2 = [], []
     for name, a, r in cards:
@@ -321,11 +431,125 @@ def main():
              f"{fmt(pres['net_r'].sum())} R. Equal: "
              f"{'YES' if (len(pres) == V1_PULLBACK[0] and abs(float(pres['net_r'].sum()) - V1_PULLBACK[1]) < 0.015) else 'NO'}.")
     L.append("")
-
     L += ["### Buy / sell split by entry model"]
-    for name, a, r in cards:
+    for name, a, r in cards[:2] + cards[3:]:
         L.append(f"**{name}**")
         L += table(["Group", "Trades", "Win %", "Net R", "Expectancy"], split_rows(r))
+        L.append("")
+
+    # ------------------------------------------------------------ Phase 1D: MFE / MAE Telemetry
+    L += ["### Trade-Path MFE / MAE & Milestone Reversal Diagnostics (Static 1:3)"]
+    mfe_rows = []
+    for leg_name, kind_name, side_name, label_g in (
+        ("zone", "ob", "buy", "Zone OB Buy"),
+        ("zone", "ob", "sell", "Zone OB Sell"),
+        ("pullback", "ob", "buy", "Pullback OB Buy"),
+        ("pullback", "ob", "sell", "Pullback OB Sell"),
+        ("pullback", "breaker", "buy", "Pullback Breaker Buy"),
+    ):
+        sub = res[(res["leg"] == leg_name) & (res["kind"] == kind_name) & (res["side"] == side_name)]
+        if len(sub) == 0:
+            continue
+        wins, losses, be = win_loss_be_counts(sub)
+        non_tgt = sub[sub["outcome"] != "target"]
+        n_nt = len(non_tgt)
+        mfe_all = float(sub["mfe_r"].median()) if sub["mfe_r"].notna().any() else np.nan
+        mae_all = float(sub["mae_r"].median()) if sub["mae_r"].notna().any() else np.nan
+        w_sub = sub[sub["outcome"] == "target"]
+        mae_win = float(w_sub["mae_r"].median()) if len(w_sub) and w_sub["mae_r"].notna().any() else np.nan
+        r10 = int((non_tgt["mfe_r"] >= 1.0).sum()) if n_nt else 0
+        r15 = int((non_tgt["mfe_r"] >= 1.5).sum()) if n_nt else 0
+        r20 = int((non_tgt["mfe_r"] >= 2.0).sum()) if n_nt else 0
+        r25 = int((non_tgt["mfe_r"] >= 2.5).sum()) if n_nt else 0
+        mfe_rows.append([
+            label_g, len(sub), wins, losses, be,
+            fmt(mfe_all, 2), fmt(mae_all, 2), fmt(mae_win, 2),
+            f"{r10} ({fmt(r10 / n_nt * 100, 1)}%)" if n_nt else "0",
+            f"{r15} ({fmt(r15 / n_nt * 100, 1)}%)" if n_nt else "0",
+            f"{r20} ({fmt(r20 / n_nt * 100, 1)}%)" if n_nt else "0",
+            f"{r25} ({fmt(r25 / n_nt * 100, 1)}%)" if n_nt else "0",
+        ])
+    L += table(["Model", "Trades", "Wins", "Losses", "BE (0R)", "Med MFE (R)",
+                "Med MAE (R)", "Win Med MAE (R)", "Non-Win >=1.0R", "Non-Win >=1.5R",
+                "Non-Win >=2.0R", "Non-Win >=2.5R"], mfe_rows)
+    L.append("")
+
+    # ------------------------------------------------------------ Sub-period 2016-2019 vs 2020-2022
+    L += ["### Sub-Period Comparison by Entry Model (2016-2019 vs. 2020-June 2022)"]
+    sp_rows = []
+    for leg_name, kind_name, side_name, label_g in (
+        ("zone", "ob", "buy", "Zone OB Buy"),
+        ("zone", "ob", "sell", "Zone OB Sell"),
+        ("pullback", "ob", "buy", "Pullback OB Buy"),
+        ("pullback", "ob", "sell", "Pullback OB Sell"),
+        ("pullback", "breaker", "buy", "Pullback Breaker Buy"),
+    ):
+        sub = res[(res["leg"] == leg_name) & (res["kind"] == kind_name) & (res["side"] == side_name)]
+        if len(sub) == 0:
+            continue
+        p1 = sub[sub["fill_time"].dt.year <= 2019]
+        p2 = sub[sub["fill_time"].dt.year >= 2020]
+        s1_st, s2_st = stats(p1), stats(p2)
+        sp_rows.append([
+            label_g,
+            s1_st["n"], fmt(s1_st["wr"], 1), fmt(s1_st["net"], 2), fmt(s1_st["exp"], 3),
+            s2_st["n"], fmt(s2_st["wr"], 1), fmt(s2_st["net"], 2), fmt(s2_st["exp"], 3),
+        ])
+    L += table(["Model", "2016-19 Trades", "2016-19 Win %", "2016-19 Net R", "2016-19 Exp",
+                "2020-22 Trades", "2020-22 Win %", "2020-22 Net R", "2020-22 Exp"], sp_rows)
+    L.append("")
+
+    # ------------------------------------------------------------ Pending Order Age & Session Diagnostics
+    if len(res):
+        L += ["### Setup Freshness: Pending Order Wait Time (Placed -> Fill Hours)"]
+        age_h = (res["fill_time"] - res["placed_time"]).dt.total_seconds() / 3600.0
+        age_rows = []
+        for b_label, mask in (
+            ("<= 4h (16 M15 bars)", age_h <= 4.0),
+            ("4h - 12h", (age_h > 4.0) & (age_h <= 12.0)),
+            ("12h - 24h", (age_h > 12.0) & (age_h <= 24.0)),
+            ("24h - 72h (1-3 days)", (age_h > 24.0) & (age_h <= 72.0)),
+            ("> 72h (> 3 days)", age_h > 72.0),
+        ):
+            sub_a = res[mask]
+            st_a = stats(sub_a)
+            pb_s = sub_a[(sub_a["leg"] == "pullback") & (sub_a["side"] == "sell")]
+            st_pbs = stats(pb_s)
+            age_rows.append([
+                b_label, st_a["n"], fmt(st_a["wr"], 1), fmt(st_a["net"], 2),
+                fmt(st_a["exp"], 3), st_pbs["n"], fmt(st_pbs["net"], 2), fmt(st_pbs["exp"], 3)
+            ])
+        L += table(["Order Wait Bucket", "All Trades", "All Win %", "All Net R", "All Exp",
+                    "PB Sell Trades", "PB Sell Net R", "PB Sell Exp"], age_rows)
+        L.append("")
+
+        L += ["### Session Timing Breakdown (by UTC Order Placement & Fill Hour)"]
+        sess_rows = []
+        p_hr = res["placed_time"].dt.hour
+        for s_label, smask in (
+            ("Asian (00:00 - 05:59 UTC)", p_hr < 6),
+            ("London (06:00 - 11:59 UTC)", (p_hr >= 6) & (p_hr < 12)),
+            ("London/NY Overlap (12:00 - 15:59 UTC)", (p_hr >= 12) & (p_hr < 16)),
+            ("NY Afternoon (16:00 - 19:59 UTC)", (p_hr >= 16) & (p_hr < 20)),
+            ("Late NY (20:00 - 23:59 UTC)", p_hr >= 20),
+        ):
+            sub_s = res[smask]
+            st_s = stats(sub_s)
+            pb_s = sub_s[(sub_s["leg"] == "pullback") & (sub_s["side"] == "sell")]
+            st_pbs = stats(pb_s)
+            pb_b = sub_s[(sub_s["leg"] == "pullback") & (sub_s["side"] == "buy")]
+            st_pbb = stats(pb_b)
+            z_sub = sub_s[sub_s["leg"] == "zone"]
+            st_z = stats(z_sub)
+            sess_rows.append([
+                s_label, st_s["n"], fmt(st_s["net"], 2), fmt(st_s["exp"], 3),
+                st_pbs["n"], fmt(st_pbs["net"], 2), fmt(st_pbs["exp"], 3),
+                st_pbb["n"], fmt(st_pbb["net"], 2),
+                st_z["n"], fmt(st_z["net"], 2)
+            ])
+        L += table(["Placed Session (UTC)", "All Trades", "All Net R", "All Exp",
+                    "PB Sell N", "PB Sell Net R", "PB Sell Exp",
+                    "PB Buy N", "PB Buy Net R", "Zone N", "Zone Net R"], sess_rows)
         L.append("")
 
     L += ["### All pairs (MAIN card: Combined Zone + Pullback, static 1:3)"]
@@ -357,7 +581,6 @@ def main():
         L.append(f"- {w}")
     if warns:
         L.append("")
-
     filled_all = full[full["status"] == "filled"]
     limit = float(config.MAX_SPREAD_RISK_RATIO)
     if len(filled_all):
@@ -369,7 +592,6 @@ def main():
             L.append(f"- Check passed: highest spread cost among filled trades is "
                      f"{fmt(mx, 3)} R (limit {fmt(limit, 2)}).")
         L.append("")
-
     L += ["### Pair funnel: pullbacks (why some pairs have few or no orders)"]
     frows = []
     for p in expect:
@@ -384,7 +606,6 @@ def main():
     L += table(["Pair", "Bars", "Decisions", "Bias flips", "HTF arms", "Pullbacks", "Setups",
                 "Orders"], frows)
     L.append("")
-
     L += ["### Pair funnel: zone trades"]
     zrows = []
     for p in expect:
@@ -399,7 +620,6 @@ def main():
     L += table(["Pair", "Zone touches (scans)", "Zone setups", "Zone orders",
                 "Filled (static)"], zrows)
     L.append("")
-
     L += ["### Stacking vs one-at-a-time (kept per pair)"]
     kept = res[res["kept_1at"]]
     zkept = zres[zres["kept_1at"]]
@@ -414,7 +634,6 @@ def main():
                      fmt(d2), s2])
     L += table(["Set", "Trades", "Net R", "Expectancy", "PF", "Max DD R", "Losing streak"], crow)
     L.append("")
-
     L += ["### Bias flip while open (MAIN card; trade ran, not managed)"]
     frow = []
     for name, t in (("flip_while_open", res[res["flip_while_open"]]),
@@ -423,19 +642,31 @@ def main():
         frow.append([name, st["n"], fmt(st["net"]), fmt(st["exp"], 3)])
     L += table(["Group", "Trades", "Net R", "Expectancy"], frow)
     L.append("")
-
     L += ["### Duration (MAIN card; hours, fill to exit, resolved trades)"]
     d = res["dur_hours"].astype(float)
     L += table(["Median", "Mean", "Max"],
                [[fmt(d.median(), 1), fmt(d.mean(), 1), fmt(d.max(), 1)]])
     L.append("")
-
+    if len(res):
+        L += ["### Top 10 Longest Duration Trades (Phase 1B Outlier Audit)"]
+        top_dur = res.sort_values("dur_hours", ascending=False).head(10)
+        d_rows = []
+        for _, r in top_dur.iterrows():
+            d_rows.append([
+                r["pair"], f"{r['leg']} {r['kind']} {r['side']}",
+                ftime(r["fill_time"]), ftime(r["exit_time"]),
+                fmt(r["dur_hours"], 1), fmt(r["fill_price"], 5),
+                fmt(r["stop"], 5), fmt(r["target_price"], 5),
+                r["outcome"], fmt(r["net_r"], 2)
+            ])
+        L += table(["Pair", "Model", "Fill Time", "Exit Time", "Duration (h)",
+                    "Fill Price", "Stop", "Target", "Outcome", "Net R"], d_rows)
+        L.append("")
     L += ["### Open at cutoff (counted separately)"]
     L.append(f"- Zone static: {int((zall['outcome'] == 'open_at_cutoff').sum())}; pullback: "
              f"{int((pall['outcome'] == 'open_at_cutoff').sum())} filled trade(s) were still "
              f"unresolved at the practice cutoff.")
     L.append("")
-
     L += ["### Orders that did not become trades"]
     s1 = zall["status"].value_counts()
     s3 = pall["status"].value_counts()
@@ -448,7 +679,6 @@ def main():
         L.append("Zone orders cancelled by:")
         L += table(["Cancelled by", "Orders"], [[k, int(v)] for k, v in canc.items()])
     L.append("")
-
     L += ["### Funnel (all pairs summed; z_ = zone counters)"]
     tot = Counter()
     for fj in funnels.values():
@@ -456,7 +686,6 @@ def main():
             tot[k] += v
     L += table(["Counter", "Count"], [[k, tot[k]] for k in sorted(tot)])
     L.append("")
-
     L += ["### Zone trade sheet: first 10 resolved zone trades by fill time"]
     L.append("Times are UTC and are candle CLOSE times (the candle opened 15 minutes "
              "earlier). On the M15 chart check: the BOS against the trend, the leg touching "
@@ -469,7 +698,6 @@ def main():
     else:
         L.append("No resolved zone trades.")
     L.append("")
-
     L += ["### Zone trade sheet: first 5 resolved zone SELLS by fill time"]
     L.append("")
     sells = zres[zres["side"] == "sell"].sort_values("fill_time").head(5)
@@ -479,7 +707,6 @@ def main():
     else:
         L.append("No resolved zone sells.")
     L.append("")
-
     md = "\n".join(L)
     out = ROOT / "reports" / "phase4"
     out.mkdir(parents=True, exist_ok=True)
