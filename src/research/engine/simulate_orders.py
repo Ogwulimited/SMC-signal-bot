@@ -23,9 +23,9 @@ Takes the orders the cycle produced and plays them on M15 bars.
   * Spread cost = SPREAD_PRICE[pair] / risk. Above MAX_SPREAD_RISK_RATIO -> skipped_spread.
   * Stop wins a same-bar tie. A bar that OPENS beyond the stop fills the loss
     at that open (loss can exceed 1R).
-  * Break-Even Stop Protection (Stage 2, Option A): on counter-trend pullback
+  * Break-Even Stop Protection (Phase 2 Test): on counter-trend pullback
     sells against a Bull HTF (leg == "pullback", kind == "ob", side == "sell"),
-    once price reaches BE_TRIGGER_R (+2.0R) in favor of the trade without
+    once price reaches BE_TRIGGER_R (+1.5R) in favor of the trade without
     hitting the stop or target in that bar, the stop loss moves to the entry
     price (fill) from the NEXT M15 bar onward.
   * Order ended by zone / attempt_failed / bias_lost / zone_far_break: the ending
@@ -41,7 +41,7 @@ from src import config
 STEP = pd.Timedelta(minutes=15)
 FAR = pd.Timestamp("2262-01-01", tz="UTC")
 LIQ_MIN_R = 3.0
-BE_TRIGGER_R = 2.0
+BE_TRIGGER_R = 1.5
 
 TRADE_COLS = [
     "pair", "order_id", "pullback", "setup", "variant", "kind", "side",
