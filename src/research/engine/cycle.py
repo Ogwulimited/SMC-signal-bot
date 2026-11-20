@@ -338,20 +338,9 @@ class CycleRecorder(MapRecorder):
             if float(entry) - float(setup["idm"]) < 0.5 * float(atr):
                 self.counts["ob_idm_too_close"] += 1
                 return None
-        pb = self._pb
-        if kind == "ob" and up and pb["ceiling"] is not None:
-            spent = getattr(self, "_spent", ())
-            ceil_p = float(pb["ceiling"])
-            z_highs = [float(z["high"]) for z in pb["zones"]
-                       if z["poi"].state in ("fresh", "used")
-                       and z["id"] not in spent
-                       and float(z["high"]) < ceil_p]
-            if z_highs:
-                near_hi = max(z_highs)
-                span = ceil_p - near_hi
-                if span > 0.0 and (float(entry) - near_hi) / span < 0.40:
-                    self.counts["ob_in_discount_skipped"] += 1
-                    return None
+            if float(bar.close) - float(setup["idm"]) > 0.5 * float(atr):
+                self.counts["ob_sweep_breakout_skipped"] += 1
+                return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
         stop = edge + buf if up else edge - buf
         # Stage 1A: min_risk stop padding only on Pullback OB SELL
@@ -360,6 +349,7 @@ class CycleRecorder(MapRecorder):
             if abs(entry - stop) < min_risk:
                 stop = entry + min_risk if up else entry - min_risk
                 self.counts[kind + "_min_risk_padded"] += 1
+        pb = self._pb
         self._n_order += 1
         breaker = setup["breaker"]
         order = {"id": f"O{self._n_order}", "pullback": pb["id"], "setup": setup["id"],
