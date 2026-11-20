@@ -48,7 +48,7 @@ TRADE_COLS = [
     "placed_time", "end_time", "end_reason", "ceiling", "ceiling_locked",
     "entry", "stop", "status", "touch_time", "fill_time", "fill_price",
     "risk_r", "spread_cost_r", "target_price", "outcome", "exit_time",
-    "exit_price", "r_gross", "net_r", "dur_hours",
+    "exit_price", "r_gross", "net_r", "dur_hours", "mfe_r", "mae_r",
     "open_at_entry", "kept_1at", "flip_while_open",
     "leg", "target_mode", "target_kind", "target_r", "bos_time",
     "zone_touch_time", "zone_tf", "zone_low", "zone_high", "choch_time",
@@ -234,6 +234,27 @@ def simulate_order(o, a, spread, pair, mode="static"):
             ex = target
             out = "target"
 
+    # Compute MFE and MAE in R-multiples across the active trade path [0..idx]
+    fav_start = 1 if (limit and not open_fill) else 0
+    if fav_start <= idx:
+        if sell:
+            best_fav = float(np.min(l[fav_start:idx + 1]))
+            mfe_r = max(0.0, (fill - best_fav) / risk)
+        else:
+            best_fav = float(np.max(h[fav_start:idx + 1]))
+            mfe_r = max(0.0, (best_fav - fill) / risk)
+    else:
+        mfe_r = 0.0
+    if out == "target":
+        mfe_r = max(mfe_r, abs(target - fill) / risk)
+
+    if sell:
+        worst_adv = float(np.max(h[:idx + 1]))
+        mae_r = max(0.0, (worst_adv - fill) / risk)
+    else:
+        worst_adv = float(np.min(l[:idx + 1]))
+        mae_r = max(0.0, (fill - worst_adv) / risk)
+
     gross = (fill - ex) / risk if sell else (ex - fill) / risk
     exit_time = a["close_t"][f + idx]
     rec["outcome"] = out
@@ -242,6 +263,8 @@ def simulate_order(o, a, spread, pair, mode="static"):
     rec["r_gross"] = gross
     rec["net_r"] = gross - sc
     rec["dur_hours"] = (exit_time - rec["fill_time"]).total_seconds() / 3600.0
+    rec["mfe_r"] = mfe_r
+    rec["mae_r"] = mae_r
     return rec
 
 
