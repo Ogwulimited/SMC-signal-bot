@@ -334,6 +334,10 @@ class CycleRecorder(MapRecorder):
         if not ahead:
             self.counts[kind + "_entry_not_ahead"] += 1
             return None
+        if kind == "ob" and up and setup.get("idm") is not None:
+            if float(entry) - float(setup["idm"]) < 0.5 * float(atr):
+                self.counts["ob_idm_too_close"] += 1
+                return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
         stop = edge + buf if up else edge - buf
         # Stage 1A: min_risk stop padding only on Pullback OB SELL
@@ -343,18 +347,6 @@ class CycleRecorder(MapRecorder):
                 stop = entry + min_risk if up else entry - min_risk
                 self.counts[kind + "_min_risk_padded"] += 1
         pb = self._pb
-        if kind == "ob" and up:
-            spent = getattr(self, "_spent", ())
-            z_highs = [float(z["high"]) for z in pb["zones"]
-                       if z["poi"].state in ("fresh", "used")
-                       and z["id"] not in spent
-                       and float(z["high"]) < float(entry)]
-            if z_highs:
-                near_hi = max(z_highs)
-                risk = abs(float(entry) - float(stop))
-                if float(entry) - near_hi < 2.0 * risk:
-                    self.counts["ob_no_zone_room"] += 1
-                    return None
         self._n_order += 1
         breaker = setup["breaker"]
         order = {"id": f"O{self._n_order}", "pullback": pb["id"], "setup": setup["id"],
@@ -383,7 +375,7 @@ class CycleRecorder(MapRecorder):
                 self.counts["end_ceiling_break"] += 1
                 self.state = ARMED
                 self.counts["rearm"] += 1
-                self._log("pb_rearm", now, id=pb["id"])
+                self.log.add("pb_rearm", now, now, id=pb["id"])
                 return
             self._fail_attempt(now, "ceiling_break")
             return
