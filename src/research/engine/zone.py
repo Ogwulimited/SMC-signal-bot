@@ -356,9 +356,10 @@ class ZoneRecorder(cy.CycleRecorder):
         if not swept:
             return
         s["ob"] = "none"
-        if box.state != "fresh" and not _rules() and not bool(config.TRADE_USED_POIS):
+        if box.state != "fresh" and not bool(config.TRADE_USED_POIS):
             self.counts["z_ob_box_used"] += 1
             return
+        near = box.low if tsell else bar.high
         near = box.low if tsell else box.high
         touched = bar.high >= near if tsell else bar.low <= near
         if touched:
