@@ -338,9 +338,6 @@ class CycleRecorder(MapRecorder):
             if float(entry) - float(setup["idm"]) < 0.5 * float(atr):
                 self.counts["ob_idm_too_close"] += 1
                 return None
-            if float(bar.close) - float(setup["idm"]) > 0.5 * float(atr):
-                self.counts["ob_sweep_breakout_skipped"] += 1
-                return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
         stop = edge + buf if up else edge - buf
         # Stage 1A: min_risk stop padding only on Pullback OB SELL
@@ -372,6 +369,12 @@ class CycleRecorder(MapRecorder):
     def _pull_step(self, bar, ev, now):
         pb = self._pb
         up = self.ctx["up"]
+        if up:
+            for o in pb["orders"]:
+                if o["end_time"] is None and now - o["placed_time"] >= pd.Timedelta(hours=72):
+                    o["end_time"] = now
+                    o["end_reason"] = "expired_72h"
+                    self.counts["orders_expired_72h"] += 1
         if pb["ceiling"] is not None and _beyond(bar.close, pb["ceiling"], up):
             if pb["locked"]:
                 self._end_pullback(now, "ceiling_break")
