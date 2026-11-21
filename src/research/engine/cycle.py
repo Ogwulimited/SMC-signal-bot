@@ -371,10 +371,10 @@ class CycleRecorder(MapRecorder):
         up = self.ctx["up"]
         if up:
             for o in pb["orders"]:
-                if o["end_time"] is None and now - o["placed_time"] >= pd.Timedelta(hours=72):
+                if o["end_time"] is None and now - o["placed_time"] >= pd.Timedelta(hours=48):
                     o["end_time"] = now
-                    o["end_reason"] = "expired_72h"
-                    self.counts["orders_expired_72h"] += 1
+                    o["end_reason"] = "expired_48h"
+                    self.counts["orders_expired_48h"] += 1
         if pb["ceiling"] is not None and _beyond(bar.close, pb["ceiling"], up):
             if pb["locked"]:
                 self._end_pullback(now, "ceiling_break")
