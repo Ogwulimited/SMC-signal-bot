@@ -334,8 +334,9 @@ class CycleRecorder(MapRecorder):
         if not ahead:
             self.counts[kind + "_entry_not_ahead"] += 1
             return None
-        if kind == "ob" and up and setup.get("idm") is not None:
-            if float(entry) - float(setup["idm"]) < 0.5 * float(atr):
+        if kind == "ob" and setup.get("idm") is not None:
+            dist = (float(entry) - float(setup["idm"])) if up else (float(setup["idm"]) - float(entry))
+            if dist < 0.5 * float(atr):
                 self.counts["ob_idm_too_close"] += 1
                 return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
