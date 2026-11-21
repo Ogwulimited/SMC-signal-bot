@@ -344,6 +344,9 @@ class CycleRecorder(MapRecorder):
             if 12 <= now.hour < 16:
                 self.counts["ob_sell_overlap_skipped"] += 1
                 return None
+        if kind == "ob" and not up and 16 <= now.hour < 20:
+            self.counts["ob_buy_ny_afternoon_skipped"] += 1
+            return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
         stop = edge + buf if up else edge - buf
         # Stage 1A: min_risk stop padding only on Pullback OB SELL
