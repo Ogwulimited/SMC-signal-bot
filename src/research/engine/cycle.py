@@ -334,19 +334,23 @@ class CycleRecorder(MapRecorder):
         if not ahead:
             self.counts[kind + "_entry_not_ahead"] += 1
             return None
-        if kind == "ob" and float(p.high) - float(p.low) > 1.75 * float(atr):
-            self.counts["ob_box_too_wide"] += 1
-            return None
         if kind == "ob" and up and setup.get("idm") is not None:
             if float(entry) - float(setup["idm"]) < 0.5 * float(atr):
                 self.counts["ob_idm_too_close"] += 1
                 return None
+            if float(p.high) - float(p.low) > 1.75 * float(atr):
+                self.counts["ob_box_too_wide"] += 1
+                return None
             if 12 <= now.hour < 16:
                 self.counts["ob_sell_overlap_skipped"] += 1
                 return None
-        if kind == "ob" and not up and 16 <= now.hour < 20:
-            self.counts["ob_buy_ny_afternoon_skipped"] += 1
-            return None
+        if kind == "ob" and not up:
+            if float(p.high) - float(p.low) < 0.25 * float(atr):
+                self.counts["ob_buy_box_too_narrow"] += 1
+                return None
+            if 16 <= now.hour < 20:
+                self.counts["ob_buy_ny_afternoon_skipped"] += 1
+                return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
         stop = edge + buf if up else edge - buf
         # Stage 1A: min_risk stop padding only on Pullback OB SELL
