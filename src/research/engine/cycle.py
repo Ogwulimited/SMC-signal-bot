@@ -338,7 +338,7 @@ class CycleRecorder(MapRecorder):
             if float(entry) - float(setup["idm"]) < 0.5 * float(atr):
                 self.counts["ob_idm_too_close"] += 1
                 return None
-            if float(p.high) - float(p.low) > 2.0 * float(atr):
+            if float(p.high) - float(p.low) > 1.75 * float(atr):
                 self.counts["ob_box_too_wide"] += 1
                 return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
