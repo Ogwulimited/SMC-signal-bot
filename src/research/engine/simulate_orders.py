@@ -1,182 +1,314 @@
-"""Replay cycle orders on trading-timeframe bars, bar by bar.
-
-Two target modes are produced side by side:
-  - ceiling: target is the pullback ceiling (only for orders with a locked
-    ceiling; unlocked orders get status 'skipped_unlocked')
-  - rr3:     static 1 : config.RR_STATIC target with 50% partial scale-out at
-             +1.0R and Break-Even stop on the remaining 50% runner to +3.0R
-
-When spread > 0, prices are assumed to be BID.
-  - BUY  fills on ASK (bar.low + spread <= entry),
-         stops on BID (bar.low <= stop),
-         hits target on BID (bar.high >= target).
-  - SELL fills on BID (bar.high >= entry),
-         stops on ASK (bar.high + spread >= stop),
-         hits target on ASK (bar.low + spread <= target).
+"""Order simulator for the cycle engine (practice years).
+Takes the orders the cycle produced and plays them on M15 bars.
+  * Touch: a bar after placement reaches the entry price.
+  * Fill (default orders): at the NEXT M15 open (Fill 2). Stop/target are
+    checked from the fill bar's open. 1R = |fill - stop|.
+  * Fill (limit orders, o["fill"] == "limit"): in the touch bar itself.
+    If the bar opens at or past the entry (buy: open <= entry, sell: open >=
+    entry) the fill is at that open, like a broker. Otherwise it fills at the
+    entry price. Fill bar rule: after a mid-bar edge fill the stop counts in
+    that bar but the target does not (the order of high and low inside the bar
+    is unknown); after an open fill the whole bar counts.
+  * Targets: "static" = fill -/+ RR x R (all orders). RR is RR_STATIC unless
+             the order carries its own "rr".
+             "liquidity" (zone orders only) = the nearest unswept swing at least
+             LIQ_MIN_R x R away (list carried by the order, nearest first); if
+             none, the order's ceiling; if the ceiling is not beyond the fill,
+             status skipped_no_target.
+    A zone order is played twice (static and liquidity) with the same entry and
+    stop. Each row carries leg (pullback/zone/...) and target_mode.
+    Any other leg is played once (static).
+  * Fill already beyond the stop -> fill_beyond_stop (no trade).
+  * Spread cost = SPREAD_PRICE[pair] / risk. Above MAX_SPREAD_RISK_RATIO -> skipped_spread.
+  * Stop wins a same-bar tie. A bar that OPENS beyond the stop fills the loss
+    at that open (loss can exceed 1R).
+  * Partial Scale-Out & Break-Even Runner (Option A): on static 1:3 R trades,
+    once price reaches TP1_TRIGGER_R (+1.0R) in favor of the trade without
+    hitting the stop in that bar, 50% of the position (TP1_WEIGHT = 0.5) is
+    banked at +1.0R and the stop loss on the remaining 50% runner moves to the
+    entry price (fill) from the NEXT M15 bar onward.
+  * Order ended by zone / attempt_failed / bias_lost / zone_far_break: the ending
+    bar cannot touch. Ended by ceiling_break: the ending bar can touch.
+  * Unresolved = open_at_cutoff.
+  * Net R = gross R - spread_cost_r.
 """
-import math
-
+import numpy as np
 import pandas as pd
-
 from src import config
 
-TRADE_COLS = [
-    "id", "pullback", "setup", "variant", "kind", "side", "mode", "placed_time",
-    "fill_time", "exit_time", "entry", "fill_price", "stop", "target", "rr",
-    "status", "r", "bars_to_fill", "bars_held", "cancel_reason", "mfe_r", "mae_r",
-]
-
+STEP = pd.Timedelta(minutes=15)
+FAR = pd.Timestamp("2262-01-01", tz="UTC")
+LIQ_MIN_R = 3.0
 TP1_TRIGGER_R = 1.0
 TP1_WEIGHT = 0.5
 
-
-def _ok(x):
-    return x is not None and not (isinstance(x, float) and math.isnan(x))
-
-
-def _target(o, mode, fill):
-    up = o["side"] == "sell"
-    risk = (o["stop"] - fill) if up else (fill - o["stop"])
-    if risk <= 0:
-        return None, None
-    if mode == "rr3":
-        rr = float(config.RR_STATIC)
-        t = fill - rr * risk if up else fill + rr * risk
-        return float(t), rr
-    if not o["ceiling_locked"] or not _ok(o["ceiling"]):
-        return None, None
-    t = float(o["ceiling"])
-    rr = (fill - t) / risk if up else (t - fill) / risk
-    if rr <= 0:
-        return None, None
-    return t, float(rr)
+TRADE_COLS = [
+    "pair", "order_id", "pullback", "setup", "variant", "kind", "side",
+    "placed_time", "end_time", "end_reason", "ceiling", "ceiling_locked",
+    "entry", "stop", "status", "touch_time", "fill_time", "fill_price",
+    "risk_r", "spread_cost_r", "target_price", "outcome", "exit_time",
+    "exit_price", "r_gross", "net_r", "dur_hours", "mfe_r", "mae_r",
+    "open_at_entry", "kept_1at", "flip_while_open",
+    "leg", "target_mode", "target_kind", "target_r", "bos_time",
+    "zone_touch_time", "zone_tf", "zone_low", "zone_high", "choch_time",
+    "choch_level",
+]
+_COPY = ("pullback", "setup", "variant", "kind", "side", "placed_time", "end_time",
+         "end_reason", "ceiling", "ceiling_locked", "entry", "stop")
+_ZONE_COPY = ("bos_time", "zone_touch_time", "zone_tf", "zone_low", "zone_high",
+              "choch_time", "choch_level")
 
 
-def _sim_one(o, bars, times, mode, spread=0.0):
-    up = o["side"] == "sell"
-    entry = o["entry"]
-    stop = o["stop"]
+def prepare(m15):
+    ts = pd.DatetimeIndex(m15["timestamp"])
+    return {"open_t": ts, "close_t": ts + STEP,
+            "o": m15["open"].to_numpy(float), "h": m15["high"].to_numpy(float),
+            "l": m15["low"].to_numpy(float)}
+
+
+def _liq_target(o, fill, risk, sell):
+    """Liquidity target: nearest listed swing >= LIQ_MIN_R away, else the ceiling."""
+    need = float(LIQ_MIN_R) * risk
+    for p in o.get("liq") or []:
+        if sell and p <= fill - need:
+            return float(p), "swing"
+        if (not sell) and p >= fill + need:
+            return float(p), "swing"
+    c = o.get("ceiling")
+    if c is not None:
+        c = float(c)
+        if (sell and c < fill) or ((not sell) and c > fill):
+            return c, "ceiling"
+    return None, None
+
+
+def simulate_order(o, a, spread, pair, mode="static"):
+    sell = o["side"] == "sell"
+    limit = o.get("fill") == "limit"
+    leg = o.get("leg", "pullback")
+    rec = {c: None for c in TRADE_COLS}
+    rec["pair"] = pair
+    rec["order_id"] = o["id"]
+    for k in _COPY:
+        rec[k] = o[k]
+    rec["leg"] = leg
+    rec["target_mode"] = mode
+    for k in _ZONE_COPY:
+        rec[k] = o.get(k)
+    n = len(a["o"])
+    entry = float(o["entry"])
+    stop = float(o["stop"])
     end = o["end_time"]
-    fill_type = o.get("fill", "limit")
-    i0 = times.searchsorted(o["placed_time"], side="right")
-    fill_t = None
-    fill_i = None
-    fill = entry
-    for i in range(i0, len(bars)):
-        b = bars[i]
-        if end is not None and b.close_time > end:
-            return _row(o, mode, None, None, None, None, None, "cancelled", None,
-                        None, None, o["end_reason"])
-        if fill_type == "next_open":
-            fill = (b.open + spread) if not up else b.open
-            if (up and fill >= stop) or (not up and fill <= stop):
-                return _row(o, mode, None, None, None, None, None,
-                            "skipped_beyond_stop", None, None, None, "open_beyond_stop")
-            risk = (stop - fill) if up else (fill - stop)
-            if spread > 0.0 and (spread / risk) > float(config.MAX_SPREAD_RISK_RATIO):
-                return _row(o, mode, None, None, None, None, None,
-                            "skipped_spread", None, None, None, "spread_too_wide")
-            fill_t = b.close_time
-            fill_i = i
-            break
-        hit = b.high >= entry if up else (b.low + spread) <= entry
-        if hit:
-            fill = entry
-            risk = (stop - fill) if up else (fill - stop)
-            if spread > 0.0 and (spread / risk) > float(config.MAX_SPREAD_RISK_RATIO):
-                return _row(o, mode, None, None, None, None, None,
-                            "skipped_spread", None, None, None, "spread_too_wide")
-            fill_t = b.close_time
-            fill_i = i
-            break
-    if fill_t is None:
-        return _row(o, mode, None, None, None, None, None, "unfilled", None, None,
-                    None, None)
-    target, rr = _target(o, mode, fill)
-    if target is None:
-        why = "unlocked" if mode == "ceiling" else "bad_target"
-        return _row(o, mode, fill_t, None, fill, None, None, f"skipped_{why}", None,
-                    fill_i - i0 + 1, None, None)
-    risk = (stop - fill) if up else (fill - stop)
-    use_scaleout = (mode == "rr3")
-    tp1_trigger = (fill - TP1_TRIGGER_R * risk) if up else (fill + TP1_TRIGGER_R * risk)
-    full_win_r = (TP1_WEIGHT * TP1_TRIGGER_R + (1.0 - TP1_WEIGHT) * rr) if use_scaleout else rr
-    partial_win_r = TP1_WEIGHT * TP1_TRIGGER_R
-    curr_stop = stop
-    tp1_active = False
-    if fill_type == "next_open":
-        b0 = bars[fill_i]
-        sh0 = (b0.high + spread) >= stop if up else b0.low <= stop
-        th0 = (b0.low + spread) <= target if up else b0.high >= target
-        if sh0 and th0:
-            return _row(o, mode, fill_t, fill_t, fill, target, rr, "loss", -1.0,
-                        1, 0, "both_hit_open_bar", 0.0, 1.0)
-        if sh0:
-            return _row(o, mode, fill_t, fill_t, fill, target, rr, "loss", -1.0,
-                        1, 0, None, 0.0, 1.0)
-        if th0:
-            return _row(o, mode, fill_t, fill_t, fill, target, rr, "win", full_win_r,
-                        1, 0, None, rr, 0.0)
-        if use_scaleout:
-            tp1_0 = (b0.low + spread) <= tp1_trigger if up else b0.high >= tp1_trigger
-            if tp1_0:
-                curr_stop = fill
-                tp1_active = True
-    mfe_r = 0.0
-    mae_r = 0.0
-    for j in range(fill_i + 1, len(bars)):
-        b = bars[j]
-        if up:
-            fav = (fill - (b.low + spread)) / risk
-            adv = ((b.high + spread) - fill) / risk
+    s = int(a["open_t"].searchsorted(o["placed_time"], side="left"))
+    if end is None:
+        e = n
+    elif o["end_reason"] == "ceiling_break":
+        e = int(a["close_t"].searchsorted(end, side="right"))
+    else:
+        e = int(a["close_t"].searchsorted(end, side="left"))
+    e = min(max(e, s), n)
+    touch = None
+    if e > s:
+        seg = (a["h"][s:e] >= entry) if sell else (a["l"][s:e] <= entry)
+        if seg.any():
+            touch = s + int(np.argmax(seg))
+    if touch is None:
+        rec["status"] = "unfilled_open" if end is None else "unfilled_cancelled"
+        return rec
+    rec["touch_time"] = a["close_t"][touch]
+    open_fill = False
+    if limit:
+        # Limit order: filled inside the touch bar.
+        f = touch
+        bar_open = float(a["o"][f])
+        open_fill = (bar_open >= entry) if sell else (bar_open <= entry)
+        fill = bar_open if open_fill else entry
+    else:
+        f = touch + 1
+        if f >= n:
+            rec["status"] = "unfilled_open"
+            return rec
+        fill = float(a["o"][f])
+    rec["fill_time"] = a["open_t"][f]
+    rec["fill_price"] = fill
+    if (sell and fill >= stop) or ((not sell) and fill <= stop):
+        rec["status"] = "fill_beyond_stop"
+        return rec
+    risk = abs(fill - stop)
+    sc = float(spread) / risk
+    rec["risk_r"] = risk
+    rec["spread_cost_r"] = sc
+    if sc > float(config.MAX_SPREAD_RISK_RATIO):
+        rec["status"] = "skipped_spread"
+        return rec
+    if mode == "liquidity":
+        target, tkind = _liq_target(o, fill, risk, sell)
+        if target is None:
+            rec["status"] = "skipped_no_target"
+            return rec
+    else:
+        rr = o.get("rr")
+        rr = float(config.RR_STATIC) if rr is None else float(rr)
+        target = fill - rr * risk if sell else fill + rr * risk
+        tkind = "static"
+    target_r = abs(target - fill) / risk
+    rec["target_price"] = target
+    rec["target_kind"] = tkind
+    rec["target_r"] = target_r
+    rec["status"] = "filled"
+    h = a["h"][f:]
+    l = a["l"][f:]
+    op = a["o"][f:]
+    if sell:
+        stop_hit = h >= stop
+        tgt_hit = l <= target
+        gap = op >= stop
+    else:
+        stop_hit = l <= stop
+        tgt_hit = h >= target
+        gap = op <= stop
+    gap[0] = False
+    if limit and not open_fill:
+        # Mid-bar edge fill: the target cannot be counted in the fill bar.
+        tgt_hit[0] = False
+    si = int(np.argmax(stop_hit)) if stop_hit.any() else None
+    ti = int(np.argmax(tgt_hit)) if tgt_hit.any() else None
+
+    use_scaleout = (mode == "static")
+    pi = None
+    if use_scaleout:
+        tp1_trig = (fill - float(TP1_TRIGGER_R) * risk) if sell else (fill + float(TP1_TRIGGER_R) * risk)
+        tp1_hit = (l <= tp1_trig) if sell else (h >= tp1_trig)
+        if limit and not open_fill:
+            tp1_hit[0] = False
+        pi = int(np.argmax(tp1_hit)) if tp1_hit.any() else None
+
+    tp1_before_stop = (
+        use_scaleout
+        and pi is not None
+        and (si is None or pi < si)
+    )
+    full_target_hit = False
+    gross = None
+
+    if tp1_before_stop and ti is not None and pi == ti:
+        # Price reached +1.0R and +3.0R on the same impulse bar without hitting stop
+        idx = ti
+        ex = target
+        out = "target"
+        full_target_hit = True
+        gross = float(TP1_WEIGHT) * float(TP1_TRIGGER_R) + (1.0 - float(TP1_WEIGHT)) * target_r
+    elif tp1_before_stop:
+        if pi + 1 >= len(h):
+            rec["outcome"] = "open_at_cutoff"
+            return rec
+        start = pi + 1
+        be_stop_hit = (h[start:] >= fill) if sell else (l[start:] <= fill)
+        be_gap = (op[start:] >= fill) if sell else (op[start:] <= fill)
+        bsi = (start + int(np.argmax(be_stop_hit))) if be_stop_hit.any() else None
+        if bsi is not None and (ti is None or bsi <= ti):
+            idx = bsi
+            if be_gap[bsi - start]:
+                ex = float(op[bsi])
+            else:
+                ex = fill
+            runner_r = ((fill - ex) / risk) if sell else ((ex - fill) / risk)
+            gross = float(TP1_WEIGHT) * float(TP1_TRIGGER_R) + (1.0 - float(TP1_WEIGHT)) * runner_r
+            out = "target" if (gross - sc) > 0.0 else ("stop_gap" if be_gap[bsi - start] else "stop")
+        elif ti is not None:
+            idx = ti
+            ex = target
+            out = "target"
+            full_target_hit = True
+            gross = float(TP1_WEIGHT) * float(TP1_TRIGGER_R) + (1.0 - float(TP1_WEIGHT)) * target_r
         else:
-            fav = (b.high - fill) / risk
-            adv = (fill - b.low) / risk
-        if fav > mfe_r:
-            mfe_r = fav
-        if adv > mae_r:
-            mae_r = adv
-        stop_hit = (b.high + spread) >= curr_stop if up else b.low <= curr_stop
-        target_hit = (b.low + spread) <= target if up else b.high >= target
-        if stop_hit and target_hit:
-            status = "win" if tp1_active else "loss"
-            r_val = partial_win_r if tp1_active else -1.0
-            return _row(o, mode, fill_t, b.close_time, fill, target, rr, status,
-                        r_val, fill_i - i0 + 1, j - fill_i, "both_hit_same_bar",
-                        mfe_r, mae_r)
-        if stop_hit:
-            status = "win" if tp1_active else "loss"
-            r_val = partial_win_r if tp1_active else -1.0
-            return _row(o, mode, fill_t, b.close_time, fill, target, rr, status,
-                        r_val, fill_i - i0 + 1, j - fill_i, None, mfe_r, mae_r)
-        if target_hit:
-            return _row(o, mode, fill_t, b.close_time, fill, target, rr, "win",
-                        full_win_r, fill_i - i0 + 1, j - fill_i, None, mfe_r, mae_r)
-        if use_scaleout and not tp1_active:
-            tp1_hit = (b.low + spread) <= tp1_trigger if up else b.high >= tp1_trigger
-            if tp1_hit:
-                curr_stop = fill
-                tp1_active = True
-    return _row(o, mode, fill_t, None, fill, target, rr, "open", None,
-                fill_i - i0 + 1, len(bars) - 1 - fill_i, None, mfe_r, mae_r)
+            rec["outcome"] = "open_at_cutoff"
+            return rec
+    else:
+        if si is None and ti is None:
+            rec["outcome"] = "open_at_cutoff"
+            return rec
+        if ti is None or (si is not None and si <= ti):
+            idx = si
+            if gap[si]:
+                ex = float(op[si])
+                out = "stop_gap"
+            else:
+                ex = stop
+                out = "stop"
+        else:
+            idx = ti
+            ex = target
+            out = "target"
+            full_target_hit = True
+        gross = ((fill - ex) / risk) if sell else ((ex - fill) / risk)
+
+    # Compute MFE and MAE in R-multiples across the active trade path [0..idx]
+    fav_start = 1 if (limit and not open_fill) else 0
+    if fav_start <= idx:
+        if sell:
+            best_fav = float(np.min(l[fav_start:idx + 1]))
+            mfe_r = max(0.0, (fill - best_fav) / risk)
+        else:
+            best_fav = float(np.max(h[fav_start:idx + 1]))
+            mfe_r = max(0.0, (best_fav - fill) / risk)
+    else:
+        mfe_r = 0.0
+    if full_target_hit:
+        mfe_r = max(mfe_r, target_r)
+    if sell:
+        worst_adv = float(np.max(h[:idx + 1]))
+        mae_r = max(0.0, (worst_adv - fill) / risk)
+    else:
+        worst_adv = float(np.min(l[:idx + 1]))
+        mae_r = max(0.0, (fill - worst_adv) / risk)
+
+    exit_time = a["close_t"][f + idx]
+    rec["outcome"] = out
+    rec["exit_time"] = exit_time
+    rec["exit_price"] = ex
+    rec["r_gross"] = gross
+    rec["net_r"] = gross - sc
+    rec["dur_hours"] = (exit_time - rec["fill_time"]).total_seconds() / 3600.0
+    rec["mfe_r"] = mfe_r
+    rec["mae_r"] = mae_r
+    return rec
 
 
-def _row(o, mode, fill_t, exit_t, fill_p, target, rr, status, r, btf, bh, reason,
-         mfe_r=None, mae_r=None):
-    return {"id": o["id"], "pullback": o["pullback"], "setup": o["setup"],
-            "variant": o.get("variant", "plain"), "kind": o["kind"],
-            "side": o["side"], "mode": mode, "placed_time": o["placed_time"],
-            "fill_time": fill_t, "exit_time": exit_t, "entry": o["entry"],
-            "fill_price": fill_p, "stop": o["stop"], "target": target, "rr": rr,
-            "status": status, "r": r, "bars_to_fill": btf, "bars_held": bh,
-            "cancel_reason": reason, "mfe_r": mfe_r, "mae_r": mae_r}
+def tag_trades(recs, flips):
+    """open_at_entry, kept_1at (one-at-a-time per pair), flip_while_open.
+    Call once per scorecard group (leg + target_mode)."""
+    filled = [r for r in recs if r["status"] == "filled"]
+    filled.sort(key=lambda r: r["fill_time"])
+
+    def held(r):
+        return FAR if r["outcome"] == "open_at_cutoff" else r["exit_time"]
+
+    last_free = None
+    for i, r in enumerate(filled):
+        et = r["fill_time"]
+        r["open_at_entry"] = sum(1 for j in range(i) if held(filled[j]) > et)
+        if last_free is None or et >= last_free:
+            r["kept_1at"] = True
+            last_free = held(r)
+        else:
+            r["kept_1at"] = False
+        hu = held(r)
+        r["flip_while_open"] = bool(any(et < fl <= hu for fl in flips))
+    for r in recs:
+        if r["status"] != "filled":
+            r["kept_1at"] = False
+            r["flip_while_open"] = False
 
 
-def simulate(orders, m15_df, spread=0.0):
-    bars = [row for row in m15_df.itertuples(index=False)]
-    times = pd.Index([b.close_time for b in bars])
-    rows = []
+def simulate_all(orders, m15, pair):
+    """Pullback orders: one play (static). Zone orders: two plays.
+    Any other leg (for example the aggressive run): one play (static)."""
+    a = prepare(m15)
+    spread = config.SPREAD_PRICE[pair]
+    out = []
     for o in orders:
-        for mode in ("ceiling", "rr3"):
-            rows.append(_sim_one(o, bars, times, mode, spread=spread))
-    return pd.DataFrame(rows, columns=TRADE_COLS)
+        out.append(simulate_order(o, a, spread, pair, "static"))
+        if o.get("leg") == "zone":
+            out.append(simulate_order(o, a, spread, pair, "liquidity"))
+    return out
