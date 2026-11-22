@@ -345,7 +345,7 @@ class CycleRecorder(MapRecorder):
                 self.counts["ob_sell_overlap_skipped"] += 1
                 return None
         if kind == "ob" and not up:
-            if float(p.high) - float(p.low) < 0.25 * float(atr):
+            if float(p.high) - float(p.low) < 0.40 * float(atr):
                 self.counts["ob_buy_box_too_narrow"] += 1
                 return None
             if 16 <= now.hour < 20:
