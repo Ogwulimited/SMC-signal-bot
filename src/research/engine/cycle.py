@@ -335,7 +335,8 @@ class CycleRecorder(MapRecorder):
             self.counts[kind + "_entry_not_ahead"] += 1
             return None
         if kind == "ob" and up and setup.get("idm") is not None:
-            if float(entry) - float(setup["idm"]) < 0.5 * float(atr):
+            min_idm_atr = 0.75 if (6 <= now.hour < 12) else 0.5
+            if float(entry) - float(setup["idm"]) < min_idm_atr * float(atr):
                 self.counts["ob_idm_too_close"] += 1
                 return None
             if float(p.high) - float(p.low) > 1.75 * float(atr):
@@ -345,7 +346,7 @@ class CycleRecorder(MapRecorder):
                 self.counts["ob_sell_overlap_skipped"] += 1
                 return None
         if kind == "ob" and not up:
-            if float(p.high) - float(p.low) < 0.40 * float(atr):
+            if float(p.high) - float(p.low) < 0.25 * float(atr):
                 self.counts["ob_buy_box_too_narrow"] += 1
                 return None
             if 16 <= now.hour < 20:
