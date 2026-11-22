@@ -32,6 +32,7 @@ NUM_COLS = ("net_r", "r_gross", "dur_hours", "mfe_r", "mae_r", "spread_cost_r",
             "exit_price", "zone_low", "zone_high", "choch_level")
 DONE = ["target", "stop", "stop_gap"]
 V1_PULLBACK = (1455, -21.13)
+DEEP_DIVE_MONTHS = ("2017-08", "2019-06", "2020-04", "2021-07", "2022-05")
 
 
 def fmt(x, d=2):
@@ -52,6 +53,31 @@ def ftime(x):
     if x is None or pd.isna(x):
         return "n/a"
     return x.strftime("%Y-%m-%d %H:%M")
+
+
+def fclock(x):
+    if x is None or pd.isna(x):
+        return "n/a"
+    ampm = x.strftime("%I:%M %p").lstrip("0")
+    return f"{x.strftime('%H:%M')} UTC ({ampm})"
+
+
+def outcome_label(r):
+    if r["outcome"] == "target":
+        return "WIN (+3R)"
+    gross = float(r["r_gross"]) if r["r_gross"] is not None and not pd.isna(r["r_gross"]) else -1.0
+    if abs(gross) < 1e-6:
+        return "BREAK-EVEN (0R)"
+    return "LOSS (-1R)"
+
+
+def outcome_short(r):
+    if r["outcome"] == "target":
+        return "WIN"
+    gross = float(r["r_gross"]) if r["r_gross"] is not None and not pd.isna(r["r_gross"]) else -1.0
+    if abs(gross) < 1e-6:
+        return "BE"
+    return "LOSS"
 
 
 def table(head, rows):
@@ -168,6 +194,70 @@ def win_loss_be_counts(sub):
     be = int((non_win["r_gross"].astype(float).abs() < 1e-6).sum())
     losses = len(sub) - wins - be
     return wins, losses, be
+
+
+def render_five_month_deep_dive(m_records):
+    by_ym = {r["ym"]: r for r in m_records}
+    chosen = [by_ym[ym] for ym in DEEP_DIVE_MONTHS if ym in by_ym and by_ym[ym]["n"] > 0]
+    if len(chosen) < 5:
+        used = {r["ym"] for r in chosen}
+        extra = [r for r in sorted(m_records, key=lambda x: -x["n"])
+                 if r["n"] > 0 and r["ym"] not in used]
+        chosen.extend(extra[:5 - len(chosen)])
+    if not chosen:
+        return []
+    out = ["### 5-Month Day-by-Day & Trade-by-Trade Chronological Deep Dive (Full 30/31-Day Calendar)"]
+    out.append("Below are 5 selected months across different years showing every calendar day from the "
+               "1st to the end of the month, the exact time each trade was filled, the chronological "
+               "win/loss sequence, and days with `No trade`.")
+    out.append("")
+    for idx_m, mr in enumerate(chosen, 1):
+        ym_str = mr["ym"]
+        p_m = pd.Period(ym_str, freq="M")
+        month_title = p_m.start_time.strftime("%B %Y")
+        sub = mr["sub"].sort_values(["fill_time", "exit_time"]).reset_index(drop=True)
+        out.append(f"#### Month {idx_m}: {month_title} ({ym_str}) — {mr['n']} Trades "
+                   f"({mr['wins']} Wins, {mr['losses']} Losses, {mr['be']} Break-Even | "
+                   f"Win Rate: {fmt(mr['wr'], 1)}% | Net R: {fmt(mr['net'], 2)} R | PF: {fmt(mr['pf'], 2)})")
+        seq_parts = []
+        for t_idx, (_, tr) in enumerate(sub.iterrows(), 1):
+            short_res = outcome_short(tr)
+            net_val = float(tr["net_r"])
+            sign = "+" if net_val >= 0 else ""
+            seq_parts.append(f"Trade {t_idx}: **{short_res}** ({sign}{fmt(net_val, 2)}R)")
+        out.append("**Chronological Trade Sequence:** " + " -> ".join(seq_parts))
+        out.append("")
+        days = pd.date_range(p_m.start_time.date(), p_m.end_time.date(), freq="D")
+        sub_dates = sub["fill_time"].dt.date.tolist()
+        day_rows = []
+        running_r = 0.0
+        for d in days:
+            d_date = d.date()
+            d_str = d.strftime("%d %b %Y (%a)")
+            matching_indices = [i for i, dt in enumerate(sub_dates) if dt == d_date]
+            if not matching_indices:
+                day_rows.append([d_str, "-", "-", "No trade", "-", "-", "-", fmt(running_r, 2)])
+            else:
+                for i in matching_indices:
+                    tr = sub.iloc[i]
+                    t_num = i + 1
+                    net_v = float(tr["net_r"])
+                    running_r += net_v
+                    model_str = f"{tr['pair']} ({tr['leg']} {tr['kind']} {tr['side']})"
+                    day_rows.append([
+                        d_str,
+                        f"Trade #{t_num}",
+                        fclock(tr["fill_time"]),
+                        model_str,
+                        outcome_label(tr),
+                        fmt(net_v, 2),
+                        ftime(tr["exit_time"]),
+                        fmt(running_r, 2),
+                    ])
+        out += table(["Calendar Date", "Order #", "Bot Entry Time", "Pair & Setup",
+                      "Resolution", "Trade Net R", "Resolved At (UTC)", "Running Month R"], day_rows)
+        out.append("")
+    return out
 
 
 def main():
@@ -303,7 +393,6 @@ def main():
         yrows.append([name, st["n"], fmt(st["net"]), fmt(st["wr"], 1), fmt(st["pf"])])
     L += table(["Year", "Trades", "Net R", "Win %", "PF"], yrows)
     L.append("")
-
     # ------------------------------------------------------------ Section 7: Monthly Performance
     L += ["## 7. Monthly Consistency & Individual Month Spotlight (15+ Trades)"]
     all_months = pd.period_range("2016-01", "2022-06", freq="M")
@@ -313,7 +402,6 @@ def main():
     else:
         res_m = res.copy()
         res_m["ym"] = pd.Series(dtype="period[M]")
-
     m_counts = []
     m_records = []
     for ym in all_months:
@@ -345,7 +433,6 @@ def main():
          f"{sum(1 for r in m_records if r['n'] > 0)}"]
     ])
     L.append("")
-
     qual_15 = [r for r in m_records if r["n"] >= 15]
     if qual_15:
         qual_sorted = sorted(qual_15, key=lambda x: x["n"])
@@ -370,7 +457,6 @@ def main():
                     "Break-Even (0R gross)", "Win %", "Gross R", "Spread Cost R",
                     "Net R", "PF"], s_rows)
         L.append("")
-
         # Model breakdown inside the Typical (Median) 15+ Trade Month
         L.append(f"**Entry Model Breakdown Inside Spotlight Month ({rep_m['ym']}: "
                  f"{rep_m['n']} Trades, {rep_m['wins']} Wins, {rep_m['losses']} Losses, "
@@ -394,7 +480,6 @@ def main():
             ms_rows.append([label_g, gst["n"], gw, gl, gbe, fmt(gst["wr"], 1), fmt(gst["net"], 2)])
         L += table(["Model", "Trades", "Wins", "Losses", "Break-Even", "Win %", "Net R"], ms_rows)
         L.append("")
-
         L.append(f"### All {len(qual_15)} Individual Months with 15+ Trades (Chronological)")
         q_rows = []
         for mr in qual_15:
@@ -405,7 +490,8 @@ def main():
         L += table(["Month", "Trades", "Wins", "Losses", "Break-Even", "Win %",
                     "Net R", "Expectancy", "PF"], q_rows)
         L.append("")
-
+    # ------------------------------------------------------------ 5-Month Day-by-Day Calendar Card
+    L += render_five_month_deep_dive(m_records)
     # ------------------------------------------------------------ Extras
     L += ["## Extras", "", "### Scorecards side by side (Static 1:3 & Zone Liquidity)"]
     cards = (("COMBINED (Zone + Pullback) (MAIN)", call, cres),
@@ -436,7 +522,6 @@ def main():
         L.append(f"**{name}**")
         L += table(["Group", "Trades", "Win %", "Net R", "Expectancy"], split_rows(r))
         L.append("")
-
     # ------------------------------------------------------------ Phase 1D: MFE / MAE Telemetry
     L += ["### Trade-Path MFE / MAE & Milestone Reversal Diagnostics (Static 1:3)"]
     mfe_rows = []
@@ -473,7 +558,6 @@ def main():
                 "Med MAE (R)", "Win Med MAE (R)", "Non-Win >=1.0R", "Non-Win >=1.5R",
                 "Non-Win >=2.0R", "Non-Win >=2.5R"], mfe_rows)
     L.append("")
-
     # ------------------------------------------------------------ Sub-period 2016-2019 vs 2020-2022
     L += ["### Sub-Period Comparison by Entry Model (2016-2019 vs. 2020-June 2022)"]
     sp_rows = []
@@ -498,7 +582,6 @@ def main():
     L += table(["Model", "2016-19 Trades", "2016-19 Win %", "2016-19 Net R", "2016-19 Exp",
                 "2020-22 Trades", "2020-22 Win %", "2020-22 Net R", "2020-22 Exp"], sp_rows)
     L.append("")
-
     # ------------------------------------------------------------ Pending Order Age & Session Diagnostics
     if len(res):
         L += ["### Setup Freshness: Pending Order Wait Time (Placed -> Fill Hours)"]
@@ -522,7 +605,6 @@ def main():
         L += table(["Order Wait Bucket", "All Trades", "All Win %", "All Net R", "All Exp",
                     "PB Sell Trades", "PB Sell Net R", "PB Sell Exp"], age_rows)
         L.append("")
-
         L += ["### Session Timing Breakdown (by UTC Order Placement & Fill Hour)"]
         sess_rows = []
         p_hr = res["placed_time"].dt.hour
@@ -551,7 +633,6 @@ def main():
                     "PB Sell N", "PB Sell Net R", "PB Sell Exp",
                     "PB Buy N", "PB Buy Net R", "Zone N", "Zone Net R"], sess_rows)
         L.append("")
-
     L += ["### All pairs (MAIN card: Combined Zone + Pullback, static 1:3)"]
     prow, warns = [], []
     for p in expect:
