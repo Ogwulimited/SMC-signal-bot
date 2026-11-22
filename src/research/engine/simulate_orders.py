@@ -22,11 +22,11 @@ Takes the orders the cycle produced and plays them on M15 bars.
   * Spread cost = SPREAD_PRICE[pair] / risk. Above MAX_SPREAD_RISK_RATIO -> skipped_spread.
   * Stop wins a same-bar tie. A bar that OPENS beyond the stop fills the loss
     at that open (loss can exceed 1R).
-  * Partial Scale-Out & Break-Even Runner (Option A): on static 1:3 R trades,
-    once price reaches TP1_TRIGGER_R (+1.0R) in favor of the trade without
-    hitting the stop in that bar, 50% of the position (TP1_WEIGHT = 0.5) is
-    banked at +1.0R and the stop loss on the remaining 50% runner moves to the
-    entry price (fill) from the NEXT M15 bar onward.
+  * Break-Even Stop Protection (Stage 2, Option A): on counter-trend pullback
+    sells against a Bull HTF (leg == "pullback", kind == "ob", side == "sell"),
+    once price reaches BE_TRIGGER_R (+2.0R) in favor of the trade without
+    hitting the stop or target in that bar, the stop loss moves to the entry
+    price (fill) from the NEXT M15 bar onward.
   * Order ended by zone / attempt_failed / bias_lost / zone_far_break: the ending
     bar cannot touch. Ended by ceiling_break: the ending bar can touch.
   * Unresolved = open_at_cutoff.
@@ -35,13 +35,10 @@ Takes the orders the cycle produced and plays them on M15 bars.
 import numpy as np
 import pandas as pd
 from src import config
-
 STEP = pd.Timedelta(minutes=15)
 FAR = pd.Timestamp("2262-01-01", tz="UTC")
 LIQ_MIN_R = 3.0
-TP1_TRIGGER_R = 1.0
-TP1_WEIGHT = 0.5
-
+BE_TRIGGER_R = 2.0
 TRADE_COLS = [
     "pair", "order_id", "pullback", "setup", "variant", "kind", "side",
     "placed_time", "end_time", "end_reason", "ceiling", "ceiling_locked",
@@ -57,15 +54,11 @@ _COPY = ("pullback", "setup", "variant", "kind", "side", "placed_time", "end_tim
          "end_reason", "ceiling", "ceiling_locked", "entry", "stop")
 _ZONE_COPY = ("bos_time", "zone_touch_time", "zone_tf", "zone_low", "zone_high",
               "choch_time", "choch_level")
-
-
 def prepare(m15):
     ts = pd.DatetimeIndex(m15["timestamp"])
     return {"open_t": ts, "close_t": ts + STEP,
             "o": m15["open"].to_numpy(float), "h": m15["high"].to_numpy(float),
             "l": m15["low"].to_numpy(float)}
-
-
 def _liq_target(o, fill, risk, sell):
     """Liquidity target: nearest listed swing >= LIQ_MIN_R away, else the ceiling."""
     need = float(LIQ_MIN_R) * risk
@@ -80,8 +73,6 @@ def _liq_target(o, fill, risk, sell):
         if (sell and c < fill) or ((not sell) and c > fill):
             return c, "ceiling"
     return None, None
-
-
 def simulate_order(o, a, spread, pair, mode="static"):
     sell = o["side"] == "sell"
     limit = o.get("fill") == "limit"
@@ -151,10 +142,9 @@ def simulate_order(o, a, spread, pair, mode="static"):
         rr = float(config.RR_STATIC) if rr is None else float(rr)
         target = fill - rr * risk if sell else fill + rr * risk
         tkind = "static"
-    target_r = abs(target - fill) / risk
     rec["target_price"] = target
     rec["target_kind"] = tkind
-    rec["target_r"] = target_r
+    rec["target_r"] = abs(target - fill) / risk
     rec["status"] = "filled"
     h = a["h"][f:]
     l = a["l"][f:]
@@ -173,54 +163,38 @@ def simulate_order(o, a, spread, pair, mode="static"):
         tgt_hit[0] = False
     si = int(np.argmax(stop_hit)) if stop_hit.any() else None
     ti = int(np.argmax(tgt_hit)) if tgt_hit.any() else None
-
-    use_scaleout = (mode == "static")
-    pi = None
-    if use_scaleout:
-        tp1_trig = (fill - float(TP1_TRIGGER_R) * risk) if sell else (fill + float(TP1_TRIGGER_R) * risk)
-        tp1_hit = (l <= tp1_trig) if sell else (h >= tp1_trig)
+    use_be = (leg == "pullback" and sell and o["kind"] == "ob")
+    bi = None
+    if use_be:
+        be_trig = fill - float(BE_TRIGGER_R) * risk
+        be_hit = l <= be_trig
         if limit and not open_fill:
-            tp1_hit[0] = False
-        pi = int(np.argmax(tp1_hit)) if tp1_hit.any() else None
-
-    tp1_before_stop = (
-        use_scaleout
-        and pi is not None
-        and (si is None or pi < si)
+            be_hit[0] = False
+        bi = int(np.argmax(be_hit)) if be_hit.any() else None
+    be_active = (
+        use_be
+        and bi is not None
+        and (si is None or bi < si)
+        and (ti is None or bi < ti)
+        and (bi + 1 < len(h))
     )
-    full_target_hit = False
-    gross = None
-
-    if tp1_before_stop and ti is not None and pi == ti:
-        # Price reached +1.0R and +3.0R on the same impulse bar without hitting stop
-        idx = ti
-        ex = target
-        out = "target"
-        full_target_hit = True
-        gross = float(TP1_WEIGHT) * float(TP1_TRIGGER_R) + (1.0 - float(TP1_WEIGHT)) * target_r
-    elif tp1_before_stop:
-        if pi + 1 >= len(h):
-            rec["outcome"] = "open_at_cutoff"
-            return rec
-        start = pi + 1
-        be_stop_hit = (h[start:] >= fill) if sell else (l[start:] <= fill)
-        be_gap = (op[start:] >= fill) if sell else (op[start:] <= fill)
+    if be_active:
+        start = bi + 1
+        be_stop_hit = h[start:] >= fill
+        be_gap = op[start:] >= fill
         bsi = (start + int(np.argmax(be_stop_hit))) if be_stop_hit.any() else None
         if bsi is not None and (ti is None or bsi <= ti):
             idx = bsi
             if be_gap[bsi - start]:
                 ex = float(op[bsi])
+                out = "stop_gap"
             else:
                 ex = fill
-            runner_r = ((fill - ex) / risk) if sell else ((ex - fill) / risk)
-            gross = float(TP1_WEIGHT) * float(TP1_TRIGGER_R) + (1.0 - float(TP1_WEIGHT)) * runner_r
-            out = "target" if (gross - sc) > 0.0 else ("stop_gap" if be_gap[bsi - start] else "stop")
+                out = "stop"
         elif ti is not None:
             idx = ti
             ex = target
             out = "target"
-            full_target_hit = True
-            gross = float(TP1_WEIGHT) * float(TP1_TRIGGER_R) + (1.0 - float(TP1_WEIGHT)) * target_r
         else:
             rec["outcome"] = "open_at_cutoff"
             return rec
@@ -240,9 +214,6 @@ def simulate_order(o, a, spread, pair, mode="static"):
             idx = ti
             ex = target
             out = "target"
-            full_target_hit = True
-        gross = ((fill - ex) / risk) if sell else ((ex - fill) / risk)
-
     # Compute MFE and MAE in R-multiples across the active trade path [0..idx]
     fav_start = 1 if (limit and not open_fill) else 0
     if fav_start <= idx:
@@ -254,15 +225,15 @@ def simulate_order(o, a, spread, pair, mode="static"):
             mfe_r = max(0.0, (best_fav - fill) / risk)
     else:
         mfe_r = 0.0
-    if full_target_hit:
-        mfe_r = max(mfe_r, target_r)
+    if out == "target":
+        mfe_r = max(mfe_r, abs(target - fill) / risk)
     if sell:
         worst_adv = float(np.max(h[:idx + 1]))
         mae_r = max(0.0, (worst_adv - fill) / risk)
     else:
         worst_adv = float(np.min(l[:idx + 1]))
         mae_r = max(0.0, (fill - worst_adv) / risk)
-
+    gross = (fill - ex) / risk if sell else (ex - fill) / risk
     exit_time = a["close_t"][f + idx]
     rec["outcome"] = out
     rec["exit_time"] = exit_time
@@ -273,17 +244,13 @@ def simulate_order(o, a, spread, pair, mode="static"):
     rec["mfe_r"] = mfe_r
     rec["mae_r"] = mae_r
     return rec
-
-
 def tag_trades(recs, flips):
     """open_at_entry, kept_1at (one-at-a-time per pair), flip_while_open.
     Call once per scorecard group (leg + target_mode)."""
     filled = [r for r in recs if r["status"] == "filled"]
     filled.sort(key=lambda r: r["fill_time"])
-
     def held(r):
         return FAR if r["outcome"] == "open_at_cutoff" else r["exit_time"]
-
     last_free = None
     for i, r in enumerate(filled):
         et = r["fill_time"]
@@ -299,8 +266,6 @@ def tag_trades(recs, flips):
         if r["status"] != "filled":
             r["kept_1at"] = False
             r["flip_while_open"] = False
-
-
 def simulate_all(orders, m15, pair):
     """Pullback orders: one play (static). Zone orders: two plays.
     Any other leg (for example the aggressive run): one play (static)."""
