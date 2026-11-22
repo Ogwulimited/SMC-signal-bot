@@ -335,7 +335,7 @@ class CycleRecorder(MapRecorder):
             self.counts[kind + "_entry_not_ahead"] += 1
             return None
         if kind == "ob" and up and setup.get("idm") is not None:
-            min_idm_atr = 1.00 if (6 <= now.hour < 12) else 0.5
+            min_idm_atr = 0.75 if (6 <= now.hour < 12) else 0.5
             if float(entry) - float(setup["idm"]) < min_idm_atr * float(atr):
                 self.counts["ob_idm_too_close"] += 1
                 return None
