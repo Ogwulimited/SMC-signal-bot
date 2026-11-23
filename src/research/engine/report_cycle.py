@@ -4,7 +4,7 @@ Env: REPORT_LABEL (file name label), EXPECT_PAIRS (comma list).
 Writes reports/phase4/report_cycle_<label>.md and the GitHub step summary.
 Static 1:3 scorecards:
   combined / static  = MAIN (sections 1-7), Zone + Pullback together, 1:3 target
-  zone / static      = with-trend zone trades, 1:3 target
+  zone / static      = with-trend zone trades (D1 + H4 + H1), 1:3 target
   pullback / static  = counter-trend pullback trades, 1:3 target
 """
 import json
@@ -201,6 +201,7 @@ def _trend_description(tr):
     hb = str(tr.get("htf_bias", "") or "").lower()
     leg = str(tr.get("leg", "pullback")).lower()
     side = str(tr.get("side", "")).lower()
+    ztf = str(tr.get("zone_tf", "") or "").upper()
     if hb not in ("bull", "bear"):
         if leg == "zone":
             hb = "bull" if side == "buy" else "bear"
@@ -208,7 +209,8 @@ def _trend_description(tr):
             hb = "bull" if side == "sell" else "bear"
     trend_word = "BULLISH (D1 + H4 Bull)" if hb == "bull" else "BEARISH (D1 + H4 Bear)"
     if leg == "zone":
-        mode_desc = f"With-Trend HTF Zone {side.upper()}"
+        z_label = "H1 Continuation Zone" if ztf == "H1" else f"{ztf} Deep HTF Zone"
+        mode_desc = f"With-Trend {z_label} {side.upper()}"
     else:
         mode_desc = f"Counter-Trend Pullback {side.upper()} (retracement against {hb.upper()} HTF)"
     return f"{trend_word} — {mode_desc}"
@@ -219,12 +221,14 @@ def _format_trade_chart_audit(t_num, tr):
     kind = str(tr.get("kind", "ob")).upper()
     side = str(tr.get("side", "")).upper()
     pair = str(tr.get("pair", "")).upper()
+    ztf_raw = str(tr.get("zone_tf", "") or "").upper()
+    leg_tag = f"ZONE ({ztf_raw})" if leg == "zone" and ztf_raw else leg.upper()
     res_lbl = outcome_label(tr)
     net_v = float(tr["net_r"])
     sign = "+" if net_v >= 0 else ""
 
     lines = [
-        f"- **Trade #{t_num} ({ftime(tr['fill_time'])} UTC) | {pair} | {leg.upper()} {kind} {side} -> {res_lbl} (Net {sign}{fmt(net_v, 2)} R)**",
+        f"- **Trade #{t_num} ({ftime(tr['fill_time'])} UTC) | {pair} | {leg_tag} {kind} {side} -> {res_lbl} (Net {sign}{fmt(net_v, 2)} R)**",
         f"  - **1. HTF Trend / Bias:** {_trend_description(tr)}",
     ]
 
@@ -237,7 +241,7 @@ def _format_trade_chart_audit(t_num, tr):
     if leg == "zone":
         lines.append(
             f"  - **2. HTF Zone & Tap/Sweep Into Zone:** {ztf} Zone `{fmt(zlow, 5)}` to `{fmt(zhigh, 5)}` | "
-            f"Price tapped/swept into HTF Zone at `{ftime(ztouch)} UTC` "
+            f"Price tapped/swept into {ztf} Zone at `{ftime(ztouch)} UTC` "
             f"(preceding counter-trend M15 BOS at `{ftime(tr.get('bos_time'))} UTC`; "
             f"Impulse Ceiling at `{fmt(tr.get('ceiling'), 5)}`)"
         )
@@ -337,7 +341,9 @@ def render_five_month_deep_dive(m_records):
                     hb = str(tr.get("htf_bias", "") or "").lower()
                     if hb not in ("bull", "bear"):
                         hb = ("bull" if tr["side"] == "buy" else "bear") if tr["leg"] == "zone" else ("bull" if tr["side"] == "sell" else "bear")
-                    model_str = f"{tr['pair']} ({tr['leg']} {tr['kind']} {tr['side']} | HTF {hb.upper()})"
+                    ztf = str(tr.get("zone_tf", "") or "").upper()
+                    leg_txt = f"zone {ztf}" if tr["leg"] == "zone" and ztf else str(tr["leg"])
+                    model_str = f"{tr['pair']} ({leg_txt} {tr['kind']} {tr['side']} | HTF {hb.upper()})"
                     day_rows.append([
                         d_str,
                         f"Trade #{t_num}",
@@ -382,6 +388,10 @@ def main():
     zall, zres = card(full, "zone", "static")
     zlall, zlres = card(full, "zone", "liquidity")
     pall, pres = card(full, "pullback", "static")
+    z_deep_all = zall[zall["zone_tf"].isin(["D1", "H4"])]
+    z_deep_res = zres[zres["zone_tf"].isin(["D1", "H4"])]
+    z_h1_all = zall[zall["zone_tf"] == "H1"]
+    z_h1_res = zres[zres["zone_tf"] == "H1"]
     call = pd.concat([zall, pall], ignore_index=True)
     cres = pd.concat([zres, pres], ignore_index=True)
     allr, res = call, cres          # the main sections show the COMBINED MAIN card
@@ -402,7 +412,7 @@ def main():
           "- Bad days are NOT excluded in this run.",
           "- Variant: plain (no FVG).",
           "- MAIN scorecard (sections 1-7): COMBINED (Zone + Pullback) at static 1:3 target.",
-          "- Separate ZONE static 1:3, ZONE liquidity, and PULLBACK static 1:3 scorecards are "
+          "- Separate ZONE (D1/H4 Deep vs. H1 Continuation vs. All With-Trend), ZONE liquidity, and PULLBACK static 1:3 scorecards are "
           "shown in Signal Frequency and Extras.",
           "- Basis: stacking (every filled trade). Net R = gross R minus one spread cost.",
           ""]
@@ -430,6 +440,8 @@ def main():
     t_end = pd.Timestamp(config.PRACTICE_END, tz="UTC")
     win_months = (t_end - t_start).days / 30.44
     z_per_month = len(zres) / win_months if win_months > 0 else np.nan
+    z_deep_pm = len(z_deep_res) / win_months if win_months > 0 else np.nan
+    z_h1_pm = len(z_h1_res) / win_months if win_months > 0 else np.nan
     pb_per_month = len(pres) / win_months if win_months > 0 else np.nan
     comb_trades = len(res)
     comb_per_month = comb_trades / win_months if win_months > 0 else np.nan
@@ -450,8 +462,12 @@ def main():
          fmt(comb_per_month, 2)],
         ["COMBINED trades per month (strict 78-calendar-month denominator)",
          fmt(comb_per_78, 2)],
-        [f"ZONE trades per month, all pairs ({fmt(win_months, 2)} months)",
+        [f"ALL WITH-TREND ZONE trades per month (D1 + H4 + H1, {fmt(win_months, 2)} months)",
          fmt(z_per_month, 2)],
+        [f"  -> D1/H4 Deep Zone trades per month ({len(z_deep_res)} trades total)",
+         fmt(z_deep_pm, 2)],
+        [f"  -> H1 Continuation Zone trades per month ({len(z_h1_res)} trades total)",
+         fmt(z_h1_pm, 2)],
         [f"PULLBACK trades per month, all pairs ({fmt(win_months, 2)} months)",
          fmt(pb_per_month, 2)],
         ["COMBINED total resolved trades (Zone + Pullback)", comb_trades],
@@ -556,15 +572,14 @@ def main():
                     "Break-Even (0R gross)", "Win %", "Gross R", "Spread Cost R",
                     "Net R", "PF"], s_rows)
         L.append("")
-        # Model breakdown inside the Typical (Median) 15+ Trade Month
         L.append(f"**Entry Model Breakdown Inside Spotlight Month ({rep_m['ym']}: "
                  f"{rep_m['n']} Trades, {rep_m['wins']} Wins, {rep_m['losses']} Losses, "
                  f"{rep_m['be']} Break-Even, Net {fmt(rep_m['net'], 2)} R)**")
         ms_rows = []
         sub_rep = rep_m["sub"]
         for leg_name, kind_name, side_name, label_g in (
-            ("zone", "ob", "buy", "Zone OB Buy"),
-            ("zone", "ob", "sell", "Zone OB Sell"),
+            ("zone", "ob", "buy", "Zone OB Buy (D1+H4+H1)"),
+            ("zone", "ob", "sell", "Zone OB Sell (D1+H4+H1)"),
             ("pullback", "ob", "buy", "Pullback OB Buy"),
             ("pullback", "ob", "sell", "Pullback OB Sell"),
             ("pullback", "breaker", "buy", "Pullback Breaker Buy"),
@@ -592,11 +607,15 @@ def main():
     # ------------------------------------------------------------ 5-Month Day-by-Day Calendar Card
     L += render_five_month_deep_dive(m_records)
     # ------------------------------------------------------------ Extras
-    L += ["## Extras", "", "### Scorecards side by side (Static 1:3 & Zone Liquidity)"]
-    cards = (("COMBINED (Zone + Pullback) (MAIN)", call, cres),
-             ("ZONE static 1:3", zall, zres),
-             ("ZONE liquidity target", zlall, zlres),
-             ("PULLBACK static 1:3", pall, pres))
+    L += ["## Extras", "", "### Scorecards side by side (With-Trend Zones vs. Pullbacks)"]
+    cards = (
+        ("COMBINED (All Zones + Pullbacks) (MAIN)", call, cres),
+        ("ZONE ALL WITH-TREND (D1 + H4 + H1) static 1:3", zall, zres),
+        ("  -> ZONE D1/H4 Deep Only static 1:3", z_deep_all, z_deep_res),
+        ("  -> ZONE H1 Continuation Only static 1:3", z_h1_all, z_h1_res),
+        ("ZONE liquidity target (D1 + H4 + H1)", zlall, zlres),
+        ("PULLBACK Counter-Trend static 1:3", pall, pres),
+    )
     r1, r2 = [], []
     for name, a, r in cards:
         st = stats(r)
@@ -617,21 +636,29 @@ def main():
              f"{'YES' if (len(pres) == V1_PULLBACK[0] and abs(float(pres['net_r'].sum()) - V1_PULLBACK[1]) < 0.015) else 'NO'}.")
     L.append("")
     L += ["### Buy / sell split by entry model"]
-    for name, a, r in cards[:2] + cards[3:]:
+    for name, a, r in (
+        ("COMBINED (All Zones + Pullbacks) (MAIN)", call, cres),
+        ("ZONE ALL WITH-TREND (D1 + H4 + H1) static 1:3", zall, zres),
+        ("ZONE D1/H4 Deep Only static 1:3", z_deep_all, z_deep_res),
+        ("ZONE H1 Continuation Only static 1:3", z_h1_all, z_h1_res),
+        ("PULLBACK Counter-Trend static 1:3", pall, pres),
+    ):
         L.append(f"**{name}**")
         L += table(["Group", "Trades", "Win %", "Net R", "Expectancy"], split_rows(r))
         L.append("")
     # ------------------------------------------------------------ Phase 1D: MFE / MAE Telemetry
     L += ["### Trade-Path MFE / MAE & Milestone Reversal Diagnostics (Static 1:3)"]
+    mfe_groups = [
+        ("D1/H4 Zone OB Buy", z_deep_res[(z_deep_res["kind"] == "ob") & (z_deep_res["side"] == "buy")]),
+        ("D1/H4 Zone OB Sell", z_deep_res[(z_deep_res["kind"] == "ob") & (z_deep_res["side"] == "sell")]),
+        ("H1 Cont. Zone OB Buy", z_h1_res[(z_h1_res["kind"] == "ob") & (z_h1_res["side"] == "buy")]),
+        ("H1 Cont. Zone OB Sell", z_h1_res[(z_h1_res["kind"] == "ob") & (z_h1_res["side"] == "sell")]),
+        ("Pullback OB Buy", pres[(pres["kind"] == "ob") & (pres["side"] == "buy")]),
+        ("Pullback OB Sell", pres[(pres["kind"] == "ob") & (pres["side"] == "sell")]),
+        ("Pullback Breaker Buy", pres[(pres["kind"] == "breaker") & (pres["side"] == "buy")]),
+    ]
     mfe_rows = []
-    for leg_name, kind_name, side_name, label_g in (
-        ("zone", "ob", "buy", "Zone OB Buy"),
-        ("zone", "ob", "sell", "Zone OB Sell"),
-        ("pullback", "ob", "buy", "Pullback OB Buy"),
-        ("pullback", "ob", "sell", "Pullback OB Sell"),
-        ("pullback", "breaker", "buy", "Pullback Breaker Buy"),
-    ):
-        sub = res[(res["leg"] == leg_name) & (res["kind"] == kind_name) & (res["side"] == side_name)]
+    for label_g, sub in mfe_groups:
         if len(sub) == 0:
             continue
         wins, losses, be = win_loss_be_counts(sub)
@@ -660,14 +687,7 @@ def main():
     # ------------------------------------------------------------ Sub-period 2016-2019 vs 2020-2022
     L += ["### Sub-Period Comparison by Entry Model (2016-2019 vs. 2020-June 2022)"]
     sp_rows = []
-    for leg_name, kind_name, side_name, label_g in (
-        ("zone", "ob", "buy", "Zone OB Buy"),
-        ("zone", "ob", "sell", "Zone OB Sell"),
-        ("pullback", "ob", "buy", "Pullback OB Buy"),
-        ("pullback", "ob", "sell", "Pullback OB Sell"),
-        ("pullback", "breaker", "buy", "Pullback Breaker Buy"),
-    ):
-        sub = res[(res["leg"] == leg_name) & (res["kind"] == kind_name) & (res["side"] == side_name)]
+    for label_g, sub in mfe_groups:
         if len(sub) == 0:
             continue
         p1 = sub[sub["fill_time"].dt.year <= 2019]
@@ -791,14 +811,15 @@ def main():
     for p in expect:
         fj = funnels.get(p)
         if fj is None:
-            zrows.append([p, "n/a", "n/a", "n/a", "n/a"])
+            zrows.append([p, "n/a", "n/a", "n/a", "n/a", "n/a"])
             continue
         c = fj.get("counts", {})
-        zrows.append([p, c.get("z_scan", 0), c.get("z_setups", 0),
+        zrows.append([p, c.get("z_scan", 0), c.get("h1_scan", 0),
+                      c.get("z_setups", 0) + c.get("h1_setups", 0),
                       fj.get("zone_orders", 0),
                       int((zall[zall["pair"] == p]["status"] == "filled").sum())])
-    L += table(["Pair", "Zone touches (scans)", "Zone setups", "Zone orders",
-                "Filled (static)"], zrows)
+    L += table(["Pair", "D1/H4 touches (scans)", "H1 touches (scans)", "Zone setups (all)",
+                "Zone orders (all)", "Filled (static)"], zrows)
     L.append("")
     L += ["### Stacking vs one-at-a-time (kept per pair)"]
     kept = res[res["kept_1at"]]
@@ -806,8 +827,10 @@ def main():
     crow = []
     for name, t in (("Combined Stacking (all)", res),
                     ("Combined One-at-a-time", kept),
-                    ("Zone Stacking (all)", zres),
-                    ("Zone One-at-a-time", zkept)):
+                    ("Zone All With-Trend Stacking (D1+H4+H1)", zres),
+                    ("Zone All With-Trend One-at-a-time", zkept),
+                    ("  -> Zone D1/H4 Deep Stacking", z_deep_res),
+                    ("  -> Zone H1 Continuation Stacking", z_h1_res)):
         st = stats(t)
         d2, s2 = dd_streak(t)
         crow.append([name, st["n"], fmt(st["net"]), fmt(st["exp"], 3), fmt(st["pf"]),
@@ -859,7 +882,7 @@ def main():
         L.append("Zone orders cancelled by:")
         L += table(["Cancelled by", "Orders"], [[k, int(v)] for k, v in canc.items()])
     L.append("")
-    L += ["### Funnel (all pairs summed; z_ = zone counters)"]
+    L += ["### Funnel (all pairs summed; z_ = D1/H4 zone counters, h1_ = H1 continuation counters)"]
     tot = Counter()
     for fj in funnels.values():
         for k, v in fj.get("counts", {}).items():
