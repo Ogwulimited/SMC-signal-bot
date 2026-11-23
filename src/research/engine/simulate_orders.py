@@ -35,10 +35,12 @@ Takes the orders the cycle produced and plays them on M15 bars.
 import numpy as np
 import pandas as pd
 from src import config
+
 STEP = pd.Timedelta(minutes=15)
 FAR = pd.Timestamp("2262-01-01", tz="UTC")
 LIQ_MIN_R = 3.0
 BE_TRIGGER_R = 2.0
+
 TRADE_COLS = [
     "pair", "order_id", "pullback", "setup", "variant", "kind", "side",
     "placed_time", "end_time", "end_reason", "ceiling", "ceiling_locked",
@@ -48,17 +50,23 @@ TRADE_COLS = [
     "open_at_entry", "kept_1at", "flip_while_open",
     "leg", "target_mode", "target_kind", "target_r", "bos_time",
     "zone_touch_time", "zone_tf", "zone_low", "zone_high", "choch_time",
-    "choch_level",
+    "choch_level", "htf_bias", "box_low", "box_high", "box_time",
+    "idm_level", "idm_sweep_time",
 ]
 _COPY = ("pullback", "setup", "variant", "kind", "side", "placed_time", "end_time",
          "end_reason", "ceiling", "ceiling_locked", "entry", "stop")
 _ZONE_COPY = ("bos_time", "zone_touch_time", "zone_tf", "zone_low", "zone_high",
-              "choch_time", "choch_level")
+              "choch_time", "choch_level", "htf_bias", "box_low", "box_high",
+              "box_time", "idm_level", "idm_sweep_time")
+
+
 def prepare(m15):
     ts = pd.DatetimeIndex(m15["timestamp"])
     return {"open_t": ts, "close_t": ts + STEP,
             "o": m15["open"].to_numpy(float), "h": m15["high"].to_numpy(float),
             "l": m15["low"].to_numpy(float)}
+
+
 def _liq_target(o, fill, risk, sell):
     """Liquidity target: nearest listed swing >= LIQ_MIN_R away, else the ceiling."""
     need = float(LIQ_MIN_R) * risk
@@ -73,6 +81,8 @@ def _liq_target(o, fill, risk, sell):
         if (sell and c < fill) or ((not sell) and c > fill):
             return c, "ceiling"
     return None, None
+
+
 def simulate_order(o, a, spread, pair, mode="static"):
     sell = o["side"] == "sell"
     limit = o.get("fill") == "limit"
@@ -244,13 +254,17 @@ def simulate_order(o, a, spread, pair, mode="static"):
     rec["mfe_r"] = mfe_r
     rec["mae_r"] = mae_r
     return rec
+
+
 def tag_trades(recs, flips):
     """open_at_entry, kept_1at (one-at-a-time per pair), flip_while_open.
     Call once per scorecard group (leg + target_mode)."""
     filled = [r for r in recs if r["status"] == "filled"]
     filled.sort(key=lambda r: r["fill_time"])
+
     def held(r):
         return FAR if r["outcome"] == "open_at_cutoff" else r["exit_time"]
+
     last_free = None
     for i, r in enumerate(filled):
         et = r["fill_time"]
@@ -266,6 +280,8 @@ def tag_trades(recs, flips):
         if r["status"] != "filled":
             r["kept_1at"] = False
             r["flip_while_open"] = False
+
+
 def simulate_all(orders, m15, pair):
     """Pullback orders: one play (static). Zone orders: two plays.
     Any other leg (for example the aggressive run): one play (static)."""
