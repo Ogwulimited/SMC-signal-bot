@@ -1,6 +1,5 @@
 from bisect import bisect_left, bisect_right, insort
 from collections import deque
-
 from src import config
 from src.research.engine import cycle as cy
 from src.research.engine.bias import htf_bias
@@ -317,7 +316,7 @@ class ZoneRecorder(cy.CycleRecorder):
         s = {"id": f"{sc['pb_id']}-Z{self._n_z}", "choch_time": ev["time"],
              "choch_level": cy._num(ev["broken_swing_price"]), "box": box,
              "breaker": breaker, "br": "none", "ob": "none", "idm": None,
-             "bos_time": self._zbos_time}
+             "idm_sweep_time": None, "bos_time": self._zbos_time}
         sc["zsetups"].append(s)
         self.counts["z_setups"] += 1
         self._log("z_setup", now, setup=s["id"], choch_level=float(s["choch_level"] or 0.0))
@@ -356,10 +355,10 @@ class ZoneRecorder(cy.CycleRecorder):
         if not swept:
             return
         s["ob"] = "none"
+        s["idm_sweep_time"] = now
         if box.state != "fresh" and not bool(config.TRADE_USED_POIS):
             self.counts["z_ob_box_used"] += 1
             return
-        near = box.low if tsell else bar.high
         near = box.low if tsell else box.high
         touched = bar.high >= near if tsell else bar.low <= near
         if touched:
@@ -404,16 +403,21 @@ class ZoneRecorder(cy.CycleRecorder):
         order = {"id": f"ZO{self._n_zo}", "pullback": sc["pb_id"], "setup": s["id"],
                  "variant": "plain", "kind": kind, "leg": "zone",
                  "side": "sell" if tsell else "buy",
+                 "htf_bias": self.ctx["bias"],
                  "placed_time": now, "entry": float(entry), "stop": float(stop),
                  "stop_edge": float(edge), "box_low": float(p.low),
-                 "box_high": float(p.high), "atr": float(atr),
+                 "box_high": float(p.high), "box_time": p.candle_time,
+                 "atr": float(atr),
                  "ceiling": ceiling, "ceiling_locked": bool(sc["locked"]),
                  "end_time": None, "end_reason": None,
                  "liq": self._liq(entry, ceiling, tsell),
                  "bos_time": s["bos_time"], "zone_touch_time": sc["touch_time"],
                  "zone_tf": z["tf"], "zone_low": float(z["low"]),
                  "zone_high": float(z["high"]), "choch_time": s["choch_time"],
-                 "choch_level": s["choch_level"], "zone_id": z["id"]}
+                 "choch_level": s["choch_level"],
+                 "idm_level": cy._num(s.get("idm")),
+                 "idm_sweep_time": s.get("idm_sweep_time"),
+                 "zone_id": z["id"]}
         sc["zorders"].append(order)
         self.zorders.append(order)
         if _rules():
