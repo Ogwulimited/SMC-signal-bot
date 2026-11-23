@@ -26,10 +26,11 @@ ALL_PAIRS = ("eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eur
              "audchf,audnzd,nzdjpy,nzdcad,nzdchf,cadjpy,cadchf,chfjpy").split(",")
 NEW_PAIRS = set(ALL_PAIRS[11:])
 TIME_COLS = ("placed_time", "end_time", "touch_time", "fill_time", "exit_time",
-             "bos_time", "zone_touch_time", "choch_time")
+             "bos_time", "zone_touch_time", "choch_time", "box_time", "idm_sweep_time")
 NUM_COLS = ("net_r", "r_gross", "dur_hours", "mfe_r", "mae_r", "spread_cost_r",
             "risk_r", "target_r", "entry", "fill_price", "stop", "target_price",
-            "exit_price", "zone_low", "zone_high", "choch_level")
+            "exit_price", "zone_low", "zone_high", "choch_level", "ceiling",
+            "box_low", "box_high", "idm_level")
 DONE = ["target", "stop", "stop_gap"]
 V1_PULLBACK = (1455, -21.13)
 DEEP_DIVE_MONTHS = ("2017-08", "2019-06", "2020-04", "2021-07", "2022-05")
@@ -196,6 +197,95 @@ def win_loss_be_counts(sub):
     return wins, losses, be
 
 
+def _trend_description(tr):
+    hb = str(tr.get("htf_bias", "") or "").lower()
+    leg = str(tr.get("leg", "pullback")).lower()
+    side = str(tr.get("side", "")).lower()
+    if hb not in ("bull", "bear"):
+        if leg == "zone":
+            hb = "bull" if side == "buy" else "bear"
+        else:
+            hb = "bull" if side == "sell" else "bear"
+    trend_word = "BULLISH (D1 + H4 Bull)" if hb == "bull" else "BEARISH (D1 + H4 Bear)"
+    if leg == "zone":
+        mode_desc = f"With-Trend HTF Zone {side.upper()}"
+    else:
+        mode_desc = f"Counter-Trend Pullback {side.upper()} (retracement against {hb.upper()} HTF)"
+    return f"{trend_word} — {mode_desc}"
+
+
+def _format_trade_chart_audit(t_num, tr):
+    leg = str(tr.get("leg", "pullback")).lower()
+    kind = str(tr.get("kind", "ob")).upper()
+    side = str(tr.get("side", "")).upper()
+    pair = str(tr.get("pair", "")).upper()
+    res_lbl = outcome_label(tr)
+    net_v = float(tr["net_r"])
+    sign = "+" if net_v >= 0 else ""
+
+    lines = [
+        f"- **Trade #{t_num} ({ftime(tr['fill_time'])} UTC) | {pair} | {leg.upper()} {kind} {side} -> {res_lbl} (Net {sign}{fmt(net_v, 2)} R)**",
+        f"  - **1. HTF Trend / Bias:** {_trend_description(tr)}",
+    ]
+
+    ztf = tr.get("zone_tf")
+    zlow = tr.get("zone_low")
+    zhigh = tr.get("zone_high")
+    ztouch = tr.get("zone_touch_time")
+    has_zone = ztf is not None and not pd.isna(ztf) and zlow is not None and not pd.isna(zlow)
+
+    if leg == "zone":
+        lines.append(
+            f"  - **2. HTF Zone & Tap/Sweep Into Zone:** {ztf} Zone `{fmt(zlow, 5)}` to `{fmt(zhigh, 5)}` | "
+            f"Price tapped/swept into HTF Zone at `{ftime(ztouch)} UTC` "
+            f"(preceding counter-trend M15 BOS at `{ftime(tr.get('bos_time'))} UTC`; "
+            f"Impulse Ceiling at `{fmt(tr.get('ceiling'), 5)}`)"
+        )
+    else:
+        z_txt = (f"Nearest opposing {ztf} Zone `{fmt(zlow, 5)}` to `{fmt(zhigh, 5)}`"
+                 if has_zone else "No unmitigated opposing HTF zone")
+        lines.append(
+            f"  - **2. HTF Impulse Ceiling & Opposing HTF Zone:** Pullback started from Impulse Ceiling "
+            f"`{fmt(tr.get('ceiling'), 5)}` | Trading toward {z_txt}"
+        )
+
+    lines.append(
+        f"  - **3. M15 CHoCH (Change of Character):** Candle closed at `{ftime(tr.get('choch_time'))} UTC` "
+        f"breaking structure level `{fmt(tr.get('choch_level'), 5)}`"
+        + (f" | Confirming M15 BOS at `{ftime(tr.get('bos_time'))} UTC`"
+           if leg == "pullback" and tr.get("bos_time") is not None and not pd.isna(tr.get("bos_time"))
+           else "")
+    )
+
+    if kind == "OB":
+        lines.append(
+            f"  - **4. M15 Inducement (IDM) & Liquidity Sweep:** Inducement level `{fmt(tr.get('idm_level'), 5)}` "
+            f"swept at `{ftime(tr.get('idm_sweep_time'))} UTC`"
+        )
+    else:
+        lines.append(
+            "  - **4. Unicorn Breaker Displacement:** M15 Breaker Block broken with overlapping Fair Value Gap"
+        )
+
+    lines.append(
+        f"  - **5. M15 {kind} Box (POI):** Candle `{ftime(tr.get('box_time'))} UTC` | "
+        f"Box Low `{fmt(tr.get('box_low'), 5)}` to Box High `{fmt(tr.get('box_high'), 5)}`"
+    )
+
+    lines.append(
+        f"  - **6. Entry, Stop Loss & Take Profit:** Order placed `{ftime(tr.get('placed_time'))} UTC` "
+        f"(Trigger `{fmt(tr.get('entry'), 5)}`) -> **Filled at `{ftime(tr.get('fill_time'))} UTC` @ `{fmt(tr.get('fill_price'), 5)}`** | "
+        f"**Stop Loss:** `{fmt(tr.get('stop'), 5)}` | **Take Profit (+{fmt(tr.get('target_r'), 2)}R):** `{fmt(tr.get('target_price'), 5)}`"
+    )
+
+    lines.append(
+        f"  - **7. Resolution:** `{tr.get('outcome')}` at `{ftime(tr.get('exit_time'))} UTC` @ `{fmt(tr.get('exit_price'), 5)}` | "
+        f"Gross `{fmt(tr.get('r_gross'), 2)} R`, Spread `{fmt(tr.get('spread_cost_r'), 2)} R`, "
+        f"**Net `{sign}{fmt(net_v, 2)} R`** (Max Favorable `{fmt(tr.get('mfe_r'), 2)} R`, Max Adverse `{fmt(tr.get('mae_r'), 2)} R`)"
+    )
+    return lines
+
+
 def render_five_month_deep_dive(m_records):
     by_ym = {r["ym"]: r for r in m_records}
     chosen = [by_ym[ym] for ym in DEEP_DIVE_MONTHS if ym in by_ym and by_ym[ym]["n"] > 0]
@@ -206,10 +296,11 @@ def render_five_month_deep_dive(m_records):
         chosen.extend(extra[:5 - len(chosen)])
     if not chosen:
         return []
-    out = ["### 5-Month Day-by-Day & Trade-by-Trade Chronological Deep Dive (Full 30/31-Day Calendar)"]
-    out.append("Below are 5 selected months across different years showing every calendar day from the "
-               "1st to the end of the month, the exact time each trade was filled, the chronological "
-               "win/loss sequence, and days with `No trade`.")
+    out = ["### 5-Month Day-by-Day & Trade-by-Trade Chronological Deep Dive (Full 30/31-Day Calendar + Chart Walkthrough)"]
+    out.append("Below are 5 selected months across 5 different years showing: (1) the chronological win/loss sequence, "
+               "(2) every calendar day from the 1st to the end of the month (including `No trade` days), and "
+               "(3) the complete TradingView chart coordinates for every single trade in that month (HTF Trend, HTF Zone, "
+               "Zone Tap/Sweep, M15 CHoCH, Inducement & Sweep, Order Block candle & boundaries, Entry, Stop Loss, and Take Profit).")
     out.append("")
     for idx_m, mr in enumerate(chosen, 1):
         ym_str = mr["ym"]
@@ -243,7 +334,10 @@ def render_five_month_deep_dive(m_records):
                     t_num = i + 1
                     net_v = float(tr["net_r"])
                     running_r += net_v
-                    model_str = f"{tr['pair']} ({tr['leg']} {tr['kind']} {tr['side']})"
+                    hb = str(tr.get("htf_bias", "") or "").lower()
+                    if hb not in ("bull", "bear"):
+                        hb = ("bull" if tr["side"] == "buy" else "bear") if tr["leg"] == "zone" else ("bull" if tr["side"] == "sell" else "bear")
+                    model_str = f"{tr['pair']} ({tr['leg']} {tr['kind']} {tr['side']} | HTF {hb.upper()})"
                     day_rows.append([
                         d_str,
                         f"Trade #{t_num}",
@@ -254,8 +348,13 @@ def render_five_month_deep_dive(m_records):
                         ftime(tr["exit_time"]),
                         fmt(running_r, 2),
                     ])
-        out += table(["Calendar Date", "Order #", "Bot Entry Time", "Pair & Setup",
+        out += table(["Calendar Date", "Order #", "Bot Entry Time", "Pair, Setup & HTF Trend",
                       "Resolution", "Trade Net R", "Resolved At (UTC)", "Running Month R"], day_rows)
+        out.append("")
+        out.append(f"**Chart-by-Chart Trade Anatomy for {month_title} ({mr['n']} Trades in Chronological Order):**")
+        out.append("")
+        for t_idx, (_, tr) in enumerate(sub.iterrows(), 1):
+            out += _format_trade_chart_audit(t_idx, tr)
         out.append("")
     return out
 
