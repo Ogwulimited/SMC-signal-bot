@@ -1,21 +1,14 @@
 """Batch 2 strategy: structure + POI books + bias, all incremental.
-
 Runs the trading-timeframe structure (M15 by default, H1 when config.LTF_TF is
-"H1"), plus H4 and D1 structure. Each timeframe has a POI book. H4 and D1 also
-have a bias tracker. H1 bars always feed the ATR tracker. Everything is logged
-as decisions so the poison test can check it.
-
+"H1"), plus H1, H4, and D1 structure. Each timeframe has a POI book. H4 and D1
+also have a bias tracker. H1 bars always feed the ATR tracker and H1 structure.
+Everything is logged as decisions so the poison test can check it.
 config.MAJOR_HTF (default False): when True, H4 and D1 use the Major swing
 sizes (MAJOR_H4_SWING_N, MAJOR_D1_SWING_N) and the bias trackers use
 MAJOR_BIAS_FIRST_READ.
-
-config.LTF_TF (default "M15"): the trading timeframe. With "M15" nothing
-changes from before. With "H1" the H1 bar also feeds the H1 structure and POI
-book (same swing size LTF_SWING_N), and M15 bars are ignored here (the zone
-code still watches them for touches and fills).
+config.LTF_TF (default "M15"): the trading timeframe.
 """
 import pandas as pd
-
 from src import config
 from src.research.engine.atr import ATRTracker
 from src.research.engine.bias import BiasTracker
@@ -43,6 +36,10 @@ class MapRecorder:
             "H4": IncrementalStructure(h4_n, pd.Timedelta(hours=4), "H4"),
             "D1": IncrementalStructure(d1_n, pd.Timedelta(days=1), "D1"),
         }
+        if "H1" not in self.engines:
+            self.engines["H1"] = IncrementalStructure(
+                config.LTF_SWING_N, pd.Timedelta(hours=1), "H1"
+            )
         self.books = {tf: PoiBook(tf, log) for tf in self.engines}
         self.bias = {"H4": BiasTracker("H4", log, first),
                      "D1": BiasTracker("D1", log, first)}
@@ -50,8 +47,6 @@ class MapRecorder:
     def on_bar_close(self, bar, feed):
         if bar.tf == "H1":
             self.atr.on_bar_close(bar)
-            if self.ltf != "H1":
-                return
         eng = self.engines.get(bar.tf)
         if eng is None:
             return
