@@ -236,9 +236,11 @@ class CycleRecorder(MapRecorder):
         box = self._choch_poi(ev)
         breaker = self.books[self.ltf].choch_breaker.get(ev["time"])
         setup = {"id": f"{pb['id']}-S{self._n_setup}", "choch_time": ev["time"],
+                 "choch_level": _num(ev.get("broken_swing_price")),
                  "box": box, "breaker": breaker,
                  "attempt": None if pb["locked"] else pb["attempt"],
-                 "br": "none", "ob": "none", "idm": None}
+                 "br": "none", "ob": "none", "idm": None,
+                 "idm_sweep_time": None, "bos_time": None}
         pb["setups"].append(setup)
         self.counts["setups"] += 1
         skip_br = self.ctx["up"]
@@ -307,6 +309,7 @@ class CycleRecorder(MapRecorder):
         if not swept:
             return
         s["ob"] = "none"
+        s["idm_sweep_time"] = now
         allow_used = bool(config.TRADE_USED_POIS) or bool(getattr(config, "MAJOR_HTF", False))
         if box.state != "fresh" and not allow_used:
             self.counts["ob_box_used"] += 1
@@ -318,6 +321,14 @@ class CycleRecorder(MapRecorder):
             if up:
                 return
         self._place(s, "ob", box, bar, now)
+
+    def _nearest_pb_zone(self, pb, up):
+        best = None
+        for z in pb.get("zones", []):
+            near = float(z["high"]) if up else float(z["low"])
+            if best is None or (near > best[0] if up else near < best[0]):
+                best = (near, z)
+        return best[1] if best is not None else None
 
     def _place(self, setup, kind, p, bar, now):
         if self._after_far_break:
@@ -361,17 +372,29 @@ class CycleRecorder(MapRecorder):
                 stop = entry + min_risk if up else entry - min_risk
                 self.counts[kind + "_min_risk_padded"] += 1
         pb = self._pb
+        nz = self._nearest_pb_zone(pb, up)
         self._n_order += 1
         breaker = setup["breaker"]
         order = {"id": f"O{self._n_order}", "pullback": pb["id"], "setup": setup["id"],
                  "variant": "plain", "kind": kind, "side": self.ctx["side"],
+                 "htf_bias": self.ctx["bias"],
                  "placed_time": now, "entry": float(entry), "stop": float(stop),
                  "stop_edge": float(edge), "box_low": float(p.low),
-                 "box_high": float(p.high), "atr": float(atr),
+                 "box_high": float(p.high), "box_time": p.candle_time,
+                 "atr": float(atr),
                  "ceiling": pb["ceiling"], "ceiling_locked": pb["locked"],
                  "breaker_id": breaker.id if breaker is not None else None,
                  "anchor_id": None, "end_time": None, "end_reason": None,
-                 "fill": "limit"}
+                 "fill": "limit",
+                 "choch_time": setup.get("choch_time"),
+                 "choch_level": setup.get("choch_level"),
+                 "bos_time": setup.get("bos_time"),
+                 "idm_level": _num(setup.get("idm")),
+                 "idm_sweep_time": setup.get("idm_sweep_time"),
+                 "zone_tf": nz["tf"] if nz is not None else None,
+                 "zone_low": float(nz["low"]) if nz is not None else None,
+                 "zone_high": float(nz["high"]) if nz is not None else None,
+                 "zone_touch_time": None}
         self.orders.append(order)
         pb["orders"].append(order)
         self.counts["orders_" + kind] += 1
@@ -439,6 +462,7 @@ class CycleRecorder(MapRecorder):
                     self.counts["ob_no_idm"] += 1
                 else:
                     s["idm"] = p
+                    s["bos_time"] = ev["time"]
                     s["ob"] = "wait_sweep"
                     self.counts["idm_set"] += 1
         a = pb["attempt"]
