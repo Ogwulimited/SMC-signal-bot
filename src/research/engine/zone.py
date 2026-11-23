@@ -1,640 +1,483 @@
-"""Zone leg (Phase 4 Step 5).
-
-When price reaches one of the HTF zones built at BOS time (OB / FVG / Breaker)
-AND 4H + D1 bias is still aligned, open a "zone scan" looking for a **with-trend**
-15m structure chain (CHoCH in bias direction -> BOS in bias direction -> IDM)
-and place a with-trend entry at the 15m OB or Breaker.
-
-Simultaneously (Addition 1 - H1 Continuation Zones):
-When 4H + D1 bias is aligned and a fresh pro-trend 1H BOS closes, record the
-last opposite-colored 1H candle before that BOS as a candidate 1H continuation
-Order Block. When price returns to touch that fresh 1H zone (within 48h of birth),
-run a parallel non-interfering 15m confirmation scan (counter-trend 15m shift ->
-pro-trend 15m CHoCH -> pro-trend 15m BOS setting 15m IDM -> IDM sweep ->
-next-candle-open entry at 1:3 R static target) with strict 1-trade-per-zone cap,
-room-to-opposing-HTF-zone check, 24h scan/order expiry, and D1/H4 zone precedence.
-"""
-from __future__ import annotations
-
-from typing import Dict, List, Optional
-
+from bisect import bisect_left, bisect_right, insort
+from collections import deque
 import pandas as pd
-
-from . import cycle as cy
-from . import orders as ord_mod
-from . import takeaway1 as t1
-
-
-# Module settings toggled by run_cycle.set_variant.
-SETTINGS = {
-    "enabled": True,
-    "h1_continuation": True,
-}
-
-# Minimum room (in R multiples) to an opposing untouched D1/H4 zone for H1 continuation trades.
+from src import config
+from src.research.engine import cycle as cy
+from src.research.engine.bias import htf_bias
+SETTINGS = {"enabled": False, "rules": False, "pip": 0.0001, "spread": 0.0}
+LIQ_CAP = 100
 H1_OPPOSING_HTF_MIN_R = 1.5
-
-# Freshness & expiry guards for 1H Continuation Zones.
 H1_ZONE_MAX_AGE = pd.Timedelta(hours=48)
 H1_SCAN_MAX_DURATION = pd.Timedelta(hours=24)
 H1_ORDER_EXPIRY = pd.Timedelta(hours=24)
-
-# Maximum runaway distance (in 1H ATR multiples) above/below the 1H zone during M15 confirmation scan.
-H1_SCAN_RUNAWAY_ATR = 2.5
-
-
+def _on():
+    return bool(SETTINGS["enabled"])
+def _rules():
+    return bool(SETTINGS["enabled"]) and bool(SETTINGS.get("rules", False))
 class ZoneRecorder(cy.CycleRecorder):
-    """Extends CycleRecorder with the with-trend Zone leg (D1/H4 Deep + H1 Continuation)."""
-
-    def __init__(self, pair: str):
-        super().__init__(pair)
-        self._scan: Optional[Dict] = None
-        self.scans: List[Dict] = []
-        # Parallel 1H Continuation Zone state (never mutates self.state or self._pb)
-        self._h1_zones: List[Dict] = []
-        self._h1_scan: Optional[Dict] = None
-        self._h1_bos: bool = False
-        self.h1_scans: List[Dict] = []
-
-    # ---- Pullback start: also clear any leftover scan ----
-    def _begin_pullback(self, tf, bos_event, snap, df_slice, atr):
-        if self._scan is not None:
-            self._end_scan(bos_event.confirmed_at, "new_bos")
-        super()._begin_pullback(tf, bos_event, snap, df_slice, atr)
-        # Tag pullback orders placed later so reports can separate legs.
-        if self._pb is not None:
-            self._pb["zones_for_scan"] = [dict(z) for z in self._pb["zones"]]
-
-    def _place_order(self, kind, box, idm, bar_ts, bos_event):
-        n_before = len(self.orders)
-        super()._place_order(kind, box, idm, bar_ts, bos_event)
-        if len(self.orders) > n_before:
-            self.orders[-1]["leg"] = "pullback"
-
-    # ---- Intercept zone touch: enter SCAN instead of dropping to IDLE ----
-    def _end_pullback(self, ts: pd.Timestamp, reason: str):
-        pb = self._pb
-        super()._end_pullback(ts, reason)
-        if not SETTINGS["enabled"] or pb is None:
-            return
-        if reason == "zone" and self.htf_bias in ("Bullish", "Bearish"):
-            self._begin_scan(ts, pb)
-
-    # ---- Step order: update bias -> cancel misaligned -> superclass step -> scan step -> H1 step ----
-    def step(self, ts, bars, snaps, events, poi_events, df_slices):
-        # Superclass handles bias update, order cancelling, pullback step, new BOS.
-        super().step(ts, bars, snaps, events, poi_events, df_slices)
-        if self._scan is not None:
-            self._scan_step(ts, bars, events, df_slices)
-        if SETTINGS.get("h1_continuation", True):
-            self._h1_step(ts, bars, events, df_slices)
-
-    def finalize(self, last_ts: pd.Timestamp):
-        if self._scan is not None:
-            self._end_scan(last_ts, "end_of_data")
-        if self._h1_scan is not None:
-            self._end_h1_scan(last_ts, "end_of_data")
-        super().finalize(last_ts)
-
-    # ---- D1/H4 Deep Zone scan lifecycle ----
-    def _begin_scan(self, ts: pd.Timestamp, pb: Dict):
-        # Find all zones touched on this bar; pick highest priority: ob > breaker > fvg.
-        # (zones list was populated in priority order in build_zones.)
-        prio = {"ob": 0, "breaker": 1, "fvg": 2}
-        zones = sorted(pb["zones"], key=lambda z: prio.get(z["kind"], 9))
-        chosen = zones[0] if zones else None
-        if chosen is None:
-            return
-        self._scan = {
-            "pair": self.pair,
-            "htf_tf": pb["htf_tf"],
-            "bias": pb["bias"],
-            "zone": chosen,
-            "zones": pb["zones"],
-            "impulse_high": pb["impulse_high"],
-            "impulse_low": pb["impulse_low"],
-            "started_at": ts,
-            "ended_at": None,
-            "end_reason": None,
-            "choch": None,
-            "choch_box": None,
-            "bos": None,
-            "idm": None,
-            "idm_swept_at": None,
-            "ceiling": pb["impulse_high"] if pb["bias"] == "Bullish" else pb["impulse_low"],
-        }
-        self.state = "SCAN"
-        self.counts["zone_scan"] += 1
-        self.counts[f"zone_scan_{chosen['kind']}"] += 1
-
-    def _end_scan(self, ts: pd.Timestamp, reason: str):
-        if self._scan is None:
-            return
-        self._scan["ended_at"] = ts
-        self._scan["end_reason"] = reason
-        self.scans.append(self._scan)
-        self._scan = None
-        if self.state == "SCAN":
-            self.state = cy.IDLE
-        self.counts[f"scan_end_{reason}"] += 1
-
-    def _scan_step(self, ts, bars, events, df_slices):
-        sc = self._scan
-        b15 = bars.get("ltf")
-        if b15 is None:
-            return
-        bh, bl, bc = float(b15["high"]), float(b15["low"]), float(b15["close"])
-        bull = sc["bias"] == "Bullish"
-
-        # 1. Bias must remain aligned with scan bias.
-        if self.htf_bias != sc["bias"]:
-            self._end_scan(ts, "bias_lost")
-            return
-
-        # 2. Ceiling break before order triggers -> abort scan.
-        if bull and bh >= sc["ceiling"]:
-            self._end_scan(ts, "ceiling_break")
-            return
-        if (not bull) and bl <= sc["ceiling"]:
-            self._end_scan(ts, "ceiling_break")
-            return
-
-        # 3. Close past far side of every zone -> abort scan (zone failed).
-        if bull and all(bc < z["low"] for z in sc["zones"]):
-            self._end_scan(ts, "zone_broken")
-            return
-        if (not bull) and all(bc > z["high"] for z in sc["zones"]):
-            self._end_scan(ts, "zone_broken")
-            return
-
-        # 4. Walk 15m events in WITH-TREND direction (same as scan bias).
-        want = "bullish" if bull else "bearish"
-        for e in events.get("ltf", []):
-            if e.direction != want:
-                continue
-            if sc["choch"] is None:
-                # Need a prior opposite-direction 15m BOS during the pullback first.
-                if not self._pb_bos:
-                    self.counts["zone_choch_no_pb_bos"] += 1
-                    continue
-                sc["choch"] = e
-                sc["choch_box"] = self._register_15m_box(e, df_slices["ltf"], want)
-                self.counts["zone_setups"] += 1
-            elif sc["bos"] is None and e.origin == "BOS":
-                sc["bos"] = e
-                idm = cy._find_idm(df_slices["ltf"], sc["choch"].confirmed_at,
-                                   e.confirmed_at, want)
-                sc["idm"] = idm
-                if idm is not None:
-                    self.counts["zone_idm_set"] += 1
-
-        # 5. Track IDM sweep and place with-trend order.
-        idm = sc["idm"]
-        if idm is not None and sc["idm_swept_at"] is None:
-            swept = (bl <= idm["price"]) if bull else (bh >= idm["price"])
-            if swept:
-                sc["idm_swept_at"] = ts
-                self._place_zone_orders(sc, ts)
-
-    def _place_zone_orders(self, sc: Dict, bar_ts: pd.Timestamp):
-        """With-trend entry: OB first; if OB already broken, Breaker at same box."""
-        if cy.SKIP_ASIAN and t1.in_asian(bar_ts):
-            self.counts["zone_asian_skipped"] += 1
-            return
-        if sc["bos"] is None:
-            self.counts["zone_ob_no_bos"] += 1
-            return
-        if sc["idm"] is None or sc["idm_swept_at"] is None:
-            self.counts["zone_ob_no_idm"] += 1
-            return
-        box = sc["choch_box"]
-        if box is None:
-            self.counts["zone_no_choch_box"] += 1
-            return
-        if box["created_at"] >= bar_ts:
-            self.counts["zone_ob_same_bar"] += 1
-            return
-        atr = self.atrs["ltf"].current_atr
-        if atr is None:
-            return
-        if box["status"] in ("fresh", "tested"):
-            kind = "ob"
-        elif box["status"] == "used":
-            self.counts["zone_ob_box_used"] += 1
-            return
-        else:
-            self.counts["zone_ob_box_dead"] += 1
-            return
-
-        # Zone trades are WITH-trend: buy for Bullish bias, sell for Bearish.
-        # _build_order uses "Bullish" -> sell (counter-trend). Flip string so it builds with-trend.
-        flipped_bias = "Bearish" if sc["bias"] == "Bullish" else "Bullish"
-        o = ord_mod._build_order(
-            self.pair, sc["htf_tf"], flipped_bias, kind, box,
-            sc["idm"], float(atr), bar_ts, sc["bos"], sc["ceiling"],
-        )
-        if o is None:
-            self.counts[f"zone_{kind}_skipped_spread"] += 1
-            return
-        o["htf_bias"] = sc["bias"]  # restore true HTF bias label
-        o["leg"] = "zone"
-        o["zone_kind"] = sc["zone"]["kind"]
-        o["zone_tf"] = sc["htf_tf"]
-        self.orders.append(o)
-        self.counts[f"zone_orders_{kind}"] += 1
-
-    # =========================================================================
-    # Addition 1: With-Trend 1H Continuation Zones (1H OB + 15m Confirmation)
-    # =========================================================================
-    def _h1_step(self, ts, bars, events, df_slices):
-        b15 = bars.get("ltf")
-        if b15 is None:
-            return
-        bh, bl, bc = float(b15["high"]), float(b15["low"]), float(b15["close"])
-
-        # 0. Expire pending 1H continuation orders that have gone stale (> 24h unfilled)
-        for o in self.orders:
-            if (
-                o["status"] == "pending"
-                and o.get("leg") == "zone"
-                and o.get("zone_tf") == "H1"
-                and (ts - o["placed_at"]) > H1_ORDER_EXPIRY
-            ):
-                o["status"] = "cancelled"
-                o["cancel_reason"] = "expired_24h"
-                o["cancelled_at"] = ts
-                self.counts["h1_orders_expired_24h"] += 1
-
-        # 1. If 4H + D1 alignment is lost, clear active 1H zones and abort 1H scan
-        if self.htf_bias not in ("Bullish", "Bearish"):
-            if self._h1_scan is not None:
-                self._end_h1_scan(ts, "bias_lost")
-            self._h1_zones.clear()
-            self._h1_bos = False
-            return
-
-        # 2. Discard any stored 1H zones that don't match current HTF bias or are spent
-        kept_zones: List[Dict] = []
-        for z in self._h1_zones:
-            if z["bias"] != self.htf_bias or z.get("spent", False):
-                continue
-            # If untouched and older than 48h, expire the stale 1H zone
-            if not z.get("touched", False) and (ts - z["created_at"]) > H1_ZONE_MAX_AGE:
-                self.counts["h1_zone_expired_48h"] += 1
-                continue
-            kept_zones.append(z)
-        self._h1_zones = kept_zones
-
-        # 3. Track counter-trend 15m structure shift (CHoCH or BOS against HTF bias)
-        #    so the subsequent pro-trend 15m CHoCH inside the 1H zone represents a genuine turn
-        against = "bearish" if self.htf_bias == "Bullish" else "bullish"
-        for e in events.get("ltf", []):
-            if e.direction == against:
-                self._h1_bos = True
-
-        # 4. Detect new pro-trend 1H BOS events and birth fresh 1H continuation OBs
-        want_h1 = "bullish" if self.htf_bias == "Bullish" else "bearish"
-        for e in events.get("H1", []):
-            if e.origin == "BOS" and e.direction == want_h1:
-                self.counts["h1_bos_aligned"] += 1
-                atr_h1 = self.atrs["H1"].current_atr
-                if atr_h1 is not None:
-                    z = self._build_h1_ob_zone(e, df_slices["H1"], float(atr_h1), self.htf_bias)
-                    if z is not None:
-                        self._h1_zones.append(z)
-                        self.counts["h1_zones_born"] += 1
-
-        # 5. Check active 1H zones for far-edge invalidation or first touch
-        bull = self.htf_bias == "Bullish"
-        surviving: List[Dict] = []
-        touched_now: List[Dict] = []
-        for z in self._h1_zones:
-            # Far-side close invalidates the 1H zone immediately
-            if bull and bc < z["low"]:
-                self.counts["h1_zone_broken_pre"] += 1
-                continue
-            if (not bull) and bc > z["high"]:
-                self.counts["h1_zone_broken_pre"] += 1
-                continue
-
-            # Touch check (only after the 1H BOS bar has closed -> zero lookahead)
-            if ts > z["created_at"]:
-                hit = (bl <= z["high"]) if bull else (bh >= z["low"])
-                if hit and not z["touched"]:
-                    z["touched"] = True
-                    z["touched_at"] = ts
-                    touched_now.append(z)
-            surviving.append(z)
-        self._h1_zones = surviving
-
-        # 6. If a fresh 1H zone was touched and no 1H scan is running,
-        #    start the 1H continuation scan
-        if touched_now and self._h1_scan is None:
-            # Pick most recently created 1H zone
-            chosen = sorted(touched_now, key=lambda x: x["created_at"], reverse=True)[0]
-            self._begin_h1_scan(ts, chosen, b15)
-
-        # 7. Step active 1H scan
-        if self._h1_scan is not None:
-            self._h1_scan_step(ts, bars, events, df_slices)
-
-        # 8. Mark 1H zone as spent as soon as any order linked to it fills (strictly 1 trade per 1H zone)
-        for o in self.orders:
-            if o.get("leg") == "zone" and o.get("zone_tf") == "H1" and o["status"] != "pending":
-                zid = o.get("h1_zone_id")
-                if zid is not None and o["status"] in ("open", "closed") and o.get("filled_at") is not None:
-                    for z in self._h1_zones:
-                        if z["id"] == zid and not z["spent"]:
-                            z["spent"] = True
-                            self.counts["h1_zone_spent"] += 1
-                    if self._h1_scan is not None and self._h1_scan["zone"]["id"] == zid:
-                        self._end_h1_scan(ts, "zone_spent")
-
-    def _build_h1_ob_zone(
-        self, bos_event, df_h1: pd.DataFrame, atr: float, bias: str
-    ) -> Optional[Dict]:
-        """Find the last opposite-colored 1H candle before the 1H BOS leg."""
-        confirm_ts = bos_event.confirmed_at
-        broken_ts = bos_event.broken_swing_ts
-        leg = df_h1.loc[(df_h1.index >= broken_ts) & (df_h1.index <= confirm_ts)]
-        if len(leg) < 2:
-            return None
-        bull = bias == "Bullish"
-        extrema_ts = leg["low"].idxmin() if bull else leg["high"].idxmax()
-        window = df_h1.loc[(df_h1.index >= extrema_ts) & (df_h1.index <= confirm_ts)]
-        want_bear_candle = bull  # bullish OB = last bearish candle before the up-move
-        ob_row = None
-        ob_ts = None
-        for ts_i, r in window.iloc[::-1].iterrows():
-            is_bear = r["close"] < r["open"]
-            is_bull = r["close"] > r["open"]
-            if (want_bear_candle and is_bear) or ((not want_bear_candle) and is_bull):
-                ob_row = r
-                ob_ts = ts_i
-                break
-        if ob_row is None:
-            ob_row = df_h1.loc[extrema_ts]
-            ob_ts = extrema_ts
-
-        hi, lo = float(ob_row["high"]), float(ob_row["low"])
-        if hi <= lo:
-            return None
-        if (hi - lo) > t1.MAX_OB_ATR * atr:
-            if bull:
-                hi = lo + t1.MAX_OB_ATR * atr
-            else:
-                lo = hi - t1.MAX_OB_ATR * atr
-
-        impulse_high = float(leg["high"].max())
-        impulse_low = float(leg["low"].min())
-        self.counts["h1_zone_id_seq"] += 1
-        return {
-            "id": self.counts["h1_zone_id_seq"],
-            "kind": "ob",
-            "tf": "H1",
-            "bias": bias,
-            "high": hi,
-            "low": lo,
-            "atr": float(atr),
-            "candle_ts": ob_ts,
-            "created_at": confirm_ts,
-            "bos_event": bos_event,
-            "impulse_high": impulse_high,
-            "impulse_low": impulse_low,
-            "touched": False,
-            "touched_at": None,
-            "spent": False,
-        }
-
-    def _begin_h1_scan(self, ts: pd.Timestamp, zone: Dict, b15):
-        bull = zone["bias"] == "Bullish"
-        bh, bl = float(b15["high"]), float(b15["low"])
-        ceiling = max(zone["impulse_high"], bh) if bull else min(zone["impulse_low"], bl)
-        self._h1_scan = {
-            "pair": self.pair,
-            "htf_tf": "H1",
-            "bias": zone["bias"],
-            "zone": zone,
-            "started_at": ts,
-            "ended_at": None,
-            "end_reason": None,
-            "choch": None,
-            "choch_box": None,
-            "bos": None,
-            "idm": None,
-            "idm_swept_at": None,
-            "ceiling": ceiling,
-            "order_placed": False,
-        }
-        self.counts["h1_scan"] += 1
-
-    def _end_h1_scan(self, ts: pd.Timestamp, reason: str):
-        if self._h1_scan is None:
-            return
-        self._h1_scan["ended_at"] = ts
-        self._h1_scan["end_reason"] = reason
-        self.h1_scans.append(self._h1_scan)
+    def __init__(self, log, first_read=None):
+        super().__init__(log, first_read)
+        self._spread = float(SETTINGS.get("spread", 0.0))
+        self.zorders = []
+        self._n_z = 0
+        self._n_zo = 0
+        self._ev = None
+        self._zpb_id = None
+        self._zlocked = False
+        self._zbos = False
+        self._zbos_time = None
+        n = int(config.LTF_SWING_N)
+        self._swin = deque(maxlen=2 * n + 1)
+        self._sw_hi = []
+        self._sw_lo = []
+        self._spent = set()
+        self._watch = []
+        self._prev15 = None
+        # --- 1H Continuation Zone stream state ---
+        self._h1_q = []
+        self._h1_zones = []
         self._h1_scan = None
-        self.counts[f"h1_end_{reason}"] += 1
-
-    def _h1_scan_step(self, ts, bars, events, df_slices):
-        sc = self._h1_scan
-        b15 = bars.get("ltf")
-        if b15 is None:
+        self._h1_bos = False
+        self._h1_bos_time = None
+        self._h1_bias = None
+        self._n_h1_scan = 0
+        if _rules():
+            if not (float(SETTINGS.get("pip", 0.0)) > 0.0
+                    and float(SETTINGS.get("spread", 0.0)) > 0.0):
+                raise ValueError("zone rules on: set SETTINGS pip and spread first")
+    def on_bar_close(self, bar, feed):
+        if _on():
+            if bar.tf == self.ltf:
+                self._swings(bar)
+            if _rules() and bar.tf == "M15":
+                if self._prev15 is not None:
+                    self._watch_orders(self._prev15, bar)
+                self._resolve_fills(bar)
+                self._prev15 = bar
+        n0 = len(self.events)
+        super().on_bar_close(bar, feed)
+        if _on() and _rules() and bar.tf == "H1":
+            new_h1 = self.events[n0:]
+            if new_h1:
+                self._h1_q.extend(new_h1)
+    def _swings(self, bar):
+        h = float(bar.high)
+        l = float(bar.low)
+        if self._sw_hi:
+            k = bisect_left(self._sw_hi, h)
+            if k:
+                del self._sw_hi[:k]
+        if self._sw_lo:
+            k = bisect_right(self._sw_lo, l)
+            if k < len(self._sw_lo):
+                del self._sw_lo[k:]
+        self._swin.append((h, l))
+        n = int(config.LTF_SWING_N)
+        if len(self._swin) == 2 * n + 1:
+            highs = [x[0] for x in self._swin]
+            lows = [x[1] for x in self._swin]
+            ch, cl = highs[n], lows[n]
+            if ch == max(highs) and ch > max(highs[:n]) and ch > max(highs[n + 1:]):
+                insort(self._sw_hi, ch)
+            if cl == min(lows) and cl < min(lows[:n]) and cl < min(lows[n + 1:]):
+                insort(self._sw_lo, cl)
+    def _cancel_dist(self):
+        return float(config.ZONE_CANCEL_PIPS) * float(SETTINGS["pip"])
+    def _resolve_fills(self, bar):
+        if not self._watch:
             return
-        bh, bl, bc = float(b15["high"]), float(b15["low"]), float(b15["close"])
-        bull = sc["bias"] == "Bullish"
-        z = sc["zone"]
-
-        # 1. Bias must remain aligned
-        if self.htf_bias != sc["bias"]:
-            self._end_h1_scan(ts, "bias_lost")
-            return
-
-        # 2. Zone spent check
-        if z.get("spent", False):
-            self._end_h1_scan(ts, "zone_spent")
-            return
-
-        # 3. 24-hour scan duration guard: if M15 confirmation hasn't completed within 24h of touch, abort
-        if (ts - sc["started_at"]) > H1_SCAN_MAX_DURATION:
-            z["spent"] = True
-            self._end_h1_scan(ts, "scan_expired_24h")
-            return
-
-        # 4. Runaway distance guard before order placement:
-        #    On a fresh 1H continuation pullback, the 1H BOS high/low is right next to the 1H OB,
-        #    so the confirming 15m CHoCH -> BOS displacement leg naturally pokes past that 1H high/low.
-        #    Allow the 15m displacement leg up to 2.5x 1H ATR beyond the 1H zone while updating the
-        #    swing ceiling; once the order is placed, simulate_orders locks that displacement peak as the ceiling.
-        z_atr = float(z.get("atr", 0.0))
-        if bull:
-            if z_atr > 0 and bh >= (float(z["high"]) + H1_SCAN_RUNAWAY_ATR * z_atr):
-                self._end_h1_scan(ts, "scan_ceiling_break")
-                return
-            if bh > sc["ceiling"]:
-                sc["ceiling"] = bh
-        else:
-            if z_atr > 0 and bl <= (float(z["low"]) - H1_SCAN_RUNAWAY_ATR * z_atr):
-                self._end_h1_scan(ts, "scan_ceiling_break")
-                return
-            if bl < sc["ceiling"]:
-                sc["ceiling"] = bl
-
-        # 5. Close beyond far edge of the 1H OB invalidates the zone and scan
-        if bull and bc < z["low"]:
-            z["spent"] = True
-            self._end_h1_scan(ts, "scan_far_break")
-            return
-        if (not bull) and bc > z["high"]:
-            z["spent"] = True
-            self._end_h1_scan(ts, "scan_far_break")
-            return
-
-        # 6. Walk 15m events in WITH-TREND direction (CHoCH -> BOS -> IDM)
-        want = "bullish" if bull else "bearish"
-        for e in events.get("ltf", []):
-            if e.direction != want:
-                continue
-            if sc["choch"] is None:
-                if not self._h1_bos:
-                    self.counts["h1_choch_no_bos"] += 1
-                    continue
-                sc["choch"] = e
-                sc["choch_box"] = self._register_15m_box(e, df_slices["ltf"], want)
-                self.counts["h1_setups"] += 1
-            elif sc["bos"] is None and e.origin == "BOS":
-                sc["bos"] = e
-                idm = cy._find_idm(
-                    df_slices["ltf"], sc["choch"].confirmed_at, e.confirmed_at, want
-                )
-                sc["idm"] = idm
-                if idm is not None:
-                    self.counts["h1_idm_set"] += 1
-
-        # 7. Track IDM sweep and place 1H continuation order (strictly 1 order attempt per scan)
-        idm = sc["idm"]
-        if idm is not None and sc["idm_swept_at"] is None and not sc["order_placed"]:
-            swept = (bl <= idm["price"]) if bull else (bh >= idm["price"])
-            if swept:
-                sc["idm_swept_at"] = ts
-                self._place_h1_zone_order(sc, ts)
-
-    def _has_opposing_htf_obstacle(self, entry: float, risk: float, bull: bool) -> bool:
-        """Reject H1 continuation trade if a fresh/tested opposing D1/H4 POI sits within 1.5 R."""
-        opp_dir = "bearish" if bull else "bullish"
-        min_dist = H1_OPPOSING_HTF_MIN_R * risk
-        for tf in ("D1", "H4"):
-            book = self.books.get(tf)
-            if book is None:
-                continue
-            for p in book.active:
-                if p.direction != opp_dir:
-                    continue
-                if p.status not in ("fresh", "tested"):
-                    continue
-                if bull:
-                    # Opposing supply zone ahead of bullish entry
-                    if p.low > entry and (p.low - entry) < min_dist:
-                        return True
-                else:
-                    # Opposing demand zone ahead of bearish entry
-                    if p.high < entry and (entry - p.high) < min_dist:
-                        return True
-        return False
-
-    def _place_h1_zone_order(self, sc: Dict, bar_ts: pd.Timestamp):
-        if cy.SKIP_ASIAN and t1.in_asian(bar_ts):
-            self.counts["h1_asian_skipped"] += 1
-            return
-        # Precedence rule: if a D1/H4 deep zone scan is currently active and already placed an order
-        # on the same 15m box, skip to avoid duplicating the exact same trade.
-        box = sc["choch_box"]
-        if box is None:
-            self.counts["h1_no_choch_box"] += 1
-            return
-        for existing in self.orders:
-            if (
-                existing.get("leg") == "zone"
-                and existing.get("zone_tf") in ("D1", "H4")
-                and existing["box_created_at"] == box["created_at"]
-                and existing["status"] in ("pending", "open")
+        keep = []
+        now = bar.close_time
+        spent_now = set()
+        spent_sell_now = set()
+        for w in self._watch:
+            o = w["o"]
+            zid = o["zone_id"]
+            sell = o["side"] == "sell"
+            is_h1 = (o.get("zone_tf") == "H1")
+            if (sell and (zid in self._spent or zid in spent_sell_now)) or (
+                is_h1 and (zid in self._spent or zid in spent_now)
             ):
-                self.counts["h1_duplicate_with_htf_zone_skipped"] += 1
-                sc["order_placed"] = True
-                return
-
-        if sc["bos"] is None:
-            self.counts["h1_ob_no_bos"] += 1
+                if o["end_time"] is None:
+                    o["end_time"] = now
+                    o["end_reason"] = "zone_spent"
+                continue
+            if w["st"] != "touched":
+                keep.append(w)
+                continue
+            fill = float(bar.open)
+            stop = float(o["stop"])
+            if (sell and fill >= stop) or ((not sell) and fill <= stop):
+                self.counts["z_fill_beyond_stop"] += 1
+                continue
+            risk = abs(fill - stop)
+            if float(SETTINGS["spread"]) / risk > float(config.MAX_SPREAD_RISK_RATIO):
+                self.counts["z_fill_skipped_spread"] += 1
+                continue
+            if zid not in self._spent:
+                self._spent.add(zid)
+                self.counts["z_zone_spent"] += 1
+                if is_h1:
+                    self.counts["h1_zone_spent"] += 1
+                self._log("z_spent", now, zone=zid, order=o["id"])
+            spent_now.add(zid)
+            if sell:
+                spent_sell_now.add(zid)
+        if spent_now:
+            still = []
+            for w in keep:
+                o = w["o"]
+                zid = o["zone_id"]
+                is_h1 = (o.get("zone_tf") == "H1")
+                if (o["side"] == "sell" and zid in spent_sell_now) or (is_h1 and zid in spent_now):
+                    if o["end_time"] is None:
+                        o["end_time"] = now
+                        o["end_reason"] = "zone_spent"
+                    continue
+                still.append(w)
+            keep = still
+            if (self.state == cy.SCAN and self._scan is not None
+                    and self._scan["zone"]["id"] in spent_sell_now):
+                sc = self._scan
+                for s in sc.get("zsetups", []):
+                    s["br"] = "none"
+                    s["ob"] = "none"
+                self._zend(sc, now, "zone_spent")
+            if self._h1_scan is not None and self._h1_scan["zone"]["id"] in spent_now:
+                hsc = self._h1_scan
+                for s in hsc.get("zsetups", []):
+                    s["br"] = "none"
+                    s["ob"] = "none"
+                self._h1_end(hsc, now, "zone_spent")
+                self._h1_scan = None
+        self._watch = keep
+    def _watch_orders(self, p, arrival):
+        if not self._watch:
             return
-        if sc["idm"] is None or sc["idm_swept_at"] is None:
-            self.counts["h1_ob_no_idm"] += 1
-            return
-        if box["created_at"] >= bar_ts:
-            self.counts["h1_ob_same_bar"] += 1
-            return
-        atr = self.atrs["ltf"].current_atr
-        if atr is None:
-            return
-        atr_f = float(atr)
-        if box["status"] in ("fresh", "tested"):
-            kind = "ob"
-        elif box["status"] == "used":
-            self.counts["h1_ob_box_used"] += 1
-            return
-        else:
-            self.counts["h1_ob_box_dead"] += 1
-            return
-
-        # Quality Guard 1: 15m Order Block width filter (0.25x to 1.75x 15m ATR)
-        box_w = float(box["high"]) - float(box["low"])
-        if box_w < 0.25 * atr_f or box_w > 1.75 * atr_f:
-            self.counts["h1_ob_box_size_filtered"] += 1
-            return
-
-        # Quality Guard 2: Minimum 0.5x 15m ATR separation between Inducement and 15m OB edge
-        bull = sc["bias"] == "Bullish"
-        idm_price = float(sc["idm"]["price"])
-        if bull:
-            idm_dist = idm_price - float(box["high"])
-        else:
-            idm_dist = float(box["low"]) - idm_price
-        if idm_dist < 0.5 * atr_f:
-            self.counts["h1_ob_idm_too_close"] += 1
-            return
-
-        flipped_bias = "Bearish" if bull else "Bullish"
-        o = ord_mod._build_order(
-            self.pair, "H1", flipped_bias, kind, box,
-            sc["idm"], atr_f, bar_ts, sc["bos"], sc["ceiling"],
-        )
-        if o is None:
-            self.counts[f"h1_{kind}_skipped_spread"] += 1
-            return
-
-        # Quality Guard 3: Minimum stop distance floor (0.5x 15m ATR) so tight 15m OBs aren't clipped by noise
-        min_risk = 0.5 * atr_f
-        if o["risk"] < min_risk:
-            if o["direction"] == "buy":
-                o["sl"] = o["entry"] - min_risk
-                o["risk"] = min_risk
-                o["tp_3r"] = o["entry"] + 3.0 * min_risk
+        pclose = p.close_time
+        cancel = self._cancel_dist()
+        keep = []
+        for w in self._watch:
+            if w["st"] != "pending":
+                keep.append(w)
+                continue
+            o = w["o"]
+            if pclose <= o["placed_time"]:
+                keep.append(w)
+                continue
+            if (o.get("zone_tf") == "H1" and o["end_time"] is None
+                    and pclose - o["placed_time"] >= H1_ORDER_EXPIRY):
+                o["end_time"] = pclose
+                o["end_reason"] = "h1_expired_24h"
+                self.counts["h1_orders_expired_24h"] += 1
+                continue
+            end = o["end_time"]
+            if end is not None:
+                if o["end_reason"] == "ceiling_break":
+                    live = pclose <= end
+                else:
+                    live = pclose < end
+                if not live:
+                    continue
+            sell = o["side"] == "sell"
+            entry = float(o["entry"])
+            if (end is None or end > pclose) and cancel > 0.0:
+                if sell:
+                    ran = float(p.low) <= entry - cancel
+                else:
+                    ran = float(p.high) >= entry + cancel
+                if ran:
+                    o["end_time"] = pclose
+                    o["end_reason"] = "ran_away"
+                    self.counts["z_ran_away"] += 1
+                    self._log("z_ran_away", arrival.close_time,
+                              order=o["id"], zone=o["zone_id"])
+                    continue
+            touched = float(p.high) >= entry if sell else float(p.low) <= entry
+            if touched:
+                w["st"] = "touched"
+                keep.append(w)
+            elif end is None or pclose < end:
+                keep.append(w)
+        self._watch = keep
+    def _freeze_zones(self):
+        if not _rules():
+            return super()._freeze_zones()
+        buy_zone = self.ctx["zone_side"] == "buy"
+        out = []
+        for tf in ("D1", "H4"):
+            for p in self.books[tf].usable(self.ctx["zone_side"], include_used=True):
+                if p.id in self._spent:
+                    self.counts["z_spent_skipped"] += 1
+                    continue
+                out.append(self._refine(p, buy_zone))
+        return out
+    def _zone_touched(self, bar):
+        if not _rules():
+            return super()._zone_touched(bar)
+        up = self.ctx["up"]
+        best = None
+        for z in self._pb["zones"]:
+            if z["poi"].state not in ("fresh", "used") or z["id"] in self._spent:
+                continue
+            if up:
+                hit = bar.low <= z["high"]
+                near = z["high"]
             else:
-                o["sl"] = o["entry"] + min_risk
-                o["risk"] = min_risk
-                o["tp_3r"] = o["entry"] - 3.0 * min_risk
-            self.counts["h1_ob_min_risk_padded"] += 1
-
-        # Room-to-target check against opposing untouched D1/H4 zones
-        if self._has_opposing_htf_obstacle(o["entry"], o["risk"], bull):
-            self.counts["h1_blocked_opposing_htf"] += 1
+                hit = bar.high >= z["low"]
+                near = z["low"]
+            if hit and (best is None or (near > best[0] if up else near < best[0])):
+                best = (near, z)
+        return best[1] if best is not None else None
+    def _on_m15(self, bar, ev):
+        self._ev = ev
+        super()._on_m15(bar, ev)
+        if _on() and _rules() and self.ltf == "M15":
+            self._h1_step(bar, ev, bar.close_time)
+    def _start_pullback(self, bar, ev, now):
+        unlock_sell = _rules() and (not self.ctx["up"])
+        self._zbos = unlock_sell
+        self._zbos_time = ev["time"] if unlock_sell else None
+        super()._start_pullback(bar, ev, now)
+    def _pull_step(self, bar, ev, now):
+        if _on() and self._pb is not None:
+            self._zpb_id = self._pb["id"]
+            self._zlocked = bool(self._pb["locked"])
+        super()._pull_step(bar, ev, now)
+    def _on_bos(self, ev, now):
+        if _on():
+            self._mark_bos(ev, now)
+        super()._on_bos(ev, now)
+    def _on_choch_other(self, now):
+        if _on() and self._zbos and (not _rules() or self.ctx["up"]):
+            self.counts["z_bos_cleared_by_choch"] += 1
+            self._zbos = False
+            self._zbos_time = None
+        super()._on_choch_other(now)
+    def _check_bias(self, now):
+        if (_on() and self.state == cy.SCAN and self._scan is not None
+                and htf_bias(self.bias["D1"], self.bias["H4"]) != self.ctx["bias"]):
+            self._zend(self._scan, now, "bias_lost")
+        super()._check_bias(now)
+    def _mark_bos(self, ev, now):
+        self._zbos = True
+        self._zbos_time = ev["time"]
+        self.counts["z_bos_seen"] += 1
+        self._log("z_bos", now, direction=ev["direction"])
+    def _scan_step(self, bar, now):
+        if not _on():
+            return super()._scan_step(bar, now)
+        sc = self._scan
+        if "zorders" not in sc:
+            sc["zorders"] = []
+            sc["zsetups"] = []
+            sc["pb_id"] = self._zpb_id
+            sc["locked"] = self._zlocked
+            sc["touch_time"] = now
+            self.counts["z_scan"] += 1
+            z = sc["zone"]
+            self._log("z_touch", now, pb=sc["pb_id"], zone=z["id"], zone_tf=z["tf"],
+                      zone_low=float(z["low"]), zone_high=float(z["high"]),
+                      ceiling=float(sc["ceiling"]), bos_seen=bool(self._zbos))
+        super()._scan_step(bar, now)
+        if self._scan is None:
+            why = "ceiling_break" if self.state == cy.ARMED else "zone_far_break"
+            self._zend(sc, now, why)
             return
-
-        o["htf_bias"] = sc["bias"]
-        o["leg"] = "zone"
-        o["zone_kind"] = sc["zone"]["kind"]
-        o["zone_tf"] = "H1"
-        o["h1_zone_id"] = sc["zone"]["id"]
-        self.orders.append(o)
-        sc["order_placed"] = True
-        self.counts[f"h1_orders_{kind}"] += 1
+        if _rules() and (not self.ctx["up"]) and sc["zone"]["id"] in self._spent:
+            return
+        for s in sc["zsetups"]:
+            if s["br"] == "wait":
+                self._z_try_breaker(s, sc, bar, now)
+            if s["ob"] == "wait_sweep":
+                self._z_try_ob(s, sc, bar, now)
+        self._z_event(sc, bar, now)
+    def _z_event(self, sc, bar, now):
+        ev = self._ev
+        if ev is None:
+            return
+        lab = ev["label"]
+        d = ev["direction"]
+        c = self.ctx
+        if lab == "BOS" and d == c["choch_dir"]:
+            self._mark_bos(ev, now)
+        elif lab == "CHoCH" and d == c["other_dir"]:
+            if self._zbos:
+                self._z_new_choch(sc, bar, ev, now)
+            else:
+                self.counts["z_choch_no_bos"] += 1
+            if not c["up"]:
+                self._zbos = False
+                self._zbos_time = None
+        elif lab == "BOS" and d == c["other_dir"]:
+            for s in sc["zsetups"]:
+                if s["ob"] == "wait_bos" and s["choch_time"] < ev["time"]:
+                    p = cy._num(ev["last_opposite_price"])
+                    if p is None:
+                        s["ob"] = "none"
+                        self.counts["z_ob_no_idm"] += 1
+                    else:
+                        s["idm"] = p
+                        s["ob"] = "wait_sweep"
+                        self.counts["z_idm_set"] += 1
+        elif lab == "CHoCH" and d == c["choch_dir"]:
+            if _rules() and (not c["up"]):
+                self._mark_bos(ev, now)
+            for s in sc["zsetups"]:
+                if s["ob"] == "wait_bos":
+                    s["ob"] = "none"
+                    self.counts["z_ob_no_bos"] += 1
+    def _z_new_choch(self, sc, bar, ev, now):
+        self._n_z += 1
+        box = self._choch_poi(ev)
+        breaker = self.books[self.ltf].choch_breaker.get(ev["time"])
+        s = {"id": f"{sc['pb_id']}-Z{self._n_z}", "choch_time": ev["time"],
+             "choch_level": cy._num(ev["broken_swing_price"]), "box": box,
+             "breaker": breaker, "br": "none", "ob": "none", "idm": None,
+             "idm_sweep_time": None, "bos_time": self._zbos_time}
+        sc["zsetups"].append(s)
+        self.counts["z_setups"] += 1
+        self._log("z_setup", now, setup=s["id"], choch_level=float(s["choch_level"] or 0.0))
+        skip_br_buy = _rules() and self.ltf == "M15" and self.ctx["up"]
+        skip_br_sell = _rules() and (not self.ctx["up"])
+        if breaker is None:
+            self.counts["z_no_breaker"] += 1
+        elif skip_br_buy:
+            self.counts["z_breaker_buy_skipped"] += 1
+        elif skip_br_sell:
+            self.counts["z_breaker_sell_skipped"] += 1
+        else:
+            s["br"] = "wait"
+            self._z_try_breaker(s, sc, bar, now)
+        if box is None:
+            self.counts["z_no_choch_box"] += 1
+        else:
+            s["ob"] = "wait_bos"
+    def _z_try_breaker(self, s, sc, bar, now):
+        p = s["breaker"]
+        if p.state != "dead":
+            return
+        s["br"] = "none"
+        self._zplace(s, sc, "breaker", p, bar, now)
+    def _z_try_ob(self, s, sc, bar, now):
+        tsell = not self.ctx["up"]
+        box = s["box"]
+        if box.state == "dead":
+            s["ob"] = "none"
+            self.counts["z_ob_box_dead"] += 1
+            return
+        idm = s["idm"]
+        swept = bar.high > idm if tsell else bar.low < idm
+        if not swept:
+            return
+        s["ob"] = "none"
+        s["idm_sweep_time"] = now
+        if box.state != "fresh" and not bool(config.TRADE_USED_POIS):
+            self.counts["z_ob_box_used"] += 1
+            return
+        near = box.low if tsell else box.high
+        touched = bar.high >= near if tsell else bar.low <= near
+        if touched:
+            self.counts["z_ob_same_bar"] += 1
+            if not tsell:
+                return
+        self._zplace(s, sc, "ob", box, bar, now)
+    def _liq(self, entry, ceiling, tsell):
+        if tsell:
+            lo = self._sw_lo
+            a = bisect_left(lo, ceiling)
+            b = bisect_left(lo, entry)
+            return [float(x) for x in reversed(lo[a:b])][:LIQ_CAP]
+        hi = self._sw_hi
+        a = bisect_right(hi, entry)
+        b = bisect_right(hi, ceiling)
+        return [float(x) for x in hi[a:b]][:LIQ_CAP]
+    def _zplace(self, s, sc, kind, p, bar, now):
+        tsell = not self.ctx["up"]
+        atr = self.atr.value_at(p.candle_time)
+        if atr is None:
+            self.counts["z_" + kind + "_no_atr"] += 1
+            return None
+        entry = p.low if tsell else p.high
+        edge = p.high if tsell else p.low
+        ahead = bar.close < entry if tsell else bar.close > entry
+        if not ahead:
+            self.counts["z_" + kind + "_entry_not_ahead"] += 1
+            return None
+        buf = float(config.STOP_BUFFER_ATR) * float(atr)
+        stop = edge + buf if tsell else edge - buf
+        if self._spread > 0.0:
+            min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
+            if abs(entry - stop) < min_risk:
+                stop = entry + min_risk if tsell else entry - min_risk
+                self.counts["z_" + kind + "_min_risk_padded"] += 1
+        ceiling = float(sc["ceiling"])
+        z = sc["zone"]
+        self._n_zo += 1
+        order = {"id": f"ZO{self._n_zo}", "pullback": sc["pb_id"], "setup": s["id"],
+                 "variant": "plain", "kind": kind, "leg": "zone",
+                 "side": "sell" if tsell else "buy",
+                 "htf_bias": self.ctx["bias"],
+                 "placed_time": now, "entry": float(entry), "stop": float(stop),
+                 "stop_edge": float(edge), "box_low": float(p.low),
+                 "box_high": float(p.high), "box_time": p.candle_time,
+                 "atr": float(atr),
+                 "ceiling": ceiling, "ceiling_locked": bool(sc["locked"]),
+                 "end_time": None, "end_reason": None,
+                 "liq": self._liq(entry, ceiling, tsell),
+                 "bos_time": s["bos_time"], "zone_touch_time": sc["touch_time"],
+                 "zone_tf": z["tf"], "zone_low": float(z["low"]),
+                 "zone_high": float(z["high"]), "choch_time": s["choch_time"],
+                 "choch_level": s["choch_level"],
+                 "idm_level": cy._num(s.get("idm")),
+                 "idm_sweep_time": s.get("idm_sweep_time"),
+                 "zone_id": z["id"]}
+        sc["zorders"].append(order)
+        self.zorders.append(order)
+        if _rules():
+            self._watch.append({"o": order, "st": "pending"})
+        self.counts["z_orders_" + kind] += 1
+        self._log("z_order", now, id=order["id"], order_kind=kind, side=order["side"],
+                  entry=order["entry"], stop=order["stop"], setup=s["id"],
+                  liq_n=len(order["liq"]))
+        return order
+    def _zend(self, sc, now, reason):
+        n = 0
+        for o in sc.get("zorders", []):
+            if o["end_time"] is None:
+                o["end_time"] = now
+                o["end_reason"] = reason
+                n += 1
+        self.counts["z_end_" + reason] += 1
+        self._log("z_end", now, reason=reason, cancelled=n)
+    # =========================================================================
+    # 1H Continuation Zone Stream (Option A: High-Precision Intraday H1 Zones)
+    # =========================================================================
+    def _h1_step(self, bar, ev, now):
+        hb = htf_bias(self.bias["D1"], self.bias["H4"])
+        q, self._h1_q = self._h1_q, []
+        # Step 1: Require Daily/H4 alignment AND active HTF cycle (not IDLE)
+        if hb not in ("bull", "bear") or self.state == cy.IDLE:
+            if self._h1_scan is not None:
+                self._h1_end(self._h1_scan, now, "bias_lost")
+                self._h1_scan = None
+            self._h1_zones = []
+            self._h1_bos = False
+            self._h1_bos_time = None
+            self._h1_bias = None
+            return
+        if self._h1_bias != hb:
+            if self._h1_scan is not None:
+                self._h1_end(self._h1_scan, now, "bias_lost")
+                self._h1_scan = None
+            self._h1_zones = []
+            self._h1_bos = False
+            self._h1_bos_time = None
+            self._h1_bias = hb
+        up = (hb == "bull")
+        htf_dir = "up" if up else "down"
+        zone_side = "buy" if up else "sell"
+        choch_dir = "down" if up else "up"
+        # Step 2: Register new H1 Continuation Zones from confirmed pro-trend H1 BOS
+        for hev in q:
+            if hev["label"] == "BOS" and hev["dir
