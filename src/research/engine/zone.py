@@ -6,6 +6,7 @@ from src.research.engine.bias import htf_bias
 
 SETTINGS = {"enabled": False, "rules": False, "pip": 0.0001, "spread": 0.0}
 LIQ_CAP = 100
+H1_OPPOSING_HTF_MIN_R = 1.5
 
 
 def _on():
@@ -35,6 +36,14 @@ class ZoneRecorder(cy.CycleRecorder):
         self._spent = set()
         self._watch = []
         self._prev15 = None
+        # --- 1H Continuation Zone stream state ---
+        self._h1_q = []
+        self._h1_zones = []
+        self._h1_scan = None
+        self._h1_bos = False
+        self._h1_bos_time = None
+        self._h1_bias = None
+        self._n_h1_scan = 0
         if _rules():
             if not (float(SETTINGS.get("pip", 0.0)) > 0.0
                     and float(SETTINGS.get("spread", 0.0)) > 0.0):
@@ -49,7 +58,12 @@ class ZoneRecorder(cy.CycleRecorder):
                     self._watch_orders(self._prev15, bar)
                 self._resolve_fills(bar)
                 self._prev15 = bar
+        n0 = len(self.events)
         super().on_bar_close(bar, feed)
+        if _on() and _rules() and bar.tf == "H1":
+            new_h1 = self.events[n0:]
+            if new_h1:
+                self._h1_q.extend(new_h1)
 
     def _swings(self, bar):
         h = float(bar.high)
@@ -81,12 +95,16 @@ class ZoneRecorder(cy.CycleRecorder):
             return
         keep = []
         now = bar.close_time
+        spent_now = set()
         spent_sell_now = set()
         for w in self._watch:
             o = w["o"]
             zid = o["zone_id"]
             sell = o["side"] == "sell"
-            if sell and (zid in self._spent or zid in spent_sell_now):
+            is_h1 = (o.get("zone_tf") == "H1")
+            if (sell and (zid in self._spent or zid in spent_sell_now)) or (
+                is_h1 and (zid in self._spent or zid in spent_now)
+            ):
                 if o["end_time"] is None:
                     o["end_time"] = now
                     o["end_reason"] = "zone_spent"
@@ -106,14 +124,19 @@ class ZoneRecorder(cy.CycleRecorder):
             if zid not in self._spent:
                 self._spent.add(zid)
                 self.counts["z_zone_spent"] += 1
+                if is_h1:
+                    self.counts["h1_zone_spent"] += 1
                 self._log("z_spent", now, zone=zid, order=o["id"])
+            spent_now.add(zid)
             if sell:
                 spent_sell_now.add(zid)
-        if spent_sell_now:
+        if spent_now:
             still = []
             for w in keep:
                 o = w["o"]
-                if o["side"] == "sell" and o["zone_id"] in spent_sell_now:
+                zid = o["zone_id"]
+                is_h1 = (o.get("zone_tf") == "H1")
+                if (o["side"] == "sell" and zid in spent_sell_now) or (is_h1 and zid in spent_now):
                     if o["end_time"] is None:
                         o["end_time"] = now
                         o["end_reason"] = "zone_spent"
@@ -127,6 +150,13 @@ class ZoneRecorder(cy.CycleRecorder):
                     s["br"] = "none"
                     s["ob"] = "none"
                 self._zend(sc, now, "zone_spent")
+            if self._h1_scan is not None and self._h1_scan["zone"]["id"] in spent_now:
+                hsc = self._h1_scan
+                for s in hsc.get("zsetups", []):
+                    s["br"] = "none"
+                    s["ob"] = "none"
+                self._h1_end(hsc, now, "zone_spent")
+                self._h1_scan = None
         self._watch = keep
 
     def _watch_orders(self, p, arrival):
@@ -207,6 +237,8 @@ class ZoneRecorder(cy.CycleRecorder):
     def _on_m15(self, bar, ev):
         self._ev = ev
         super()._on_m15(bar, ev)
+        if _on() and _rules() and self.ltf == "M15":
+            self._h1_step(bar, ev, bar.close_time)
 
     def _start_pullback(self, bar, ev, now):
         unlock_sell = _rules() and (not self.ctx["up"])
@@ -437,3 +469,305 @@ class ZoneRecorder(cy.CycleRecorder):
                 n += 1
         self.counts["z_end_" + reason] += 1
         self._log("z_end", now, reason=reason, cancelled=n)
+
+    # =========================================================================
+    # 1H Continuation Zone Stream (D1+H4 Trend + H1 BOS Zone + M15 Execution)
+    # =========================================================================
+    def _h1_step(self, bar, ev, now):
+        hb = htf_bias(self.bias["D1"], self.bias["H4"])
+        q, self._h1_q = self._h1_q, []
+
+        # Step 1: Check Daily/H4 alignment
+        if hb not in ("bull", "bear"):
+            if self._h1_scan is not None:
+                self._h1_end(self._h1_scan, now, "bias_lost")
+                self._h1_scan = None
+            self._h1_zones = []
+            self._h1_bos = False
+            self._h1_bos_time = None
+            self._h1_bias = None
+            return
+
+        if self._h1_bias != hb:
+            if self._h1_scan is not None:
+                self._h1_end(self._h1_scan, now, "bias_lost")
+                self._h1_scan = None
+            self._h1_zones = []
+            self._h1_bos = False
+            self._h1_bos_time = None
+            self._h1_bias = hb
+
+        up = (hb == "bull")
+        htf_dir = "up" if up else "down"
+        zone_side = "buy" if up else "sell"
+        choch_dir = "down" if up else "up"
+
+        # Step 2: Register new H1 Continuation Zones from confirmed pro-trend H1 BOS
+        for hev in q:
+            if hev["label"] == "BOS" and hev["direction"] == htf_dir:
+                self.counts["h1_bos_aligned"] += 1
+                pois = self.books["H1"].pois
+                if (pois and pois[-1].origin == "BOS"
+                        and pois[-1].born_time == hev["time"]
+                        and pois[-1].side == zone_side
+                        and pois[-1].state == "fresh"):
+                    p = pois[-1]
+                    c_init = max(float(hev["close"]), float(hev["broken_swing_price"] or hev["close"])) if up else min(float(hev["close"]), float(hev["broken_swing_price"] or hev["close"]))
+                    z = {"id": p.id, "tf": "H1", "poi": p,
+                         "low": float(p.low), "high": float(p.high),
+                         "born_time": hev["time"], "ceiling": c_init}
+                    self._h1_zones.append(z)
+                    self.counts["h1_zones_born"] += 1
+
+        # Update dynamic impulse ceiling on waiting H1 zones & prune dead/spent zones
+        alive_zones = []
+        for z in self._h1_zones:
+            if z["poi"].state == "dead" or z["id"] in self._spent:
+                continue
+            if up and float(bar.high) > z["ceiling"]:
+                z["ceiling"] = float(bar.high)
+            elif (not up) and float(bar.low) < z["ceiling"]:
+                z["ceiling"] = float(bar.low)
+            alive_zones.append(z)
+        self._h1_zones = alive_zones
+
+        # Track counter-trend M15 BOS/CHoCH that precedes a return into the H1 zone
+        if ev is not None:
+            if ev["label"] == "BOS" and ev["direction"] == choch_dir:
+                self._h1_bos = True
+                self._h1_bos_time = ev["time"]
+            elif (not up) and ev["label"] == "CHoCH" and ev["direction"] == choch_dir:
+                self._h1_bos = True
+                self._h1_bos_time = ev["time"]
+
+        # Step 3: Check for first return to an eligible H1 zone if not currently scanning one
+        if self._h1_scan is None:
+            touched_z = self._h1_zone_touched(bar, up, now)
+            if touched_z is not None:
+                self._n_h1_scan += 1
+                if not up and self._h1_bos_time is None:
+                    self._h1_bos = True
+                    self._h1_bos_time = now
+                self._h1_scan = {
+                    "zone": touched_z,
+                    "ceiling": float(touched_z["ceiling"]),
+                    "locked": True,
+                    "pb_id": f"H1C{self._n_h1_scan}",
+                    "touch_time": now,
+                    "zorders": [],
+                    "zsetups": [],
+                }
+                self.counts["h1_scan"] += 1
+                self._log("h1_touch", now, pb=self._h1_scan["pb_id"],
+                          zone=touched_z["id"], zone_tf="H1",
+                          zone_low=float(touched_z["low"]),
+                          zone_high=float(touched_z["high"]),
+                          ceiling=float(touched_z["ceiling"]))
+
+        if self._h1_scan is not None:
+            self._h1_scan_step(bar, ev, now, up)
+
+    def _h1_zone_touched(self, bar, up, now):
+        best = None
+        for z in self._h1_zones:
+            if z["poi"].state not in ("fresh", "used") or z["id"] in self._spent:
+                continue
+            if now <= z["born_time"]:
+                continue
+            if up:
+                hit = float(bar.low) <= z["high"]
+                near = z["high"]
+            else:
+                hit = float(bar.high) >= z["low"]
+                near = z["low"]
+            if hit and (best is None or (near > best[0] if up else near < best[0])):
+                best = (near, z)
+        return best[1] if best is not None else None
+
+    def _h1_scan_step(self, bar, ev, now, up):
+        sc = self._h1_scan
+        z = sc["zone"]
+
+        # Check ceiling break or far edge break
+        if cy._beyond(bar.close, sc["ceiling"], up):
+            self.counts["h1_scan_ceiling_break"] += 1
+            self._h1_end(sc, now, "ceiling_break")
+            self._h1_scan = None
+            return
+
+        far = z["low"] if up else z["high"]
+        if cy._beyond(bar.close, far, not up) or z["poi"].state == "dead":
+            z["poi"].state = "dead"
+            self.counts["h1_scan_far_break"] += 1
+            self._h1_end(sc, now, "zone_far_break")
+            self._h1_scan = None
+            return
+
+        if z["id"] in self._spent:
+            self._h1_end(sc, now, "zone_spent")
+            self._h1_scan = None
+            return
+
+        # Step 4: Run M15 confirmation setups inside the H1 zone
+        for s in sc["zsetups"]:
+            if s["ob"] == "wait_sweep":
+                self._h1_try_ob(s, sc, bar, now, up)
+
+        if ev is None:
+            return
+        lab = ev["label"]
+        d = ev["direction"]
+        choch_dir = "down" if up else "up"
+        other_dir = "up" if up else "down"
+
+        if lab == "BOS" and d == choch_dir:
+            self._h1_bos = True
+            self._h1_bos_time = ev["time"]
+        elif lab == "CHoCH" and d == other_dir:
+            # Precedence rule: if deep D1/H4 zone scan is active on this exact M15 CHoCH, let D1/H4 take it
+            if self.state == cy.SCAN and self._scan is not None and self._zbos:
+                self.counts["h1_duplicate_with_htf_zone_skipped"] += 1
+                return
+            if self._h1_bos:
+                self._h1_new_choch(sc, bar, ev, now, up)
+            else:
+                self.counts["h1_choch_no_bos"] += 1
+            if not up:
+                self._h1_bos = False
+                self._h1_bos_time = None
+        elif lab == "BOS" and d == other_dir:
+            for s in sc["zsetups"]:
+                if s["ob"] == "wait_bos" and s["choch_time"] < ev["time"]:
+                    p = cy._num(ev["last_opposite_price"])
+                    if p is None:
+                        s["ob"] = "none"
+                        self.counts["h1_ob_no_idm"] += 1
+                    else:
+                        s["idm"] = p
+                        s["ob"] = "wait_sweep"
+                        self.counts["h1_idm_set"] += 1
+        elif lab == "CHoCH" and d == choch_dir:
+            if not up:
+                self._h1_bos = True
+                self._h1_bos_time = ev["time"]
+            for s in sc["zsetups"]:
+                if s["ob"] == "wait_bos":
+                    s["ob"] = "none"
+                    self.counts["h1_ob_no_bos"] += 1
+
+    def _h1_new_choch(self, sc, bar, ev, now, up):
+        self._n_z += 1
+        box = self._choch_poi(ev)
+        s = {"id": f"{sc['pb_id']}-Z{self._n_z}", "choch_time": ev["time"],
+             "choch_level": cy._num(ev["broken_swing_price"]), "box": box,
+             "breaker": None, "br": "none", "ob": "none", "idm": None,
+             "idm_sweep_time": None, "bos_time": self._h1_bos_time}
+        sc["zsetups"].append(s)
+        self.counts["h1_setups"] += 1
+        self._log("h1_setup", now, setup=s["id"], choch_level=float(s["choch_level"] or 0.0))
+        if box is None:
+            self.counts["h1_no_choch_box"] += 1
+        else:
+            s["ob"] = "wait_bos"
+
+    def _h1_try_ob(self, s, sc, bar, now, up):
+        tsell = not up
+        box = s["box"]
+        if box.state == "dead":
+            s["ob"] = "none"
+            self.counts["h1_ob_box_dead"] += 1
+            return
+        idm = s["idm"]
+        swept = bar.high > idm if tsell else bar.low < idm
+        if not swept:
+            return
+        s["ob"] = "none"
+        s["idm_sweep_time"] = now
+        if box.state != "fresh" and not bool(config.TRADE_USED_POIS):
+            self.counts["h1_ob_box_used"] += 1
+            return
+        near = box.low if tsell else box.high
+        touched = bar.high >= near if tsell else bar.low <= near
+        if touched:
+            self.counts["h1_ob_same_bar"] += 1
+            if not tsell:
+                return
+        self._h1_place(s, sc, "ob", box, bar, now, up)
+
+    def _h1_blocked_by_opposing_htf_zone(self, entry, risk, tsell):
+        need = float(H1_OPPOSING_HTF_MIN_R) * risk
+        opp_side = "buy" if tsell else "sell"
+        for tf in ("D1", "H4"):
+            for p in self.books[tf].usable(opp_side, include_used=True):
+                if tsell:
+                    if float(p.high) < entry and (entry - float(p.high)) < need:
+                        return True
+                else:
+                    if float(p.low) > entry and (float(p.low) - entry) < need:
+                        return True
+        return False
+
+    def _h1_place(self, s, sc, kind, p, bar, now, up):
+        tsell = not up
+        atr = self.atr.value_at(p.candle_time)
+        if atr is None:
+            self.counts["h1_" + kind + "_no_atr"] += 1
+            return None
+        entry = p.low if tsell else p.high
+        edge = p.high if tsell else p.low
+        ahead = bar.close < entry if tsell else bar.close > entry
+        if not ahead:
+            self.counts["h1_" + kind + "_entry_not_ahead"] += 1
+            return None
+        buf = float(config.STOP_BUFFER_ATR) * float(atr)
+        stop = edge + buf if tsell else edge - buf
+        if self._spread > 0.0:
+            min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
+            if abs(entry - stop) < min_risk:
+                stop = entry + min_risk if tsell else entry - min_risk
+                self.counts["h1_" + kind + "_min_risk_padded"] += 1
+        risk = abs(float(entry) - float(stop))
+        if risk > 0 and self._h1_blocked_by_opposing_htf_zone(float(entry), risk, tsell):
+            self.counts["h1_blocked_opposing_htf_zone"] += 1
+            return None
+        ceiling = float(sc["ceiling"])
+        z = sc["zone"]
+        self._n_zo += 1
+        order = {"id": f"ZO{self._n_zo}", "pullback": sc["pb_id"], "setup": s["id"],
+                 "variant": "plain", "kind": kind, "leg": "zone",
+                 "side": "sell" if tsell else "buy",
+                 "htf_bias": "bull" if up else "bear",
+                 "placed_time": now, "entry": float(entry), "stop": float(stop),
+                 "stop_edge": float(edge), "box_low": float(p.low),
+                 "box_high": float(p.high), "box_time": p.candle_time,
+                 "atr": float(atr),
+                 "ceiling": ceiling, "ceiling_locked": True,
+                 "end_time": None, "end_reason": None,
+                 "liq": self._liq(entry, ceiling, tsell),
+                 "bos_time": s["bos_time"], "zone_touch_time": sc["touch_time"],
+                 "zone_tf": "H1", "zone_low": float(z["low"]),
+                 "zone_high": float(z["high"]), "choch_time": s["choch_time"],
+                 "choch_level": s["choch_level"],
+                 "idm_level": cy._num(s.get("idm")),
+                 "idm_sweep_time": s.get("idm_sweep_time"),
+                 "zone_id": z["id"]}
+        sc["zorders"].append(order)
+        self.zorders.append(order)
+        if _rules():
+            self._watch.append({"o": order, "st": "pending"})
+        self.counts["z_orders_" + kind] += 1
+        self.counts["h1_orders_" + kind] += 1
+        self._log("z_order", now, id=order["id"], order_kind=kind, side=order["side"],
+                  entry=order["entry"], stop=order["stop"], setup=s["id"],
+                  zone_tf="H1", liq_n=len(order["liq"]))
+        return order
+
+    def _h1_end(self, sc, now, reason):
+        n = 0
+        for o in sc.get("zorders", []):
+            if o["end_time"] is None:
+                o["end_time"] = now
+                o["end_reason"] = reason
+                n += 1
+        self.counts["h1_end_" + reason] += 1
+        self._log("h1_end", now, reason=reason, cancelled=n)
