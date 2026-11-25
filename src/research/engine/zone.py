@@ -7,9 +7,9 @@ from src.research.engine.bias import htf_bias
 SETTINGS = {"enabled": False, "rules": False, "pip": 0.0001, "spread": 0.0}
 LIQ_CAP = 100
 H1_OPPOSING_HTF_MIN_R = 1.5
-H1_ZONE_MAX_AGE = pd.Timedelta(hours=48)
-H1_SCAN_MAX_DURATION = pd.Timedelta(hours=24)
-H1_ORDER_EXPIRY = pd.Timedelta(hours=24)
+H1_ZONE_MAX_AGE = pd.Timedelta(hours=96)
+H1_SCAN_MAX_DURATION = pd.Timedelta(hours=48)
+H1_ORDER_EXPIRY = pd.Timedelta(hours=48)
 def _on():
     return bool(SETTINGS["enabled"])
 def _rules():
@@ -451,13 +451,13 @@ class ZoneRecorder(cy.CycleRecorder):
         self.counts["z_end_" + reason] += 1
         self._log("z_end", now, reason=reason, cancelled=n)
     # =========================================================================
-    # 1H Continuation Zone Stream (Option A: High-Precision Intraday H1 Zones)
+    # 1H Continuation Zone Stream (Addition 1 + Addition 2: Persistent HTF Trend)
     # =========================================================================
     def _h1_step(self, bar, ev, now):
         hb = htf_bias(self.bias["D1"], self.bias["H4"])
         q, self._h1_q = self._h1_q, []
-        # Step 1: Require Daily/H4 alignment AND active HTF cycle (not IDLE)
-        if hb not in ("bull", "bear") or self.state == cy.IDLE:
+        # Step 1: Persistent Daily/H4 Trend Permission (require D1 + H4 alignment)
+        if hb not in ("bull", "bear"):
             if self._h1_scan is not None:
                 self._h1_end(self._h1_scan, now, "bias_lost")
                 self._h1_scan = None
@@ -498,7 +498,7 @@ class ZoneRecorder(cy.CycleRecorder):
                          "born_time": hev["time"], "ceiling": c_init}
                     self._h1_zones.append(z)
                     self.counts["h1_zones_born"] += 1
-        # Update dynamic impulse ceiling on waiting H1 zones & prune stale (>48h), used, or dead zones
+        # Update dynamic impulse ceiling on waiting H1 zones & prune stale (>96h), used, or dead zones
         alive_zones = []
         for z in self._h1_zones:
             if z["poi"].state == "dead" or z["id"] in self._spent:
@@ -559,7 +559,7 @@ class ZoneRecorder(cy.CycleRecorder):
     def _h1_scan_step(self, bar, ev, now, up):
         sc = self._h1_scan
         z = sc["zone"]
-        # Expire stale H1 scan if M15 confirmation hasn't completed within 24h of zone touch
+        # Expire stale H1 scan if M15 confirmation hasn't completed within 48h of zone touch
         if now - sc["touch_time"] > H1_SCAN_MAX_DURATION and not sc["zorders"]:
             self.counts["h1_scan_expired_24h"] += 1
             self._h1_end(sc, now, "scan_expired_24h")
