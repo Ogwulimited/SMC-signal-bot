@@ -129,7 +129,8 @@ def test_end_to_end_practice_runner_and_report(tmp_path, monkeypatch):
     report = (tmp_path / 'reports/phase4/report_ct_test.md').read_text()
     assert 'gbpusd' in report
     assert 'Lookahead: FAIL' in report
-    assert 'Verdict: inconclusive' in report
+    assert 'Verdict: research only' in report
+    assert 'Data fingerprint and lookahead checks: FAIL' in report
 
 
 def test_loader_filters_practice_boundary(tmp_path, monkeypatch):
@@ -144,3 +145,29 @@ def test_loader_filters_practice_boundary(tmp_path, monkeypatch):
     assert list(got.timestamp) == [ts[1], ts[2]]
     with pytest.raises(ValueError, match='practice window'):
         run_ct.load_m15('eurusd', pd.Timestamp('2022-07-02', tz='UTC'))
+
+
+def test_matched_baseline_uses_same_practice_data(tmp_path, monkeypatch):
+    import json
+    from src.research.engine import baseline_ct, run_ct, report_ct
+    data, ct_out, mz_out = (tmp_path / x for x in ('data', 'ct', 'mz'))
+    data.mkdir()
+    make_synthetic_m15(weeks=52, seed=42, start='2016-01-04').to_parquet(data / 'eurusd_m15.parquet')
+    monkeypatch.setattr(run_ct, 'PROCESSED_DIR', data)
+    monkeypatch.setattr(run_ct, 'OUT_DIR', ct_out)
+    monkeypatch.setattr(baseline_ct, 'OUT_DIR', mz_out)
+    monkeypatch.setenv('LOOKAHEAD_CUTS', '1')
+    run_ct.run_pair('eurusd')
+    baseline_ct.run_pair('eurusd')
+    a = json.loads((ct_out / 'eurusd_funnel.json').read_text())
+    b = json.loads((mz_out / 'eurusd_meta.json').read_text())
+    assert a['data_hash'] == b['data_hash']
+    monkeypatch.setattr(report_ct, 'ROOT', tmp_path)
+    monkeypatch.setattr(report_ct, 'DATA', ct_out)
+    monkeypatch.setattr(report_ct, 'BASELINE_DATA', mz_out)
+    monkeypatch.setenv('EXPECT_PAIRS', 'eurusd')
+    monkeypatch.setenv('REPORT_LABEL', 'matched')
+    report_ct.main()
+    report = (tmp_path / 'reports/phase4/report_ct_matched.md').read_text()
+    assert 'Data fingerprint and lookahead checks: PASS' in report
+    assert 'MZ pullback + zone' in report

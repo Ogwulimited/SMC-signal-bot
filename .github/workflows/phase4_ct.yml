@@ -7,6 +7,7 @@ on:
       - ".github/workflows/phase4_ct.yml"
       - "src/research/engine/ct_engine.py"
       - "src/research/engine/run_ct.py"
+      - "src/research/engine/baseline_ct.py"
       - "src/research/engine/report_ct.py"
   workflow_dispatch:
     inputs:
@@ -64,6 +65,18 @@ jobs:
           PAIR: ${{ matrix.pair }}
           LOOKAHEAD_CUTS: "10"
         run: python -m src.research.engine.run_ct
+      - name: Run unchanged MZ baseline on the same practice data
+        env:
+          PAIR: ${{ matrix.pair }}
+          LOOKAHEAD_CUTS: "10"
+        run: python -m src.research.engine.baseline_ct
+      - name: Upload baseline output ${{ matrix.pair }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-ct-${{ matrix.pair }}
+          path: data/phase4_ct_baseline/${{ matrix.pair }}_*
+          retention-days: 14
+          if-no-files-found: error
       - name: Upload CT output ${{ matrix.pair }}
         uses: actions/upload-artifact@v4
         with:
@@ -90,6 +103,12 @@ jobs:
           pattern: ct-*
           merge-multiple: true
           path: data/phase4_ct
+      - name: Download baseline outputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: baseline-ct-*
+          merge-multiple: true
+          path: data/phase4_ct_baseline
       - name: Build CT report
         env:
           REPORT_LABEL: ${{ inputs.mode || (contains(github.event.head_commit.message, '[ct-full]') && 'full' || 'smoke') }}

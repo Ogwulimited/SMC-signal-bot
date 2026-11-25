@@ -7,6 +7,7 @@ Writes data/phase4_ct/{pair}_trades.csv, _funnel.json, _lookahead.json.
 Usage: PAIR=eurusd python -m src.research.engine.run_ct
 """
 import json
+import hashlib
 import os
 import time
 from pathlib import Path
@@ -63,6 +64,13 @@ def load_m15(pair, cutoff=PRACTICE_END):
     df["timestamp"] = df["timestamp"].astype("datetime64[ns, UTC]")
     df.attrs["dropped_weekend"] = dropped
     return df
+
+
+def data_hash(m15):
+    """Fingerprint the actual filtered OHLC inputs used for the comparison."""
+    columns = ['timestamp', 'open', 'high', 'low', 'close']
+    values = pd.util.hash_pandas_object(m15[columns], index=False).values
+    return hashlib.sha256(values.tobytes()).hexdigest()
 
 
 def run_engine(m15):
@@ -145,7 +153,7 @@ def run_pair(pair):
     funnel = {"counts": {k_: int(v) for k_, v in rec.counts.items()},
               "orders": len(orders), "statuses": statuses,
               "flips": len(rec.flips), "decisions": len(log.items),
-              "bars": len(m15), "first_bar": str(m15["timestamp"].iloc[0]),
+              "bars": len(m15), "data_hash": data_hash(m15), "first_bar": str(m15["timestamp"].iloc[0]),
               "last_close": str(m15["timestamp"].iloc[-1] + TF_M15),
               "dropped_weekend_bars": dropped,
               "variant": "ct", "ltf": "H1", "major_htf": False}

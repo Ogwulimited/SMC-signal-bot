@@ -18,6 +18,7 @@ from src.research.engine import simulate_orders as so
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "data" / "phase4_ct"
+BASELINE_DATA = ROOT / "data" / "phase4_ct_baseline"
 FIXED_MONTHS = (pd.Timestamp("2022-07-01", tz="UTC") - pd.Timestamp("2016-01-03", tz="UTC")).total_seconds() / (86400 * 365.2425 / 12)
 ALL_PAIRS = ("eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eurgbp,"
              "audjpy,eurchf,eurcad,euraud,eurnzd,gbpchf,gbpcad,gbpaud,gbpnzd,audcad,"
@@ -74,8 +75,8 @@ def dd_streak(t):
     return dd, best
 
 
-def read_trades(pair):
-    p = DATA / f"{pair}_trades.csv"
+def read_trades(pair, directory=None):
+    p = (DATA if directory is None else directory) / f"{pair}_trades.csv"
     if not p.exists():
         return None
     try:
@@ -130,6 +131,46 @@ def main():
                 f"- Max drawdown: {fmt(dd)}R  Longest losing streak: {streak}",
                 f"- Statuses: {sub['status'].value_counts().to_dict() if len(sub) else {}}",
                 f"- open_at_cutoff: {int((sub['outcome'] == 'open_at_cutoff').sum()) if len(sub) else 0}\n"]
+    # MZ is the most recently run existing variant, on identical filtered bars.
+    baseline_frames, baseline_missing, baseline_bad = [], [], []
+    for pair in expect:
+        meta_path = BASELINE_DATA / f"{pair}_meta.json"
+        look_path = BASELINE_DATA / f"{pair}_lookahead.json"
+        frame = read_trades(pair, BASELINE_DATA)
+        if frame is None or not meta_path.exists() or not look_path.exists():
+            baseline_missing.append(pair)
+            continue
+        meta = json.loads(meta_path.read_text())
+        check = json.loads(look_path.read_text())
+        if (pair not in funnels or not funnels[pair].get('data_hash') or
+                funnels[pair]['data_hash'] != meta.get('data_hash') or
+                not check.get('pass') or check.get('cuts', 0) <= 0):
+            baseline_bad.append(pair)
+        baseline_frames.append(frame)
+    matched = look_ok and not baseline_missing and not baseline_bad
+    out += ["## Matched comparison: CT vs existing MZ (static targets)",
+            f"Data fingerprint and lookahead checks: {'PASS' if matched else 'FAIL'}; "
+            f"missing baseline: {baseline_missing or 'none'}; mismatches: {baseline_bad or 'none'}.",
+            "Same input bars, spreads and simulator. Each system retains its own "
+            "entry, stop and break-even rules. Results permit stacking; no portfolio risk limits are modelled.",
+            "| System | Filled | Resolved | Filled/month | Win% | Net R | PF | Exp R | Max DD R |",
+            "|---|---|---|---|---|---|---|---|---|"]
+    base = pd.concat(baseline_frames, ignore_index=True) if baseline_frames else pd.DataFrame()
+    ct_static = allr[allr['target_mode'] == 'static'] if len(allr) else allr
+    candidates = [('CT', ct_static)]
+    if len(base):
+        bs = base[base['target_mode'] == 'static']
+        candidates += [('MZ zone only', bs[bs['leg'] == 'zone']),
+                       ('MZ pullback + zone', bs[bs['leg'].isin(['pullback', 'zone'])])]
+    for name, subset in candidates:
+        resolved = subset[subset['outcome'].isin(DONE)] if len(subset) else subset
+        ss = stats(resolved)
+        dd, _ = dd_streak(resolved)
+        fills = int((subset['status'] == 'filled').sum()) if len(subset) else 0
+        out.append(f"| {name} | {fills} | {ss['n']} | {fills/FIXED_MONTHS:.2f} | "
+                   f"{fmt(ss['wr'],1)} | {fmt(ss['net'])} | {fmt(ss['pf'])} | "
+                   f"{fmt(ss['exp'],3)} | {fmt(dd)} |")
+    out.append('')
     out += ["## Historical references from versions.md (28 pairs; not a matched rerun)",
             "| System | Resolved | Net R | Win% | PF | Exp | resolved/month |",
             "|---|---|---|---|---|---|---|"]
@@ -143,10 +184,9 @@ def main():
                f"{fmt(s['wr'],1)} | {fmt(s['pf'])} | {fmt(s['exp'],3)} | "
                f"{s['n']/FIXED_MONTHS:.2f} |")
     out += ["",
-            "**Verdict: inconclusive.** Ledger figures are historical references, "
-            "not a verified matched rerun; compare the current baseline on the "
-            "same pairs, data, dates, cost and execution assumptions before "
-            "deciding. A positive practice result alone does not prove an edge.",
+            "**Verdict: research only.** Review the matched MZ comparison, "
+            "frequency by year, coverage and drawdown before deciding. Practice "
+            "results alone do not prove an edge; no automatic migration is made.",
             f"Completeness and lookahead checks: {'PASS' if look_ok else 'FAIL'}. "
             "Static and liquidity are alternative simulations, not additive trades.\n"]
     if len(res):
