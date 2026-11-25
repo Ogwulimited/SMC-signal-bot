@@ -1,0 +1,119 @@
+name: Phase 4 CT Continuation (practice years)
+
+on:
+  push:
+    branches: ["arena/1e49a92c-smc-signal-bot"]
+    paths:
+      - ".github/workflows/phase4_ct.yml"
+      - "src/research/engine/ct_engine.py"
+      - "src/research/engine/run_ct.py"
+      - "src/research/engine/report_ct.py"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke = eurusd only; full = all 28 pairs"
+        type: choice
+        options: [smoke, full]
+        default: smoke
+
+jobs:
+  plan:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[ct-smoke]') || contains(github.event.head_commit.message, '[ct-full]') }}
+    runs-on: ubuntu-latest
+    outputs:
+      pairs: ${{ steps.pick.outputs.pairs }}
+      csv: ${{ steps.pick.outputs.csv }}
+    steps:
+      - name: Pick pair list
+        id: pick
+        env:
+          MODE: ${{ inputs.mode || (contains(github.event.head_commit.message, '[ct-full]') && 'full' || 'smoke') }}
+        run: |
+          if [ "$MODE" = "full" ]; then
+            CSV="eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eurgbp,audjpy,eurchf,eurcad,euraud,eurnzd,gbpchf,gbpcad,gbpaud,gbpnzd,audcad,audchf,audnzd,nzdjpy,nzdcad,nzdchf,cadjpy,cadchf,chfjpy"
+          else
+            CSV="eurusd"
+          fi
+          echo "csv=$CSV" >> "$GITHUB_OUTPUT"
+          echo "pairs=$(echo "$CSV" | jq -R -c 'split(",")')" >> "$GITHUB_OUTPUT"
+
+  simulate:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: ${{ fromJSON(needs.plan.outputs.pairs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas pyarrow numpy
+      - name: Restore processed data ${{ matrix.pair }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/processed
+          key: histdata-processed-${{ matrix.pair }}-nomatch
+          restore-keys: histdata-processed-${{ matrix.pair }}-
+      - name: Verify data present ${{ matrix.pair }}
+        run: |
+          test -f "data/processed/${{ matrix.pair }}_m15.parquet" || { echo "MISSING processed data: ${{ matrix.pair }}_m15.parquet"; exit 1; }
+      - name: Run CT ${{ matrix.pair }}
+        env:
+          PAIR: ${{ matrix.pair }}
+          LOOKAHEAD_CUTS: "10"
+        run: python -m src.research.engine.run_ct
+      - name: Upload CT output ${{ matrix.pair }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ct-${{ matrix.pair }}
+          path: data/phase4_ct/${{ matrix.pair }}_*
+          retention-days: 14
+          if-no-files-found: error
+
+  report:
+    permissions:
+      contents: read
+      checks: write
+    needs: [plan, simulate]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install pandas numpy
+      - name: Download pair outputs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ct-*
+          merge-multiple: true
+          path: data/phase4_ct
+      - name: Build CT report
+        env:
+          REPORT_LABEL: ${{ inputs.mode || (contains(github.event.head_commit.message, '[ct-full]') && 'full' || 'smoke') }}
+          EXPECT_PAIRS: ${{ needs.plan.outputs.csv }}
+        run: python -m src.research.engine.report_ct
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-ct-${{ inputs.mode || (contains(github.event.head_commit.message, '[ct-full]') && 'full' || 'smoke') }}
+          path: reports/phase4/report_ct_*.md
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish report as a check summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT_LABEL: ${{ inputs.mode || (contains(github.event.head_commit.message, '[ct-full]') && 'full' || 'smoke') }}
+        run: |
+          python - <<'PYCODE' > /tmp/ct_check.json
+          import json, os
+          from pathlib import Path
+          report = Path('reports/phase4/report_ct_' + os.environ['REPORT_LABEL'] + '.md').read_text()
+          print(json.dumps({'name': 'CT practice report', 'head_sha': os.environ['GITHUB_SHA'],
+                            'status': 'completed', 'conclusion': 'neutral',
+                            'output': {'title': 'CT practice results (experimental)',
+                                       'summary': report[:65000]}}))
+          PYCODE
+          gh api "repos/$GITHUB_REPOSITORY/check-runs" --method POST --input /tmp/ct_check.json
