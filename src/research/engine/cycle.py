@@ -1,8 +1,6 @@
 """Phase 4 cycle engine, rebuild 2: pullbacks / reversals.
-
 Sell side in a bull context; the buy side is the exact mirror. Bar by bar, no
 lookahead. Sits on top of MapRecorder (structure, POI books, bias, ATR).
-
 The trading timeframe is self.ltf (M15 by default, H1 when config.LTF_TF is
 "H1"). Method names such as _on_m15 keep their old names; they run on bars of
 the trading timeframe.
@@ -10,9 +8,7 @@ the trading timeframe.
 from bisect import bisect_left
 from collections import defaultdict
 import math
-
 import pandas as pd
-
 from src import config
 from src.research.engine import fvg as fvg_mod
 from src.research.engine import poi as poi_mod
@@ -43,6 +39,26 @@ def _num(x):
 
 def _beyond(price, level, up):
     return price > level if up else price < level
+
+
+def _ny_killzone(ts):
+    """Convert UTC timestamp to America/New_York local hour and ICT Killzone."""
+    try:
+        ny = ts.tz_convert("America/New_York")
+        h = int(ny.hour)
+    except Exception:
+        h = int((ts.hour - 5) % 24)
+    if 2 <= h < 5:
+        kz = "London_KZ"
+    elif 7 <= h < 10:
+        kz = "NY_AM_KZ"
+    elif 10 <= h < 12:
+        kz = "London_Close_KZ"
+    elif h >= 20:
+        kz = "Asian_KZ"
+    else:
+        kz = "Outside_KZ"
+    return h, kz
 
 
 class CycleRecorder(MapRecorder):
@@ -219,6 +235,19 @@ class CycleRecorder(MapRecorder):
             return pois[-1]
         return None
 
+    def _compute_choch_disp(self, bar, ev, up):
+        """Measure CHoCH displacement candle body / ATR and close location."""
+        atr = self.atr.value_at(bar.open_time)
+        body = abs(float(bar.close) - float(bar.open))
+        rng = max(float(bar.high) - float(bar.low), 1e-12)
+        disp_atr = (body / float(atr)) if (atr is not None and float(atr) > 0) else None
+        # For down CHoCH (up=True, sell), close near low = 100%; for up CHoCH (buy), close near high = 100%
+        if up:
+            close_pct = (float(bar.high) - float(bar.close)) / rng * 100.0
+        else:
+            close_pct = (float(bar.close) - float(bar.low)) / rng * 100.0
+        return disp_atr, close_pct
+
     def _new_choch(self, bar, ev, now):
         pb = self._pb
         if pb["ceiling"] is None:
@@ -235,12 +264,14 @@ class CycleRecorder(MapRecorder):
         self._n_setup += 1
         box = self._choch_poi(ev)
         breaker = self.books[self.ltf].choch_breaker.get(ev["time"])
+        disp_atr, close_pct = self._compute_choch_disp(bar, ev, self.ctx["up"])
         setup = {"id": f"{pb['id']}-S{self._n_setup}", "choch_time": ev["time"],
                  "choch_level": _num(ev.get("broken_swing_price")),
                  "box": box, "breaker": breaker,
                  "attempt": None if pb["locked"] else pb["attempt"],
                  "br": "none", "ob": "none", "idm": None,
-                 "idm_sweep_time": None, "bos_time": None}
+                 "idm_sweep_time": None, "bos_time": None,
+                 "disp_body_atr": disp_atr, "disp_close_pct": close_pct}
         pb["setups"].append(setup)
         self.counts["setups"] += 1
         skip_br = self.ctx["up"]
@@ -318,7 +349,7 @@ class CycleRecorder(MapRecorder):
         touched = bar.high >= near if up else bar.low <= near
         if touched:
             self.counts["ob_same_bar"] += 1
-            if up:
+            if up or bool(getattr(config, "SYM_SAME_BAR_SKIP_BOTH", False)):
                 return
         self._place(s, "ob", box, bar, now)
 
@@ -329,6 +360,53 @@ class CycleRecorder(MapRecorder):
             if best is None or (near > best[0] if up else near < best[0]):
                 best = (near, z)
         return best[1] if best is not None else None
+
+    def _check_ob_fvg_overlap(self, p, now, up):
+        """True if an M15 FVG in the CHoCH displacement leg overlaps or touches the OB box."""
+        t_start = p.candle_time - pd.Timedelta(minutes=30)
+        candles = self.books[self.ltf].window(t_start, now)
+        fvgs = [f for f in fvg_mod.find_fvgs(candles, self.atr.value_at)
+                if f.time >= p.candle_time]
+        d = "down" if up else "up"
+        return fvg_mod.pick_for_breaker(fvgs, d, p.low, p.high) is not None
+
+    def _check_ceiling_sweep_reclaim(self, pb, setup, up):
+        """True if the impulse ceiling swept a prior 24h M15 high/low and closed back inside."""
+        c_val = pb.get("ceiling")
+        ct = setup.get("choch_time")
+        if c_val is None or ct is None:
+            return False
+        t_start = ct - pd.Timedelta(hours=30)
+        candles = self.books[self.ltf].window(t_start, ct)
+        if len(candles) < 12:
+            return False
+        # Split into prior session pool [:-8] and ceiling formation window [-8:]
+        prior = candles[:-8]
+        recent = candles[-8:]
+        if not prior or not recent:
+            return False
+        if up:
+            pool_lvl = max(float(x.high) for x in prior)
+            swept = float(c_val) > pool_lvl
+            reclaimed = any(float(x.high) >= pool_lvl and float(x.close) < pool_lvl for x in recent)
+        else:
+            pool_lvl = min(float(x.low) for x in prior)
+            swept = float(c_val) < pool_lvl
+            reclaimed = any(float(x.low) <= pool_lvl and float(x.close) > pool_lvl for x in recent)
+        return bool(swept and reclaimed)
+
+    def _check_opp_h1_in_path(self, entry, target, up):
+        """True if a fresh opposing H1 POI sits between entry and the 3R target."""
+        opp_side = "buy" if up else "sell"
+        for p in self.books["H1"].usable(opp_side, include_used=False):
+            if up:
+                # Selling from entry down to target: check if bull H1 zone top is between target and entry
+                if target <= float(p.high) < entry:
+                    return True
+            else:
+                if entry < float(p.low) <= target:
+                    return True
+        return False
 
     def _place(self, setup, kind, p, bar, now):
         if self._after_far_break:
@@ -364,21 +442,95 @@ class CycleRecorder(MapRecorder):
                 self.counts["ob_buy_ny_afternoon_skipped"] += 1
                 return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
-        stop = edge + buf if up else edge - buf
-        # Stage 1A: min_risk stop padding only on Pullback OB SELL
+        raw_stop = edge + buf if up else edge - buf
+        stop = raw_stop
+        min_risk_padded = False
+        # Stage 1A: min_risk stop padding / skip hygiene
         if self._spread > 0.0 and kind == "ob" and up:
             min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
             if abs(entry - stop) < min_risk:
+                if bool(getattr(config, "SKIP_MIN_RISK_PADDED", False)):
+                    self.counts[kind + "_min_risk_skipped"] += 1
+                    return None
                 stop = entry + min_risk if up else entry - min_risk
+                min_risk_padded = True
                 self.counts[kind + "_min_risk_padded"] += 1
+
         pb = self._pb
         nz = self._nearest_pb_zone(pb, up)
+        risk = abs(float(entry) - float(stop))
+        target_3r = (float(entry) - float(config.RR_STATIC) * risk) if up else (float(entry) + float(config.RR_STATIC) * risk)
+
+        # Confluence A: Destination Room to opposing D1/H4 zone (in R)
+        dest_room_r = None
+        if nz is not None and risk > 0:
+            z_near = float(nz["high"]) if up else float(nz["low"])
+            dest_room_r = ((float(entry) - z_near) / risk) if up else ((z_near - float(entry)) / risk)
+
+        opp_h1_in_path = self._check_opp_h1_in_path(float(entry), target_3r, up) if risk > 0 else False
+
+        # Confluence B: Macro Dealing-Range % and Local M15 OTE %
+        deal_pct = None
+        c_val = _num(pb.get("ceiling"))
+        if c_val is not None and nz is not None:
+            z_near = float(nz["high"]) if up else float(nz["low"])
+            span = abs(c_val - z_near)
+            if span > 0:
+                # 100% = at Impulse Ceiling, 0% = at opposing HTF zone edge
+                deal_pct = ((float(entry) - z_near) / span * 100.0) if up else ((z_near - float(entry)) / span * 100.0)
+
+        local_ote_pct = None
+        idm_val = _num(setup.get("idm")) or _num(setup.get("choch_level"))
+        if c_val is not None and idm_val is not None:
+            l_span = abs(c_val - idm_val)
+            if l_span > 0:
+                # Retracement % from IDM/CHoCH back toward Impulse Ceiling (OTE = 62% - 79%)
+                local_ote_pct = ((float(entry) - idm_val) / l_span * 100.0) if up else ((idm_val - float(entry)) / l_span * 100.0)
+
+        fvg_overlap = self._check_ob_fvg_overlap(p, now, up)
+        sweep_reclaim = self._check_ceiling_sweep_reclaim(pb, setup, up)
+        disp_body_atr = setup.get("disp_body_atr")
+        disp_close_pct = setup.get("disp_close_pct")
+        ny_hour, killzone = _ny_killzone(now)
+
+        # Optional Phase 2 & 3 Gate Enforcement (all False by default)
+        if bool(getattr(config, "PB_REQUIRE_DEST_ROOM", False)) and dest_room_r is not None:
+            need_r = float(config.RR_STATIC) + float(getattr(config, "PB_DEST_ROOM_BUFFER_R", 0.0))
+            if dest_room_r < need_r:
+                self.counts["pb_dest_room_skipped"] += 1
+                return None
+        if bool(getattr(config, "PB_BLOCK_OPPOSING_H1_PATH", False)) and opp_h1_in_path:
+            self.counts["pb_opp_h1_path_skipped"] += 1
+            return None
+        if bool(getattr(config, "PB_REQUIRE_DISCOUNT_PREMIUM", False)) and deal_pct is not None:
+            if deal_pct < 50.0:
+                self.counts["pb_deal_half_skipped"] += 1
+                return None
+        if bool(getattr(config, "PB_REQUIRE_OTE", False)) and local_ote_pct is not None:
+            if local_ote_pct < 62.0:
+                self.counts["pb_ote_skipped"] += 1
+                return None
+        if bool(getattr(config, "PB_REQUIRE_FVG_OVERLAP", False)) and not fvg_overlap:
+            self.counts["pb_no_fvg_skipped"] += 1
+            return None
+        if bool(getattr(config, "PB_REQUIRE_SWEEP_RECLAIM", False)) and not sweep_reclaim:
+            self.counts["pb_no_sweep_reclaim_skipped"] += 1
+            return None
+        min_disp = float(getattr(config, "PB_MIN_DISP_BODY_ATR", 0.0) or 0.0)
+        if min_disp > 0.0 and disp_body_atr is not None and disp_body_atr < min_disp:
+            self.counts["pb_weak_disp_skipped"] += 1
+            return None
+        if bool(getattr(config, "KILLZONE_ONLY", False)) and killzone == "Outside_KZ":
+            self.counts["pb_outside_kz_skipped"] += 1
+            return None
+
         self._n_order += 1
         breaker = setup["breaker"]
         order = {"id": f"O{self._n_order}", "pullback": pb["id"], "setup": setup["id"],
                  "variant": "plain", "kind": kind, "side": self.ctx["side"],
                  "htf_bias": self.ctx["bias"],
                  "placed_time": now, "entry": float(entry), "stop": float(stop),
+                 "raw_stop": float(raw_stop), "min_risk_padded": bool(min_risk_padded),
                  "stop_edge": float(edge), "box_low": float(p.low),
                  "box_high": float(p.high), "box_time": p.candle_time,
                  "atr": float(atr),
@@ -394,7 +546,18 @@ class CycleRecorder(MapRecorder):
                  "zone_tf": nz["tf"] if nz is not None else None,
                  "zone_low": float(nz["low"]) if nz is not None else None,
                  "zone_high": float(nz["high"]) if nz is not None else None,
-                 "zone_touch_time": None}
+                 "zone_touch_time": None,
+                 "dest_room_r": dest_room_r,
+                 "opp_h1_in_path": bool(opp_h1_in_path),
+                 "deal_pct": deal_pct,
+                 "local_ote_pct": local_ote_pct,
+                 "fvg_overlap": bool(fvg_overlap),
+                 "sweep_reclaim": bool(sweep_reclaim),
+                 "disp_body_atr": disp_body_atr,
+                 "disp_close_pct": disp_close_pct,
+                 "ny_hour": ny_hour,
+                 "killzone": killzone,
+                 "h1_refined_ok": None}
         self.orders.append(order)
         pb["orders"].append(order)
         self.counts["orders_" + kind] += 1
@@ -406,7 +569,7 @@ class CycleRecorder(MapRecorder):
     def _pull_step(self, bar, ev, now):
         pb = self._pb
         up = self.ctx["up"]
-        if up:
+        if up or bool(getattr(config, "SYM_EXPIRY_48H_BOTH", False)):
             for o in pb["orders"]:
                 if o["end_time"] is None and now - o["placed_time"] >= pd.Timedelta(hours=48):
                     o["end_time"] = now
