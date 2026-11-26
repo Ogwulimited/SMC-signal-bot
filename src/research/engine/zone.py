@@ -2,18 +2,26 @@ from bisect import bisect_left, bisect_right, insort
 from collections import deque
 import pandas as pd
 from src import config
+from src.research.engine import aggressive as ag
 from src.research.engine import cycle as cy
 from src.research.engine.bias import htf_bias
+
 SETTINGS = {"enabled": False, "rules": False, "pip": 0.0001, "spread": 0.0}
 LIQ_CAP = 100
 H1_OPPOSING_HTF_MIN_R = 1.5
 H1_ZONE_MAX_AGE = pd.Timedelta(hours=96)
 H1_SCAN_MAX_DURATION = pd.Timedelta(hours=48)
 H1_ORDER_EXPIRY = pd.Timedelta(hours=48)
+
+
 def _on():
     return bool(SETTINGS["enabled"])
+
+
 def _rules():
     return bool(SETTINGS["enabled"]) and bool(SETTINGS.get("rules", False))
+
+
 class ZoneRecorder(cy.CycleRecorder):
     def __init__(self, log, first_read=None):
         super().__init__(log, first_read)
@@ -45,6 +53,7 @@ class ZoneRecorder(cy.CycleRecorder):
             if not (float(SETTINGS.get("pip", 0.0)) > 0.0
                     and float(SETTINGS.get("spread", 0.0)) > 0.0):
                 raise ValueError("zone rules on: set SETTINGS pip and spread first")
+
     def on_bar_close(self, bar, feed):
         if _on():
             if bar.tf == self.ltf:
@@ -60,6 +69,7 @@ class ZoneRecorder(cy.CycleRecorder):
             new_h1 = self.events[n0:]
             if new_h1:
                 self._h1_q.extend(new_h1)
+
     def _swings(self, bar):
         h = float(bar.high)
         l = float(bar.low)
@@ -81,8 +91,10 @@ class ZoneRecorder(cy.CycleRecorder):
                 insort(self._sw_hi, ch)
             if cl == min(lows) and cl < min(lows[:n]) and cl < min(lows[n + 1:]):
                 insort(self._sw_lo, cl)
+
     def _cancel_dist(self):
         return float(config.ZONE_CANCEL_PIPS) * float(SETTINGS["pip"])
+
     def _resolve_fills(self, bar):
         if not self._watch:
             return
@@ -90,12 +102,13 @@ class ZoneRecorder(cy.CycleRecorder):
         now = bar.close_time
         spent_now = set()
         spent_sell_now = set()
+        sym_spent = bool(getattr(config, "SYM_SPENT_ZONE_BOTH", False))
         for w in self._watch:
             o = w["o"]
             zid = o["zone_id"]
             sell = o["side"] == "sell"
             is_h1 = (o.get("zone_tf") == "H1")
-            if (sell and (zid in self._spent or zid in spent_sell_now)) or (
+            if ((sell or sym_spent) and (zid in self._spent or zid in spent_sell_now)) or (
                 is_h1 and (zid in self._spent or zid in spent_now)
             ):
                 if o["end_time"] is None:
@@ -121,7 +134,7 @@ class ZoneRecorder(cy.CycleRecorder):
                     self.counts["h1_zone_spent"] += 1
                 self._log("z_spent", now, zone=zid, order=o["id"])
             spent_now.add(zid)
-            if sell:
+            if sell or sym_spent:
                 spent_sell_now.add(zid)
         if spent_now:
             still = []
@@ -129,7 +142,9 @@ class ZoneRecorder(cy.CycleRecorder):
                 o = w["o"]
                 zid = o["zone_id"]
                 is_h1 = (o.get("zone_tf") == "H1")
-                if (o["side"] == "sell" and zid in spent_sell_now) or (is_h1 and zid in spent_now):
+                if ((o["side"] == "sell" or sym_spent) and zid in spent_sell_now) or (
+                    is_h1 and zid in spent_now
+                ):
                     if o["end_time"] is None:
                         o["end_time"] = now
                         o["end_reason"] = "zone_spent"
@@ -151,6 +166,7 @@ class ZoneRecorder(cy.CycleRecorder):
                 self._h1_end(hsc, now, "zone_spent")
                 self._h1_scan = None
         self._watch = keep
+
     def _watch_orders(self, p, arrival):
         if not self._watch:
             return
@@ -200,6 +216,7 @@ class ZoneRecorder(cy.CycleRecorder):
             elif end is None or pclose < end:
                 keep.append(w)
         self._watch = keep
+
     def _freeze_zones(self):
         if not _rules():
             return super()._freeze_zones()
@@ -210,8 +227,23 @@ class ZoneRecorder(cy.CycleRecorder):
                 if p.id in self._spent:
                     self.counts["z_spent_skipped"] += 1
                     continue
-                out.append(self._refine(p, buy_zone))
+                z = self._refine(p, buy_zone)
+                # Phase 2 diagnostic: check if clean H1 base refinement exists inside HTF zone
+                side_str = "buy" if buy_zone else "sell"
+                dummy_c = defaultdict(int)
+                h1_cand = ag.pick_h1_base(
+                    self.books["H1"], side_str, p.candle_time, p.born_time, p, dummy_c
+                )
+                z["h1_cand"] = h1_cand
+                if bool(getattr(config, "ZONE_H1_REFINEMENT", False)) and h1_cand is not None:
+                    z["low"] = float(h1_cand.low)
+                    z["high"] = float(h1_cand.high)
+                    z["refined_h1"] = True
+                else:
+                    z["refined_h1"] = False
+                out.append(z)
         return out
+
     def _zone_touched(self, bar):
         if not _rules():
             return super()._zone_touched(bar)
@@ -229,41 +261,49 @@ class ZoneRecorder(cy.CycleRecorder):
             if hit and (best is None or (near > best[0] if up else near < best[0])):
                 best = (near, z)
         return best[1] if best is not None else None
+
     def _on_m15(self, bar, ev):
         self._ev = ev
         super()._on_m15(bar, ev)
-        if _on() and _rules() and self.ltf == "M15":
+        if _on() and _rules() and self.ltf == "M15" and bool(getattr(config, "H1_STREAM_ENABLED", True)):
             self._h1_step(bar, ev, bar.close_time)
+
     def _start_pullback(self, bar, ev, now):
         unlock_sell = _rules() and (not self.ctx["up"])
         self._zbos = unlock_sell
         self._zbos_time = ev["time"] if unlock_sell else None
         super()._start_pullback(bar, ev, now)
+
     def _pull_step(self, bar, ev, now):
         if _on() and self._pb is not None:
             self._zpb_id = self._pb["id"]
             self._zlocked = bool(self._pb["locked"])
         super()._pull_step(bar, ev, now)
+
     def _on_bos(self, ev, now):
         if _on():
             self._mark_bos(ev, now)
         super()._on_bos(ev, now)
+
     def _on_choch_other(self, now):
         if _on() and self._zbos and (not _rules() or self.ctx["up"]):
             self.counts["z_bos_cleared_by_choch"] += 1
             self._zbos = False
             self._zbos_time = None
         super()._on_choch_other(now)
+
     def _check_bias(self, now):
         if (_on() and self.state == cy.SCAN and self._scan is not None
                 and htf_bias(self.bias["D1"], self.bias["H4"]) != self.ctx["bias"]):
             self._zend(self._scan, now, "bias_lost")
         super()._check_bias(now)
+
     def _mark_bos(self, ev, now):
         self._zbos = True
         self._zbos_time = ev["time"]
         self.counts["z_bos_seen"] += 1
         self._log("z_bos", now, direction=ev["direction"])
+
     def _scan_step(self, bar, now):
         if not _on():
             return super()._scan_step(bar, now)
@@ -284,7 +324,8 @@ class ZoneRecorder(cy.CycleRecorder):
             why = "ceiling_break" if self.state == cy.ARMED else "zone_far_break"
             self._zend(sc, now, why)
             return
-        if _rules() and (not self.ctx["up"]) and sc["zone"]["id"] in self._spent:
+        sym_spent = bool(getattr(config, "SYM_SPENT_ZONE_BOTH", False))
+        if _rules() and ((not self.ctx["up"]) or sym_spent) and sc["zone"]["id"] in self._spent:
             return
         for s in sc["zsetups"]:
             if s["br"] == "wait":
@@ -292,6 +333,7 @@ class ZoneRecorder(cy.CycleRecorder):
             if s["ob"] == "wait_sweep":
                 self._z_try_ob(s, sc, bar, now)
         self._z_event(sc, bar, now)
+
     def _z_event(self, sc, bar, now):
         ev = self._ev
         if ev is None:
@@ -327,17 +369,22 @@ class ZoneRecorder(cy.CycleRecorder):
                 if s["ob"] == "wait_bos":
                     s["ob"] = "none"
                     self.counts["z_ob_no_bos"] += 1
+
     def _z_new_choch(self, sc, bar, ev, now):
         self._n_z += 1
         box = self._choch_poi(ev)
         breaker = self.books[self.ltf].choch_breaker.get(ev["time"])
+        tsell = not self.ctx["up"]
+        disp_atr, close_pct = self._compute_choch_disp(bar, ev, tsell)
         s = {"id": f"{sc['pb_id']}-Z{self._n_z}", "choch_time": ev["time"],
              "choch_level": cy._num(ev["broken_swing_price"]), "box": box,
              "breaker": breaker, "br": "none", "ob": "none", "idm": None,
-             "idm_sweep_time": None, "bos_time": self._zbos_time}
+             "idm_sweep_time": None, "bos_time": self._zbos_time,
+             "disp_body_atr": disp_atr, "disp_close_pct": close_pct}
         sc["zsetups"].append(s)
         self.counts["z_setups"] += 1
         self._log("z_setup", now, setup=s["id"], choch_level=float(s["choch_level"] or 0.0))
+        # Note: under rules=True on M15, both skip_br_buy and skip_br_sell are True (zone breakers disabled)
         skip_br_buy = _rules() and self.ltf == "M15" and self.ctx["up"]
         skip_br_sell = _rules() and (not self.ctx["up"])
         if breaker is None:
@@ -353,12 +400,14 @@ class ZoneRecorder(cy.CycleRecorder):
             self.counts["z_no_choch_box"] += 1
         else:
             s["ob"] = "wait_bos"
+
     def _z_try_breaker(self, s, sc, bar, now):
         p = s["breaker"]
         if p.state != "dead":
             return
         s["br"] = "none"
         self._zplace(s, sc, "breaker", p, bar, now)
+
     def _z_try_ob(self, s, sc, bar, now):
         tsell = not self.ctx["up"]
         box = s["box"]
@@ -379,9 +428,10 @@ class ZoneRecorder(cy.CycleRecorder):
         touched = bar.high >= near if tsell else bar.low <= near
         if touched:
             self.counts["z_ob_same_bar"] += 1
-            if not tsell:
+            if (not tsell) or bool(getattr(config, "SYM_SAME_BAR_SKIP_BOTH", False)):
                 return
         self._zplace(s, sc, "ob", box, bar, now)
+
     def _liq(self, entry, ceiling, tsell):
         if tsell:
             lo = self._sw_lo
@@ -392,6 +442,7 @@ class ZoneRecorder(cy.CycleRecorder):
         a = bisect_right(hi, entry)
         b = bisect_right(hi, ceiling)
         return [float(x) for x in hi[a:b]][:LIQ_CAP]
+
     def _zplace(self, s, sc, kind, p, bar, now):
         tsell = not self.ctx["up"]
         atr = self.atr.value_at(p.candle_time)
@@ -405,20 +456,57 @@ class ZoneRecorder(cy.CycleRecorder):
             self.counts["z_" + kind + "_entry_not_ahead"] += 1
             return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
-        stop = edge + buf if tsell else edge - buf
+        raw_stop = edge + buf if tsell else edge - buf
+        stop = raw_stop
+        min_risk_padded = False
         if self._spread > 0.0:
             min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
             if abs(entry - stop) < min_risk:
+                if bool(getattr(config, "SKIP_MIN_RISK_PADDED", False)):
+                    self.counts["z_" + kind + "_min_risk_skipped"] += 1
+                    return None
                 stop = entry + min_risk if tsell else entry - min_risk
+                min_risk_padded = True
                 self.counts["z_" + kind + "_min_risk_padded"] += 1
+
         ceiling = float(sc["ceiling"])
         z = sc["zone"]
+        risk = abs(float(entry) - float(stop))
+        dest_room_r = (abs(ceiling - float(entry)) / risk) if risk > 0 else None
+
+        # Dealing range position: distance from ceiling to HTF zone far edge (100% = at zone far edge)
+        z_far = float(z["high"]) if tsell else float(z["low"])
+        span = abs(ceiling - z_far)
+        deal_pct = None
+        if span > 0:
+            deal_pct = ((float(entry) - ceiling) / span * 100.0) if tsell else ((ceiling - float(entry)) / span * 100.0)
+
+        h1_cand = z.get("h1_cand")
+        h1_refined_ok = False
+        if h1_cand is not None:
+            if tsell:
+                h1_refined_ok = float(entry) >= float(h1_cand.low)
+            else:
+                h1_refined_ok = float(entry) <= float(h1_cand.high)
+
+        fvg_overlap = self._check_ob_fvg_overlap(p, now, tsell)
+        ny_hour, killzone = cy._ny_killzone(now)
+
+        if bool(getattr(config, "ZONE_REQUIRE_DISCOUNT_PREMIUM", False)) and deal_pct is not None:
+            if deal_pct < 50.0:
+                self.counts["z_deal_half_skipped"] += 1
+                return None
+        if bool(getattr(config, "KILLZONE_ONLY", False)) and killzone == "Outside_KZ":
+            self.counts["z_outside_kz_skipped"] += 1
+            return None
+
         self._n_zo += 1
         order = {"id": f"ZO{self._n_zo}", "pullback": sc["pb_id"], "setup": s["id"],
                  "variant": "plain", "kind": kind, "leg": "zone",
                  "side": "sell" if tsell else "buy",
                  "htf_bias": self.ctx["bias"],
                  "placed_time": now, "entry": float(entry), "stop": float(stop),
+                 "raw_stop": float(raw_stop), "min_risk_padded": bool(min_risk_padded),
                  "stop_edge": float(edge), "box_low": float(p.low),
                  "box_high": float(p.high), "box_time": p.candle_time,
                  "atr": float(atr),
@@ -431,7 +519,18 @@ class ZoneRecorder(cy.CycleRecorder):
                  "choch_level": s["choch_level"],
                  "idm_level": cy._num(s.get("idm")),
                  "idm_sweep_time": s.get("idm_sweep_time"),
-                 "zone_id": z["id"]}
+                 "zone_id": z["id"],
+                 "dest_room_r": dest_room_r,
+                 "opp_h1_in_path": False,
+                 "deal_pct": deal_pct,
+                 "local_ote_pct": None,
+                 "fvg_overlap": bool(fvg_overlap),
+                 "sweep_reclaim": True,
+                 "disp_body_atr": s.get("disp_body_atr"),
+                 "disp_close_pct": s.get("disp_close_pct"),
+                 "ny_hour": ny_hour,
+                 "killzone": killzone,
+                 "h1_refined_ok": bool(h1_refined_ok)}
         sc["zorders"].append(order)
         self.zorders.append(order)
         if _rules():
@@ -441,6 +540,7 @@ class ZoneRecorder(cy.CycleRecorder):
                   entry=order["entry"], stop=order["stop"], setup=s["id"],
                   liq_n=len(order["liq"]))
         return order
+
     def _zend(self, sc, now, reason):
         n = 0
         for o in sc.get("zorders", []):
@@ -450,13 +550,13 @@ class ZoneRecorder(cy.CycleRecorder):
                 n += 1
         self.counts["z_end_" + reason] += 1
         self._log("z_end", now, reason=reason, cancelled=n)
+
     # =========================================================================
     # 1H Continuation Zone Stream (Addition 1 + Addition 2: Persistent HTF Trend)
     # =========================================================================
     def _h1_step(self, bar, ev, now):
         hb = htf_bias(self.bias["D1"], self.bias["H4"])
         q, self._h1_q = self._h1_q, []
-        # Step 1: Persistent Daily/H4 Trend Permission (require D1 + H4 alignment)
         if hb not in ("bull", "bear"):
             if self._h1_scan is not None:
                 self._h1_end(self._h1_scan, now, "bias_lost")
@@ -478,7 +578,6 @@ class ZoneRecorder(cy.CycleRecorder):
         htf_dir = "up" if up else "down"
         zone_side = "buy" if up else "sell"
         choch_dir = "down" if up else "up"
-        # Step 2: Register new H1 Continuation Zones from confirmed pro-trend H1 BOS
         for hev in q:
             if hev["label"] == "BOS" and hev["direction"] == htf_dir:
                 self.counts["h1_bos_aligned"] += 1
@@ -498,7 +597,6 @@ class ZoneRecorder(cy.CycleRecorder):
                          "born_time": hev["time"], "ceiling": c_init}
                     self._h1_zones.append(z)
                     self.counts["h1_zones_born"] += 1
-        # Update dynamic impulse ceiling on waiting H1 zones & prune stale (>96h), used, or dead zones
         alive_zones = []
         for z in self._h1_zones:
             if z["poi"].state == "dead" or z["id"] in self._spent:
@@ -512,12 +610,10 @@ class ZoneRecorder(cy.CycleRecorder):
                 z["ceiling"] = float(bar.low)
             alive_zones.append(z)
         self._h1_zones = alive_zones
-        # Track counter-trend M15 BOS or CHoCH that precedes or accompanies a return into the H1 zone
         if ev is not None:
             if ev["label"] in ("BOS", "CHoCH") and ev["direction"] == choch_dir:
                 self._h1_bos = True
                 self._h1_bos_time = ev["time"]
-        # Step 3: Check for first return to a FRESH H1 zone if not currently scanning one
         if self._h1_scan is None:
             touched_z = self._h1_zone_touched(bar, up, now)
             if touched_z is not None:
@@ -539,10 +635,10 @@ class ZoneRecorder(cy.CycleRecorder):
                           ceiling=float(touched_z["ceiling"]))
         if self._h1_scan is not None:
             self._h1_scan_step(bar, ev, now, up)
+
     def _h1_zone_touched(self, bar, up, now):
         best = None
         for z in self._h1_zones:
-            # Strict freshness: only fresh H1 zones can initiate a continuation scan
             if z["poi"].state != "fresh" or z["id"] in self._spent:
                 continue
             if now <= z["born_time"]:
@@ -556,19 +652,15 @@ class ZoneRecorder(cy.CycleRecorder):
             if hit and (best is None or (near > best[0] if up else near < best[0])):
                 best = (near, z)
         return best[1] if best is not None else None
+
     def _h1_scan_step(self, bar, ev, now, up):
         sc = self._h1_scan
         z = sc["zone"]
-        # Expire stale H1 scan if M15 confirmation hasn't completed within 48h of zone touch
         if now - sc["touch_time"] > H1_SCAN_MAX_DURATION and not sc["zorders"]:
             self.counts["h1_scan_expired_24h"] += 1
             self._h1_end(sc, now, "scan_expired_24h")
             self._h1_scan = None
             return
-        # Ceiling / runaway check:
-        # Before an order is placed (while M15 CHoCH -> BOS confirmation is forming out of the H1 zone),
-        # allow price up to 0.5x cancel_dist (75 pips) beyond the H1 zone edge and expand sc["ceiling"]
-        # to the confirmation peak. Once an order is placed, lock sc["ceiling"] at that peak.
         if not sc["zorders"]:
             max_run = 0.5 * self._cancel_dist()
             run_limit = (float(z["high"]) + max_run) if up else (float(z["low"]) - max_run)
@@ -598,7 +690,6 @@ class ZoneRecorder(cy.CycleRecorder):
             self._h1_end(sc, now, "zone_spent")
             self._h1_scan = None
             return
-        # Step 4: Run M15 confirmation setups inside the H1 zone
         for s in sc["zsetups"]:
             if s["ob"] == "wait_sweep":
                 self._h1_try_ob(s, sc, bar, now, up)
@@ -612,7 +703,6 @@ class ZoneRecorder(cy.CycleRecorder):
             self._h1_bos = True
             self._h1_bos_time = ev["time"]
         elif lab == "CHoCH" and d == other_dir:
-            # Precedence rule: if deep D1/H4 zone scan is active on this exact M15 CHoCH, let D1/H4 take it
             if self.state == cy.SCAN and self._scan is not None and self._zbos:
                 self.counts["h1_duplicate_with_htf_zone_skipped"] += 1
                 return
@@ -641,13 +731,17 @@ class ZoneRecorder(cy.CycleRecorder):
                 if s["ob"] == "wait_bos":
                     s["ob"] = "none"
                     self.counts["h1_ob_no_bos"] += 1
+
     def _h1_new_choch(self, sc, bar, ev, now, up):
         self._n_z += 1
         box = self._choch_poi(ev)
+        tsell = not up
+        disp_atr, close_pct = self._compute_choch_disp(bar, ev, tsell)
         s = {"id": f"{sc['pb_id']}-Z{self._n_z}", "choch_time": ev["time"],
              "choch_level": cy._num(ev["broken_swing_price"]), "box": box,
              "breaker": None, "br": "none", "ob": "none", "idm": None,
-             "idm_sweep_time": None, "bos_time": self._h1_bos_time}
+             "idm_sweep_time": None, "bos_time": self._h1_bos_time,
+             "disp_body_atr": disp_atr, "disp_close_pct": close_pct}
         sc["zsetups"].append(s)
         self.counts["h1_setups"] += 1
         self._log("h1_setup", now, setup=s["id"], choch_level=float(s["choch_level"] or 0.0))
@@ -655,6 +749,7 @@ class ZoneRecorder(cy.CycleRecorder):
             self.counts["h1_no_choch_box"] += 1
         else:
             s["ob"] = "wait_bos"
+
     def _h1_try_ob(self, s, sc, bar, now, up):
         tsell = not up
         box = s["box"]
@@ -675,9 +770,10 @@ class ZoneRecorder(cy.CycleRecorder):
         touched = bar.high >= near if tsell else bar.low <= near
         if touched:
             self.counts["h1_ob_same_bar"] += 1
-            if not tsell:
+            if (not tsell) or bool(getattr(config, "SYM_SAME_BAR_SKIP_BOTH", False)):
                 return
         self._h1_place(s, sc, "ob", box, bar, now, up)
+
     def _h1_blocked_by_opposing_htf_zone(self, entry, risk, tsell):
         need = float(H1_OPPOSING_HTF_MIN_R) * risk
         opp_side = "buy" if tsell else "sell"
@@ -690,9 +786,9 @@ class ZoneRecorder(cy.CycleRecorder):
                     if float(p.low) > entry and (float(p.low) - entry) < need:
                         return True
         return False
+
     def _h1_place(self, s, sc, kind, p, bar, now, up):
         tsell = not up
-        # Skip low-liquidity Asian session (00:00 - 05:59 UTC) on H1 continuation placements
         if now.hour < 6:
             self.counts["h1_asian_skipped"] += 1
             return None
@@ -716,11 +812,17 @@ class ZoneRecorder(cy.CycleRecorder):
                 self.counts["h1_ob_idm_too_close"] += 1
                 return None
         buf = float(config.STOP_BUFFER_ATR) * float(atr)
-        stop = edge + buf if tsell else edge - buf
+        raw_stop = edge + buf if tsell else edge - buf
+        stop = raw_stop
+        min_risk_padded = False
         if self._spread > 0.0:
             min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
             if abs(entry - stop) < min_risk:
+                if bool(getattr(config, "SKIP_MIN_RISK_PADDED", False)):
+                    self.counts["h1_" + kind + "_min_risk_skipped"] += 1
+                    return None
                 stop = entry + min_risk if tsell else entry - min_risk
+                min_risk_padded = True
                 self.counts["h1_" + kind + "_min_risk_padded"] += 1
         risk = abs(float(entry) - float(stop))
         if risk > 0 and self._h1_blocked_by_opposing_htf_zone(float(entry), risk, tsell):
@@ -728,12 +830,22 @@ class ZoneRecorder(cy.CycleRecorder):
             return None
         ceiling = float(sc["ceiling"])
         z = sc["zone"]
+        dest_room_r = (abs(ceiling - float(entry)) / risk) if risk > 0 else None
+        z_far = float(z["high"]) if tsell else float(z["low"])
+        span = abs(ceiling - z_far)
+        deal_pct = ((float(entry) - ceiling) / span * 100.0) if (span > 0 and tsell) else (
+            ((ceiling - float(entry)) / span * 100.0) if span > 0 else None
+        )
+        fvg_overlap = self._check_ob_fvg_overlap(p, now, tsell)
+        ny_hour, killzone = cy._ny_killzone(now)
+
         self._n_zo += 1
         order = {"id": f"ZO{self._n_zo}", "pullback": sc["pb_id"], "setup": s["id"],
                  "variant": "plain", "kind": kind, "leg": "zone",
                  "side": "sell" if tsell else "buy",
                  "htf_bias": "bull" if up else "bear",
                  "placed_time": now, "entry": float(entry), "stop": float(stop),
+                 "raw_stop": float(raw_stop), "min_risk_padded": bool(min_risk_padded),
                  "stop_edge": float(edge), "box_low": float(p.low),
                  "box_high": float(p.high), "box_time": p.candle_time,
                  "atr": float(atr),
@@ -746,7 +858,18 @@ class ZoneRecorder(cy.CycleRecorder):
                  "choch_level": s["choch_level"],
                  "idm_level": cy._num(s.get("idm")),
                  "idm_sweep_time": s.get("idm_sweep_time"),
-                 "zone_id": z["id"]}
+                 "zone_id": z["id"],
+                 "dest_room_r": dest_room_r,
+                 "opp_h1_in_path": False,
+                 "deal_pct": deal_pct,
+                 "local_ote_pct": None,
+                 "fvg_overlap": bool(fvg_overlap),
+                 "sweep_reclaim": True,
+                 "disp_body_atr": s.get("disp_body_atr"),
+                 "disp_close_pct": s.get("disp_close_pct"),
+                 "ny_hour": ny_hour,
+                 "killzone": killzone,
+                 "h1_refined_ok": True}
         sc["zorders"].append(order)
         self.zorders.append(order)
         if _rules():
@@ -757,6 +880,7 @@ class ZoneRecorder(cy.CycleRecorder):
                   entry=order["entry"], stop=order["stop"], setup=s["id"],
                   zone_tf="H1", liq_n=len(order["liq"]))
         return order
+
     def _h1_end(self, sc, now, reason):
         n = 0
         for o in sc.get("zorders", []):
