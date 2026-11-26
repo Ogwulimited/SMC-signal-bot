@@ -1,5 +1,4 @@
 """SMC Research Engine Configuration."""
-
 # ----- Pairs (28 total: 11 original + 17 crosses) -----
 PAIRS = [
     # Original 11
@@ -8,7 +7,6 @@ PAIRS = [
     "eurchf", "eurcad", "euraud", "eurnzd", "gbpchf", "gbpcad", "gbpaud", "gbpnzd",
     "audcad", "audchf", "audnzd", "nzdjpy", "nzdcad", "nzdchf", "cadjpy", "cadchf", "chfjpy"
 ]
-
 PAIR_GROUPS = {
     "eurusd": "usd_major", "gbpusd": "usd_major", "usdjpy": "usd_major", "audusd": "usd_major",
     "usdcad": "usd_major", "usdchf": "usd_major", "nzdusd": "usd_major",
@@ -19,44 +17,32 @@ PAIR_GROUPS = {
     "audcad": "commodity_cross", "audchf": "commodity_cross", "audnzd": "commodity_cross",
     "nzdcad": "commodity_cross", "nzdchf": "commodity_cross", "cadchf": "commodity_cross"
 }
-
 PAIR_COHORTS = {p: ("original_11" if p in PAIRS[:11] else "new_17") for p in PAIRS}
-
 GRANULARITY = 900
 ATR_PERIOD = 14
-
 STRUCTURE_SWING_N = 2
 LIQUIDITY_SWING_N = 2
-
 FVG_MIN_SIZE_ATR = 0.05
-
 EQ_LOWS_TOLERANCE_ATR = 0.15
 EQ_LOWS_MIN_BARS = 4
 EQ_LOWS_MAX_BARS = 120
 EQ_LOWS_MIN_CLUSTER = 2
-
 SWING_POOL_MAX_AGE_H1 = 240
 SWING_POOL_MAX_AGE_H4 = 60
-
 PDH_PDL_LOOKBACK_DAYS = 3
 PWH_PWL_LOOKBACK_WEEKS = 2
 PMH_PML_LOOKBACK_MONTHS = 2
-
 OB_MITIGATION_START_OFFSET = 3
 OB_SEARCH_BACK_MAX = 5
 OB_BREAKER_SEARCH_BACK = 10
-
 SWEEP_RECLAIM_WINDOW = 3
-
 REPORTS_DIR = "reports"
 D1_SWING_N = 3
-
 # --- Practice / exam split (LOCKED, never move) ---
 # Practice years: 2016-01-03 up to (not including) PRACTICE_END -- free tuning.
 # Exam years: PRACTICE_END onward -- sealed, run once per locked strategy version.
 # The Phase 4 practice runner only loads bars that have fully CLOSED by this time.
 PRACTICE_END = "2022-07-01"
-
 # --- Phase 4: assumed typical retail spreads (NOT real broker data) ---
 # Values are in raw price units (already pip-size-adjusted per pair),
 # i.e. directly comparable to price differences in OHLC data.
@@ -92,11 +78,9 @@ SPREAD_PRICE = {
     "cadchf": 0.00020,
     "chfjpy": 0.020,
 }
-
 MAX_SPREAD_RISK_RATIO = 0.15
 MIN_TARGET_R = 3.0
 TIME_STOP_H1_BARS = 48
-
 # ======================================================================
 # Phase 4 rebuild (SMC cycle engine) -- ADDITIONS ONLY, nothing above changed
 # ======================================================================
@@ -106,7 +90,6 @@ LTF_TF = "M15"                 # lower timeframe of the cycle
 LTF_SWING_N = 2                # candles each side for M15 swings
 BIAS_FIRST_READ_SWINGS = 5     # counted swings for the first read of bias
 RR_STATIC = 3.0                # static target = 3R
-
 # --- Switches (defaults; each one is measured, not guessed) ---
 TRADE_USED_POIS = False            # False = fresh POIs only; True = used POIs may trade too
 PULLBACK_SELL_REQUIRES_FVG = False # FVG not needed for the pullback sell
@@ -114,11 +97,9 @@ OB_NO_IDM_REQUIRES_FVG = True      # OB entry without inducement needs an FVG in
 LTF_STACK_ENTRIES = False          # LTF stack-breaker buys: off by default, measured
 ALLOW_STACKING = True              # several zone buys may be open at once
 WRONG_COLOUR_SEARCH_DIRECTION = "back"  # assumption 21: look back for the right-colour candle
-
 # --- Bias timeframes (V3 test; default keeps V1 behaviour) ---
 # "both" = D1 and H4 must agree.  "h4" = H4 alone decides the bias.
 BIAS_TIMEFRAMES = "both"
-
 # ======================================================================
 # MAJOR-SWING REBUILD (his chart rules) -- ADDITIONS ONLY
 # MAJOR_HTF is False by default, so every old variant and old test behaves
@@ -129,3 +110,40 @@ MAJOR_H4_SWING_N = 8           # same N as his approved TradingView chart
 MAJOR_D1_SWING_N = 8
 MAJOR_BIAS_FIRST_READ = 3      # his choice A: 3 counted Major swings for the first read
 ZONE_CANCEL_PIPS = 150         # cancel a pending zone order if price runs this far from entry
+
+# ======================================================================
+# PHASE 1-4 ICT/SMC QUANT UPGRADE CONTROLS
+# ======================================================================
+# --- Phase 1: Trade Management Ladder ---
+# Options:
+#   "legacy"   : Baseline asymmetric BE@2.0R (only PB OB Sell & H1 Zone)
+#   "be_10"    : Symmetric BE@1.0R across all Zone & Pullback trades (full 3R target)
+#   "be_15"    : Symmetric BE@1.5R across all Zone & Pullback trades (full 3R target)
+#   "be_20"    : Symmetric BE@2.0R across all Zone & Pullback trades (full 3R target)
+#   "be10_p20" : Symmetric BE@1.0R + 50% Partial at +2.0R, 50% runner to +3.0R
+#   "p15_be"   : 50% Partial at +1.5R + BE@1.5R, 50% runner to +3.0R
+#   "be15_p20" : Symmetric BE@1.5R + 50% Partial at +2.0R, 50% runner to +3.0R
+MANAGEMENT_MODE = "be_15"
+
+# --- Phase 2: Stop Hygiene, H1 Zone Refinement & Destination Room ---
+SKIP_MIN_RISK_PADDED = False       # True = skip tight-stop orders that fail spread ratio instead of padding stop
+ZONE_H1_REFINEMENT = False         # True = refine D1/H4 zones down to clean H1 POI in zone.py
+PB_REQUIRE_DEST_ROOM = False       # True = require Pullback 3R target to sit before opposing D1/H4 zone
+PB_DEST_ROOM_BUFFER_R = 0.0        # Extra R buffer before opposing D1/H4 zone edge (0.0R or 0.5R)
+PB_BLOCK_OPPOSING_H1_PATH = False  # True = skip pullback if a fresh opposing H1 zone sits in path to 3R
+
+# --- Phase 3: ICT Confluences & Symmetry A/B Switches ---
+ZONE_REQUIRE_DISCOUNT_PREMIUM = False  # True = Zone Buy in lower 50% (Discount), Zone Sell in upper 50% (Premium)
+PB_REQUIRE_DISCOUNT_PREMIUM = False    # True = Pullback entry must be >= 50% into dealing range
+PB_REQUIRE_OTE = False                 # True = Pullback entry must be in >= 62% OTE zone
+PB_REQUIRE_FVG_OVERLAP = False         # True = M15 OB must overlap an M15 FVG
+PB_REQUIRE_SWEEP_RECLAIM = False       # True = Impulse ceiling must sweep & reclaim a prior liquidity level
+PB_MIN_DISP_BODY_ATR = 0.0             # > 0.0 = require CHoCH displacement candle body >= X * ATR
+KILLZONE_ONLY = False                  # True = only place orders inside London/NY/Asian Killzones (NY local time)
+SYM_SAME_BAR_SKIP_BOTH = False         # True = apply same-bar touch skip symmetrically to both Buy and Sell
+SYM_SPENT_ZONE_BOTH = False            # True = apply spent-zone early exit symmetrically to Zone Buy and Sell
+SYM_EXPIRY_48H_BOTH = False            # True = apply 48h pending order expiry symmetrically to PB Buy and Sell
+
+# --- Phase 4: Stream & Portfolio Controls ---
+H1_STREAM_ENABLED = True               # False = cleanly disable H1 continuation stream
+ENFORCE_ONE_AT_A_TIME = False          # True = use kept_1at (one trade at a time per pair) as main scorecard
