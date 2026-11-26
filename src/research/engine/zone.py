@@ -34,14 +34,14 @@ class ZoneCycleStrategy(CycleStrategy):
                   "z_no_zone_d1", "z_no_zone_h4", "z_expired_touch", "z_expired_48h",
                   "z_ob_none", "z_ob_body", "z_ob_fvg", "z_ob_exhaust", "z_ob_rr",
                   "z_ob_same_bar", "z_ob_min_risk_padded", "z_ob_min_risk_skipped",
-                  "z_ob_spread_skipped", "z_brk_ orders", "z_liq_orders", "z_liq_skipped_r",
+                  "z_ob_spread_skipped", "z_brk_orders", "z_liq_orders", "z_liq_skipped_r",
                   "z_deal_pct_skipped", "z_h1_ref_skipped",
                   "h1_zones_found", "h1_touches", "h1_choch", "h1_orders_placed",
                   "h1_expired_touch", "h1_expired_48h", "h1_ob_none", "h1_ob_body",
                   "h1_ob_fvg", "h1_ob_exhaust", "h1_ob_rr", "h1_ob_same_bar",
                   "h1_ob_min_risk_padded", "h1_ob_min_risk_skipped", "h1_ob_spread_skipped",
                   "h1_brk_orders", "h1_liq_orders", "h1_liq_skipped_r",
-                  "zones_spent_Skip", "orders_cancelled_150p", "zones_broken_past",
+                  "zones_spent_skip", "orders_cancelled_150p", "zones_broken_past",
                   "ag_pb_orders", "ag_pb_no_fvg", "ag_pb_exhaust", "ag_pb_rr",
                   "ag_pb_min_risk_padded", "ag_pb_spread_skipped",
                   "ag_zone_orders", "ag_zone_no_h1", "ag_zone_h1_dirty", "ag_zone_no_ob",
@@ -99,7 +99,7 @@ class ZoneCycleStrategy(CycleStrategy):
         if len(bars) < 5:
             return None
         sw = _merged_swings(bars, self.htf_sw_n[tf])
-         kind = "high" if up else "low"
+        kind = "high" if up else "low"
         cands = [s for s in sw if s["kind"] == kind]
         for s in reversed(cands):
             brk_idx = None
@@ -212,7 +212,7 @@ class ZoneCycleStrategy(CycleStrategy):
         return base_zones
 
     def _liq_target(self, up, entry, risk):
-         pool = []
+        pool = []
         for tf in ("D1", "H4"):
             sw = _merged_swings(self.htf[tf], self.htf_sw_n[tf])
             if up:
@@ -420,7 +420,7 @@ class ZoneCycleStrategy(CycleStrategy):
         if self.spread / risk > config.MAX_SPREAD_RISK_RATIO:
             self.counts[f"{prefix}_ob_spread_skipped"] += 1
             return
-        target = (entry - config. RR_TARGET * risk) if tsell else (entry + config.RR_TARGET * risk)
+        target = (entry - config.RR_TARGET * risk) if tsell else (entry + config.RR_TARGET * risk)
         if abs(target - entry) / risk < config.MIN_RR_AFTER_COSTS:
             self.counts[f"{prefix}_ob_rr"] += 1
             return
@@ -494,7 +494,7 @@ class ZoneCycleStrategy(CycleStrategy):
         )
         if base is None:
             return
-        spec = aggressive. refine_h1_to_m15(
+        spec = aggressive.refine_h1_to_m15(
             self.m15, base, tsell, self.pip, self.spread, now, self.counts, self.rules,
         )
         if spec is None:
@@ -515,7 +515,8 @@ class ZoneCycleStrategy(CycleStrategy):
                     target_mode, prefix, count_key=None, extra=None):
         oid = len(self.orders) + 1
         rec = {
-            "id": oid, "placed_ts": now, "direction": "sell" if tsell else "buy",
+            "id": oid, "placed_ts": now, "placed_ts_dt": now,
+            "direction": "sell" if tsell else "buy",
             "kind": kind, "entry": entry, "stop": stop, "target": target,
             "leg": "zone", "zone_tf": zone_tf, "zone_low": z["low"], "zone_high": z["high"],
             "zone_ts": z["ts"], "target_mode": target_mode,
