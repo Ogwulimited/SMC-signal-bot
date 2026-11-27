@@ -75,7 +75,7 @@ SPREAD_PRICE = {
     "nzdcad": 0.00020,
     "nzdchf": 0.00020,
     "cadjpy": 0.020,
-    "cadchf": 0.00020,
+    "cadchf": 0.020,
     "chfjpy": 0.020,
 }
 MAX_SPREAD_RISK_RATIO = 0.15
@@ -110,7 +110,6 @@ MAJOR_H4_SWING_N = 8           # same N as his approved TradingView chart
 MAJOR_D1_SWING_N = 8
 MAJOR_BIAS_FIRST_READ = 3      # his choice A: 3 counted Major swings for the first read
 ZONE_CANCEL_PIPS = 150         # cancel a pending zone order if price runs this far from entry
-
 # ======================================================================
 # PHASE 1-4 ICT/SMC QUANT UPGRADE CONTROLS
 # ======================================================================
@@ -120,18 +119,20 @@ ZONE_CANCEL_PIPS = 150         # cancel a pending zone order if price runs this 
 #   "be_10"    : Symmetric BE@1.0R across all Zone & Pullback trades (full 3R target)
 #   "be_15"    : Symmetric BE@1.5R across all Zone & Pullback trades (full 3R target)
 #   "be_20"    : Symmetric BE@2.0R across all Zone & Pullback trades (full 3R target)
+#   "be_25"    : Symmetric BE@2.5R across all Zone & Pullback trades (full 3R target)
 #   "be10_p20" : Symmetric BE@1.0R + 50% Partial at +2.0R, 50% runner to +3.0R
 #   "p15_be"   : 50% Partial at +1.5R + BE@1.5R, 50% runner to +3.0R
 #   "be15_p20" : Symmetric BE@1.5R + 50% Partial at +2.0R, 50% runner to +3.0R
-MANAGEMENT_MODE = "be_15"
-
+#   "p20_be"   : 50% Partial at +2.0R + BE@2.0R, 50% runner to +3.0R
+#   "be20_p25" : Symmetric BE@2.0R + 50% Partial at +2.5R, 50% runner to +3.0R
+#   "p25_be"   : 50% Partial at +2.5R + BE@2.5R, 50% runner to +3.0R
+MANAGEMENT_MODE = "legacy"
 # --- Phase 2: Stop Hygiene, H1 Zone Refinement & Destination Room ---
 SKIP_MIN_RISK_PADDED = False       # True = skip tight-stop orders that fail spread ratio instead of padding stop
 ZONE_H1_REFINEMENT = False         # True = refine D1/H4 zones down to clean H1 POI in zone.py
 PB_REQUIRE_DEST_ROOM = False       # True = require Pullback 3R target to sit before opposing D1/H4 zone
 PB_DEST_ROOM_BUFFER_R = 0.0        # Extra R buffer before opposing D1/H4 zone edge (0.0R or 0.5R)
 PB_BLOCK_OPPOSING_H1_PATH = False  # True = skip pullback if a fresh opposing H1 zone sits in path to 3R
-
 # --- Phase 3: ICT Confluences & Symmetry A/B Switches ---
 ZONE_REQUIRE_DISCOUNT_PREMIUM = False  # True = Zone Buy in lower 50% (Discount), Zone Sell in upper 50% (Premium)
 PB_REQUIRE_DISCOUNT_PREMIUM = False    # True = Pullback entry must be >= 50% into dealing range
@@ -143,7 +144,6 @@ KILLZONE_ONLY = False                  # True = only place orders inside London/
 SYM_SAME_BAR_SKIP_BOTH = False         # True = apply same-bar touch skip symmetrically to both Buy and Sell
 SYM_SPENT_ZONE_BOTH = False            # True = apply spent-zone early exit symmetrically to Zone Buy and Sell
 SYM_EXPIRY_48H_BOTH = False            # True = apply 48h pending order expiry symmetrically to PB Buy and Sell
-
 # --- Phase 4: Stream & Portfolio Controls ---
 H1_STREAM_ENABLED = True               # False = cleanly disable H1 continuation stream
 ENFORCE_ONE_AT_A_TIME = False          # True = use kept_1at (one trade at a time per pair) as main scorecard
