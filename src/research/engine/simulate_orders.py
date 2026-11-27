@@ -34,16 +34,24 @@ MGMT_PRESETS = {
     "be_10":    {"mode": "all",    "be_r": 1.0,   "part_r": None,  "part_f": 0.0},
     "be_15":    {"mode": "all",    "be_r": 1.5,   "part_r": None,  "part_f": 0.0},
     "be_20":    {"mode": "all",    "be_r": 2.0,   "part_r": None,  "part_f": 0.0},
+    "be_25":    {"mode": "all",    "be_r": 2.5,   "part_r": None,  "part_f": 0.0},
     "be10_p20": {"mode": "all",    "be_r": 1.0,   "part_r": 2.0,   "part_f": 0.5},
     "p15_be":   {"mode": "all",    "be_r": 1.5,   "part_r": 1.5,   "part_f": 0.5},
     "be15_p20": {"mode": "all",    "be_r": 1.5,   "part_r": 2.0,   "part_f": 0.5},
-    # +/- 25% perturbation grid around BE@1.0, BE@1.5, and 50%@1.5R+BE
+    "p20_be":   {"mode": "all",    "be_r": 2.0,   "part_r": 2.0,   "part_f": 0.5},
+    "be20_p25": {"mode": "all",    "be_r": 2.0,   "part_r": 2.5,   "part_f": 0.5},
+    "p25_be":   {"mode": "all",    "be_r": 2.5,   "part_r": 2.5,   "part_f": 0.5},
+    # +/- 25% perturbation grid around BE@1.0, BE@1.5, BE@2.0, BE@2.5, and partials
     "be_075":   {"mode": "all",    "be_r": 0.75,  "part_r": None,  "part_f": 0.0},
     "be_1125":  {"mode": "all",    "be_r": 1.125, "part_r": None,  "part_f": 0.0},
     "be_125":   {"mode": "all",    "be_r": 1.25,  "part_r": None,  "part_f": 0.0},
     "be_1875":  {"mode": "all",    "be_r": 1.875, "part_r": None,  "part_f": 0.0},
     "p15_lo":   {"mode": "all",    "be_r": 1.125, "part_r": 1.125, "part_f": 0.5},
     "p15_hi":   {"mode": "all",    "be_r": 1.875, "part_r": 1.875, "part_f": 0.5},
+    "p20_lo":   {"mode": "all",    "be_r": 1.50,  "part_r": 1.50,  "part_f": 0.5},
+    "p20_hi":   {"mode": "all",    "be_r": 2.50,  "part_r": 2.50,  "part_f": 0.5},
+    "p25_lo":   {"mode": "all",    "be_r": 1.875, "part_r": 1.875, "part_f": 0.5},
+    "p25_hi":   {"mode": "all",    "be_r": 2.80,  "part_r": 2.80,  "part_f": 0.5},
 }
 
 _EXTRA_CONFLUENCE_COLS = (
@@ -116,7 +124,6 @@ def _eval_path(h, l, op, fill, stop, target, risk, sc, sell, limit, open_fill,
     gap[0] = False
     if limit and not open_fill:
         tgt_hit[0] = False
-
     si = int(np.argmax(stop_hit)) if stop_hit.any() else None
     ti = int(np.argmax(tgt_hit)) if tgt_hit.any() else None
 
@@ -239,7 +246,6 @@ def _eval_path(h, l, op, fill, stop, target, risk, sc, sell, limit, open_fill,
             out = "partial_target"
     else:
         gross = runner_gross
-
     net_r = gross - sc
     return {
         "outcome": out,
@@ -305,6 +311,7 @@ def simulate_order(o, a, spread, pair, mode="static"):
     else:
         e = int(a["close_t"].searchsorted(end, side="left"))
     e = min(max(e, s), n)
+
     touch = None
     if e > s:
         seg = (a["h"][s:e] >= entry) if sell else (a["l"][s:e] <= entry)
@@ -313,6 +320,7 @@ def simulate_order(o, a, spread, pair, mode="static"):
     if touch is None:
         rec["status"] = "unfilled_open" if end is None else "unfilled_cancelled"
         return rec
+
     rec["touch_time"] = a["close_t"][touch]
     open_fill = False
     if limit:
@@ -326,11 +334,13 @@ def simulate_order(o, a, spread, pair, mode="static"):
             rec["status"] = "unfilled_open"
             return rec
         fill = float(a["o"][f])
+
     rec["fill_time"] = a["open_t"][f]
     rec["fill_price"] = fill
     if (sell and fill >= stop) or ((not sell) and fill <= stop):
         rec["status"] = "fill_beyond_stop"
         return rec
+
     risk = abs(fill - stop)
     sc = float(spread) / risk
     rec["risk_r"] = risk
@@ -338,6 +348,7 @@ def simulate_order(o, a, spread, pair, mode="static"):
     if sc > float(config.MAX_SPREAD_RISK_RATIO):
         rec["status"] = "skipped_spread"
         return rec
+
     if mode == "liquidity":
         target, tkind = _liq_target(o, fill, risk, sell)
         if target is None:
@@ -348,6 +359,7 @@ def simulate_order(o, a, spread, pair, mode="static"):
         rr = float(config.RR_STATIC) if rr is None else float(rr)
         target = fill - rr * risk if sell else fill + rr * risk
         tkind = "static"
+
     rec["target_price"] = target
     rec["target_kind"] = tkind
     rec["target_r"] = abs(target - fill) / risk
