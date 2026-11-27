@@ -22,7 +22,6 @@ import numpy as np
 import pandas as pd
 from src import config
 from src.research.engine import simulate_orders as so
-
 ROOT = Path(__file__).resolve().parents[3]
 DATA = ROOT / "data" / "phase4_cycle"
 DATA_START = "2016-01-03"
@@ -33,25 +32,22 @@ ALL_PAIRS = ("eurusd,gbpusd,usdjpy,audusd,usdcad,usdchf,nzdusd,eurjpy,gbpjpy,eur
 NEW_PAIRS = set(ALL_PAIRS[11:])
 TIME_COLS = ("placed_time", "end_time", "touch_time", "fill_time", "exit_time",
              "bos_time", "zone_touch_time", "choch_time", "box_time", "idm_sweep_time")
+MGMT_R_COLS = tuple(f"r_{k}" for k in so.MGMT_PRESETS)
+MGMT_OUT_COLS = tuple(f"out_{k}" for k in so.MGMT_PRESETS)
 NUM_COLS = (
     "net_r", "r_gross", "dur_hours", "mfe_r", "mae_r", "spread_cost_r",
     "risk_r", "target_r", "entry", "fill_price", "stop", "target_price",
     "exit_price", "zone_low", "zone_high", "choch_level", "ceiling",
     "box_low", "box_high", "idm_level",
-    "net_r_legacy", "net_r_be_10", "net_r_be_15", "net_r_be_20",
-    "net_r_be10_p20", "net_r_p15_be", "net_r_be15_p20",
-    "net_r_be_075", "net_r_be_1125", "net_r_be_125", "net_r_be_1875",
-    "net_r_p15_lo", "net_r_p15_hi", "net_r_fill1",
+    "fill1_net_r", "unpadded_net_r", "unpadded_spread_ratio",
     "raw_stop", "dest_room_r", "deal_pct", "local_ote_pct",
     "disp_body_atr", "disp_close_pct", "ny_hour",
-)
+) + MGMT_R_COLS
 BOOL_COLS = ("kept_1at", "flip_while_open", "min_risk_padded", "opp_h1_in_path",
              "fvg_overlap", "sweep_reclaim", "h1_refined_ok")
-TEXT_COLS = ("htf_bias", "killzone", "mgmt_exit")
-DONE = ["target", "stop", "stop_gap"]
+TEXT_COLS = ("htf_bias", "killzone", "mgmt_exit") + MGMT_OUT_COLS
+DONE = ["target", "stop", "stop_gap", "partial_be", "partial_target"]
 V1_PULLBACK = (1455, -21.13)
-
-
 def fmt(x, d=2):
     if x is None:
         return "n/a"
@@ -64,56 +60,46 @@ def fmt(x, d=2):
     if math.isinf(x):
         return "inf"
     return f"{x:.{d}f}"
-
-
 def ftime(x):
     if x is None or pd.isna(x):
         return "n/a"
     return x.strftime("%Y-%m-%d %H:%M")
-
-
 def fclock(x):
     if x is None or pd.isna(x):
         return "n/a"
     ampm = x.strftime("%I:%M %p").lstrip("0")
     return f"{x.strftime('%H:%M')} UTC ({ampm})"
-
-
 def outcome_label(r):
+    outc = str(r.get("outcome", "") or "")
     mexit = str(r.get("mgmt_exit", "") or "")
     gross = float(r["r_gross"]) if r.get("r_gross") is not None and not pd.isna(r.get("r_gross")) else -1.0
-    if mexit == "partial_target":
+    if outc == "partial_target" or mexit == "partial_target":
         return f"WIN (Partial+TP +{fmt(gross, 2)}R)"
-    if mexit == "partial_be":
+    if outc == "partial_be" or mexit == "partial_be":
         return f"PARTIAL WIN (+{fmt(gross, 2)}R, Runner BE)"
-    if r.get("outcome") == "target":
+    if outc == "target":
         return f"WIN (+{fmt(gross, 1)}R)"
     if abs(gross) < 1e-6 or mexit == "be":
         return "BREAK-EVEN (0R)"
     if gross > 0:
         return f"PARTIAL WIN (+{fmt(gross, 2)}R)"
     return "LOSS (-1R)"
-
-
 def outcome_short(r):
+    outc = str(r.get("outcome", "") or "")
     mexit = str(r.get("mgmt_exit", "") or "")
     gross = float(r["r_gross"]) if r.get("r_gross") is not None and not pd.isna(r.get("r_gross")) else -1.0
-    if mexit == "partial_target" or r.get("outcome") == "target":
+    if outc in ("target", "partial_target") or mexit == "partial_target":
         return "WIN"
-    if mexit == "partial_be" or gross > 1e-6:
+    if outc == "partial_be" or mexit == "partial_be" or gross > 1e-6:
         return "P-WIN"
     if abs(gross) < 1e-6 or mexit == "be":
         return "BE"
     return "LOSS"
-
-
 def table(head, rows):
     out = ["| " + " | ".join(head) + " |", "|" + "|".join("---" for _ in head) + "|"]
     for r in rows:
         out.append("| " + " | ".join(str(x) for x in r) + " |")
     return out
-
-
 def read_trades(pair):
     p = DATA / f"{pair}_trades.csv"
     if not p.exists():
@@ -125,7 +111,6 @@ def read_trades(pair):
     for c in so.TRADE_COLS:
         if c not in df.columns:
             df[c] = np.nan
-    # Defensive: older trade CSVs may lack newer diagnostic columns
     for c in NUM_COLS + TEXT_COLS:
         if c not in df.columns:
             df[c] = np.nan
@@ -143,9 +128,7 @@ def read_trades(pair):
         if c in df.columns:
             df[c] = df[c].astype(str).eq("True")
     return df
-
-
-def stats(t, col="net_r"):
+def stats(t, col="net_r", out_col="outcome"):
     n = len(t)
     if n == 0:
         return {"n": 0, "net": 0.0, "wr": np.nan, "pos_wr": np.nan, "pf": np.nan, "exp": np.nan, "rr": np.nan}
@@ -159,13 +142,14 @@ def stats(t, col="net_r"):
     aw = r[r > 0].mean() if (r > 0).any() else np.nan
     al = -r[r < 0].mean() if (r < 0).any() else np.nan
     rr = aw / al if (al == al and al > 0 and aw == aw) else np.nan
-    full_wr = float((t["outcome"] == "target").mean() * 100)
+    if out_col in t.columns and t[out_col].notna().any():
+        full_wr = float(t[out_col].isin(["target", "partial_target"]).mean() * 100)
+    else:
+        full_wr = float((t["outcome"].isin(["target", "partial_target"])).mean() * 100)
     pos_wr = float((r > 0).mean() * 100)
     return {"n": n_valid, "net": float(r.sum()),
             "wr": full_wr, "pos_wr": pos_wr,
             "pf": float(pf), "exp": float(r.mean()), "rr": float(rr)}
-
-
 def dd_streak(t, col="net_r"):
     if len(t) == 0:
         return 0.0, 0
@@ -183,8 +167,6 @@ def dd_streak(t, col="net_r"):
         else:
             streak = 0
     return dd, best
-
-
 def verdict(look_ok, s):
     if not look_ok:
         return "IGNORE - lookahead check is not PASS"
@@ -195,13 +177,9 @@ def verdict(look_ok, s):
     if s["n"] < 200 or not (s["pf"] >= 1.2):
         return "WEAK / NOT PROVEN (positive, but under 200 trades or PF under 1.2)"
     return "POSITIVE on practice years (not an exam result)"
-
-
 def card(allr, leg, mode):
     a = allr[(allr["leg"] == leg) & (allr["target_mode"] == mode)]
     return a, a[a["outcome"].isin(DONE)]
-
-
 def split_rows(r):
     rows = []
     for kind in ("breaker", "ob"):
@@ -214,8 +192,6 @@ def split_rows(r):
         rows.append([f"ALL {side}s", st["n"], fmt(st["wr"], 1), fmt(st["net"]),
                      fmt(st["exp"], 3)])
     return rows
-
-
 def sheet_line(i, r):
     return (f"{i}. **{r['pair']}** zone {r['kind']} {r['side']} - BOS {ftime(r['bos_time'])}; "
             f"zone {r['zone_tf']} {fmt(r['zone_low'], 5)} to {fmt(r['zone_high'], 5)} touched "
@@ -227,18 +203,14 @@ def sheet_line(i, r):
             f"{r['outcome']} at {ftime(r['exit_time'])} ({fmt(r['exit_price'], 5)}), "
             f"gross R {fmt(r['r_gross'], 2)}, spread {fmt(r['spread_cost_r'], 2)}R, "
             f"net R {fmt(r['net_r'], 2)}")
-
-
 def win_loss_be_counts(sub):
     if len(sub) == 0:
         return 0, 0, 0
     gross = sub["r_gross"].astype(float)
-    wins = int(((sub["outcome"] == "target") | (gross > 1e-6)).sum())
+    wins = int(((sub["outcome"].isin(["target", "partial_target"])) | (gross > 1e-6)).sum())
     be = int((gross.abs() <= 1e-6).sum())
     losses = len(sub) - wins - be
     return wins, losses, be
-
-
 def _trend_description(tr):
     hb = str(tr.get("htf_bias", "") or "").lower()
     leg = str(tr.get("leg", "pullback")).lower()
@@ -256,8 +228,6 @@ def _trend_description(tr):
     else:
         mode_desc = f"Counter-Trend Pullback {side.upper()} (retracement against {hb.upper()} HTF)"
     return f"{trend_word} — {mode_desc}"
-
-
 def _format_trade_chart_audit(t_num, tr):
     leg = str(tr.get("leg", "pullback")).lower()
     kind = str(tr.get("kind", "ob")).upper()
@@ -317,13 +287,11 @@ def _format_trade_chart_audit(t_num, tr):
         f"**Stop Loss:** `{fmt(tr.get('stop'), 5)}` | **Take Profit (+{fmt(tr.get('target_r'), 2)}R):** `{fmt(tr.get('target_price'), 5)}`"
     )
     lines.append(
-        f"  - **7. Resolution:** `{tr.get('outcome')}` ({tr.get('mgmt_exit')}) at `{ftime(tr.get('exit_time'))} UTC` @ `{fmt(tr.get('exit_price'), 5)}` | "
+        f"  - **7. Resolution:** `{tr.get('outcome')}` at `{ftime(tr.get('exit_time'))} UTC` @ `{fmt(tr.get('exit_price'), 5)}` | "
         f"Gross `{fmt(tr.get('r_gross'), 2)} R`, Spread `{fmt(tr.get('spread_cost_r'), 2)} R`, "
         f"**Net `{sign}{fmt(net_v, 2)} R`** (Max Favorable `{fmt(tr.get('mfe_r'), 2)} R`, Max Adverse `{fmt(tr.get('mae_r'), 2)} R`)"
     )
     return lines
-
-
 def render_all_months_deep_dive(m_records, label, year_filter=None):
     """Render the separate full 70+ months Day-by-Day Calendar & Chart-by-Chart Trade Anatomy report."""
     chosen = [r for r in m_records if (year_filter is None or int(r["ym"][:4]) in year_filter)]
@@ -401,8 +369,6 @@ def render_all_months_deep_dive(m_records, label, year_filter=None):
             out += _format_trade_chart_audit(t_idx, tr)
         out.append("")
     return out
-
-
 def _paired_bootstrap_ci(diff_arr, n_boot=2000, seed=42):
     """Bootstrap 95% confidence interval for total Net R difference on paired trades."""
     diff = np.asarray(diff_arr, dtype=float)
@@ -416,14 +382,11 @@ def _paired_bootstrap_ci(diff_arr, n_boot=2000, seed=42):
     lo, hi = np.percentile(sums, [2.5, 97.5])
     p_pos = float((sums > 0).mean() * 100.0)
     return float(lo), float(hi), p_pos
-
-
 def render_phase1_to_3_diagnostics(res, zres, pres, win_months):
     """Render Phase 1 Management Ladder, Stress Tests, and Phase 2/3 ICT Confluence Tables."""
     out = []
     if len(res) == 0:
         return out
-
     # 1. Phase 1 Management Ladder Paired Comparison
     out += [
         "### Phase 1: Management Ladder Paired Comparison & Bootstrap 95% CI (Combined Static Card)",
@@ -431,22 +394,28 @@ def render_phase1_to_3_diagnostics(res, zres, pres, win_months):
         "Delta R and 95% Bootstrap CI are paired trade-by-trade against `legacy` (+235.75R baseline).",
         "",
     ]
-    base_r = res["net_r_legacy"].astype(float)
+    base_col = "r_legacy" if "r_legacy" in res.columns and res["r_legacy"].notna().any() else "net_r"
+    base_r = res[base_col].astype(float)
     mgmt_rows = []
     ladder_specs = [
         ("legacy",   "Legacy (Asymmetric BE@2.0R on PB Sell & H1 Zone)"),
         ("be_10",    "Symmetric BE @ +1.0R (All Zone + PB, Full 3R TP)"),
         ("be_15",    "Symmetric BE @ +1.5R (All Zone + PB, Full 3R TP)"),
         ("be_20",    "Symmetric BE @ +2.0R (All Zone + PB, Full 3R TP)"),
+        ("be_25",    "Symmetric BE @ +2.5R (All Zone + PB, Full 3R TP)"),
         ("be10_p20", "Symmetric BE @ +1.0R + 50% Partial @ +2.0R (Runner 3R)"),
         ("p15_be",   "50% Partial @ +1.5R + BE @ +1.5R (Runner 3R)"),
         ("be15_p20", "Symmetric BE @ +1.5R + 50% Partial @ +2.0R (Runner 3R)"),
+        ("p20_be",   "50% Partial @ +2.0R + BE @ +2.0R (Runner 3R)"),
+        ("be20_p25", "Symmetric BE @ +2.0R + 50% Partial @ +2.5R (Runner 3R)"),
+        ("p25_be",   "50% Partial @ +2.5R + BE @ +2.5R (Runner 3R)"),
     ]
     for code, desc in ladder_specs:
-        col = f"net_r_{code}"
+        col = f"r_{code}"
+        out_col = f"out_{code}"
         if col not in res.columns or res[col].isna().all():
             continue
-        st = stats(res, col=col)
+        st = stats(res, col=col, out_col=out_col)
         dd_v, strk = dd_streak(res, col=col)
         diff = res[col].astype(float) - base_r
         delta_sum = float(diff.sum())
@@ -477,9 +446,9 @@ def render_phase1_to_3_diagnostics(res, zres, pres, win_months):
         "Streak", "Worst Year R", "2x Spread R", "Adoption Bar"
     ], mgmt_rows)
     out.append("")
-
-    out += ["#### Management Ladder Impact by Stream (`legacy` vs `be_10` vs `be_15` vs `p15_be` vs `be10_p20`)"]
+    out += ["#### Management Ladder Impact by Stream (`legacy` vs BE & Partial Presets)"]
     m_stream_rows = []
+    stream_cols = ["r_legacy", "r_be_15", "r_be_20", "r_be_25", "r_p15_be", "r_p20_be", "r_be20_p25", "r_p25_be"]
     for s_name, s_df in (
         ("D1/H4 Zone OB Buy", zres[(zres["zone_tf"].isin(["D1", "H4"])) & (zres["side"] == "buy")]),
         ("D1/H4 Zone OB Sell", zres[(zres["zone_tf"].isin(["D1", "H4"])) & (zres["side"] == "sell")]),
@@ -487,24 +456,19 @@ def render_phase1_to_3_diagnostics(res, zres, pres, win_months):
         ("Pullback OB Buy", pres[(pres["kind"] == "ob") & (pres["side"] == "buy")]),
         ("Pullback OB Sell", pres[(pres["kind"] == "ob") & (pres["side"] == "sell")]),
         ("Pullback Breaker Buy", pres[(pres["kind"] == "breaker") & (pres["side"] == "buy")]),
+        ("ALL COMBINED", res),
     ):
         if len(s_df) == 0:
             continue
-        m_stream_rows.append([
-            s_name, len(s_df),
-            fmt(s_df["net_r_legacy"].sum(), 2),
-            fmt(s_df["net_r_be_10"].sum(), 2),
-            fmt(s_df["net_r_be_15"].sum(), 2),
-            fmt(s_df["net_r_p15_be"].sum(), 2),
-            fmt(s_df["net_r_be10_p20"].sum(), 2),
-            fmt(s_df["net_r_be15_p20"].sum(), 2),
-        ])
+        row_vals = [s_name, len(s_df)]
+        for sc in stream_cols:
+            row_vals.append(fmt(s_df[sc].sum(), 2) if sc in s_df.columns and s_df[sc].notna().any() else "n/a")
+        m_stream_rows.append(row_vals)
     out += table([
-        "Stream / Model", "Trades", "Legacy R", "BE@1.0 R", "BE@1.5 R",
-        "50%@1.5+BE R", "BE@1.0+50%@2.0 R", "BE@1.5+50%@2.0 R"
+        "Stream / Model", "Trades", "Legacy R", "BE@1.5 R", "BE@2.0 R", "BE@2.5 R",
+        "50%@1.5+BE R", "50%@2.0+BE R", "BE@2.0+50%@2.5 R", "50%@2.5+BE R"
     ], m_stream_rows)
     out.append("")
-
     # 2. Trigger Perturbation & Zone Fill-1 vs Fill-2
     out += ["### Phase 1 Stress Tests: +-25% Trigger Perturbation & Zone Fill-1 vs Fill-2"]
     pert_rows = []
@@ -515,36 +479,50 @@ def render_phase1_to_3_diagnostics(res, zres, pres, win_months):
         ("be_1125", "BE @ +1.125R (-25% of 1.5R)"),
         ("be_15",   "BE @ +1.50R (Center 1.5R)"),
         ("be_1875", "BE @ +1.875R (+25% of 1.5R)"),
+        ("be_20",   "BE @ +2.00R (Center 2.0R)"),
+        ("be_25",   "BE @ +2.50R (+25% of 2.0R)"),
         ("p15_lo",  "50% Partial + BE @ +1.125R (-25% of 1.5R)"),
         ("p15_be",  "50% Partial + BE @ +1.50R (Center 1.5R)"),
         ("p15_hi",  "50% Partial + BE @ +1.875R (+25% of 1.5R)"),
+        ("p20_lo",  "50% Partial + BE @ +1.50R (-25% of 2.0R)"),
+        ("p20_be",  "50% Partial + BE @ +2.00R (Center 2.0R)"),
+        ("p20_hi",  "50% Partial + BE @ +2.50R (+25% of 2.0R)"),
+        ("p25_lo",  "50% Partial + BE @ +1.875R (-25% of 2.5R)"),
+        ("p25_be",  "50% Partial + BE @ +2.50R (Center 2.5R)"),
+        ("p25_hi",  "50% Partial + BE @ +2.80R (Capped +25% of 2.5R)"),
     ):
-        col = f"net_r_{p_code}"
+        col = f"r_{p_code}"
+        out_col = f"out_{p_code}"
         if col not in res.columns or res[col].isna().all():
             continue
-        st_p = stats(res, col=col)
+        st_p = stats(res, col=col, out_col=out_col)
         dd_p, _ = dd_streak(res, col=col)
         pert_rows.append([p_label, st_p["n"], fmt(st_p["net"], 2), fmt(st_p["exp"], 3),
                           fmt(st_p["pf"], 2), fmt(dd_p, 2)])
     out += table(["Perturbation Setting", "Trades", "Net R", "Expectancy", "PF", "Max DD R"], pert_rows)
     out.append("")
-
-    if len(zres) and "net_r_fill1" in zres.columns:
+    if len(zres) and "fill1_net_r" in zres.columns:
         z_f2_net = float(zres["net_r"].sum())
-        z_f1_valid = zres["net_r_fill1"].dropna()
+        z_f1_valid = zres["fill1_net_r"].dropna()
         z_f1_net = float(z_f1_valid.sum()) if len(z_f1_valid) else np.nan
         out.append(f"- **Zone Fill Convention Stress Test:** Default Fill-2 (next M15 open) = "
                    f"**{fmt(z_f2_net, 2)} R** ({len(zres)} trades) vs. In-Bar Limit Fill-1 = "
                    f"**{fmt(z_f1_net, 2)} R** ({len(z_f1_valid)} trades).")
-        out.append("")
-
+    if "unpadded_net_r" in res.columns and res["min_risk_padded"].any():
+        pad_sub = res[res["min_risk_padded"]]
+        pad_actual = float(pad_sub["net_r"].sum())
+        pad_unp = pad_sub["unpadded_net_r"].dropna()
+        out.append(f"- **Min-Risk Stop Padding Counterfactual ({len(pad_sub)} padded trades):** "
+                   f"Padded Net R = **{fmt(pad_actual, 2)} R** | "
+                   f"If left at raw structural stop (unpadded) = **{fmt(float(pad_unp.sum()), 2)} R** "
+                   f"(median unpadded spread/risk ratio = `{fmt(float(pad_sub['unpadded_spread_ratio'].median()), 2)}`).")
+    out.append("")
     # 3. Phase 2 & 3 ICT Confluence Telemetry
     out += [
         "### Phase 2 & 3: ICT Confluence Diagnostic Telemetry (2016-2019 vs 2020-2022 & Buy vs Sell)",
         "Logged non-invasively across all resolved trades to verify cross-period stability before enabling any gate.",
         "",
     ]
-
     def _conf_row(label_c, sub_df):
         if len(sub_df) == 0:
             return [label_c, 0, "n/a", "n/a", "n/a", "n/a", "n/a", "n/a", "n/a"]
@@ -562,58 +540,47 @@ def render_phase1_to_3_diagnostics(res, zres, pres, win_months):
             f"{stb['n']} ({fmt(stb['exp'], 3)}R)",
             f"{sts['n']} ({fmt(sts['exp'], 3)}R)",
         ]
-
     conf_rows = []
     conf_rows.append(_conf_row("Stop Hygiene: Natural Stop (Not Padded)", res[~res["min_risk_padded"]]))
     conf_rows.append(_conf_row("Stop Hygiene: Min-Risk Padded Stop", res[res["min_risk_padded"]]))
-
     pb_dr = pres["dest_room_r"]
     conf_rows.append(_conf_row("PB Dest Room: < 3.0R (Blocked by HTF Zone)", pres[pb_dr.notna() & (pb_dr < 3.0)]))
     conf_rows.append(_conf_row("PB Dest Room: 3.0R - 3.5R", pres[pb_dr.notna() & (pb_dr >= 3.0) & (pb_dr < 3.5)]))
     conf_rows.append(_conf_row("PB Dest Room: >= 3.5R (Clear Path)", pres[pb_dr.notna() & (pb_dr >= 3.5)]))
     conf_rows.append(_conf_row("PB Path: Fresh Opposing H1 Zone in Path", pres[pres["opp_h1_in_path"]]))
     conf_rows.append(_conf_row("PB Path: No Opposing H1 Zone in Path", pres[~pres["opp_h1_in_path"]]))
-
     z_deep = zres[zres["zone_tf"].isin(["D1", "H4"])]
     conf_rows.append(_conf_row("D1/H4 Zone: Inside Clean H1 Refined Base", z_deep[z_deep["h1_refined_ok"]]))
     conf_rows.append(_conf_row("D1/H4 Zone: Outside/No Clean H1 Base", z_deep[~z_deep["h1_refined_ok"]]))
     z_dp = z_deep["deal_pct"]
     conf_rows.append(_conf_row("D1/H4 Zone Deal Range: < 50% (Shallow)", z_deep[z_dp.notna() & (z_dp < 50.0)]))
     conf_rows.append(_conf_row("D1/H4 Zone Deal Range: >= 50% (Discount/Premium)", z_deep[z_dp.notna() & (z_dp >= 50.0)]))
-
     p_dp = pres["deal_pct"]
     conf_rows.append(_conf_row("PB Macro Range: < 50% (Past Equilibrium)", pres[p_dp.notna() & (p_dp < 50.0)]))
     conf_rows.append(_conf_row("PB Macro Range: 50% - 62%", pres[p_dp.notna() & (p_dp >= 50.0) & (p_dp < 62.0)]))
     conf_rows.append(_conf_row("PB Macro Range: 62% - 79% (Macro OTE)", pres[p_dp.notna() & (p_dp >= 62.0) & (p_dp <= 79.0)]))
     conf_rows.append(_conf_row("PB Macro Range: > 79% (Deep Origin)", pres[p_dp.notna() & (p_dp > 79.0)]))
-
     p_ote = pres["local_ote_pct"]
     conf_rows.append(_conf_row("PB Local M15 Leg: < 50%", pres[p_ote.notna() & (p_ote < 50.0)]))
     conf_rows.append(_conf_row("PB Local M15 Leg: 50% - 62%", pres[p_ote.notna() & (p_ote >= 50.0) & (p_ote < 62.0)]))
     conf_rows.append(_conf_row("PB Local M15 Leg: 62% - 79% (Local OTE)", pres[p_ote.notna() & (p_ote >= 62.0) & (p_ote <= 79.0)]))
     conf_rows.append(_conf_row("PB Local M15 Leg: > 79%", pres[p_ote.notna() & (p_ote > 79.0)]))
-
     conf_rows.append(_conf_row("OB + FVG Overlap: True (Unicorn / Imbalance)", res[res["fvg_overlap"]]))
     conf_rows.append(_conf_row("OB + FVG Overlap: False (Plain OB)", res[~res["fvg_overlap"]]))
     conf_rows.append(_conf_row("PB Ceiling Liquidity Sweep + Reclaim: True", pres[pres["sweep_reclaim"]]))
     conf_rows.append(_conf_row("PB Ceiling Liquidity Sweep + Reclaim: False", pres[~pres["sweep_reclaim"]]))
-
     disp = res["disp_body_atr"]
     conf_rows.append(_conf_row("CHoCH Displacement Body: < 0.5 ATR", res[disp.notna() & (disp < 0.5)]))
     conf_rows.append(_conf_row("CHoCH Displacement Body: 0.5 - 1.0 ATR", res[disp.notna() & (disp >= 0.5) & (disp < 1.0)]))
     conf_rows.append(_conf_row("CHoCH Displacement Body: >= 1.0 ATR", res[disp.notna() & (disp >= 1.0)]))
-
     for kz_name in ("London_KZ", "NY_AM_KZ", "London_Close_KZ", "Asian_KZ", "Outside_KZ"):
         conf_rows.append(_conf_row(f"NY Local Time Killzone: {kz_name}", res[res["killzone"] == kz_name]))
-
     out += table([
         "Confluence / Bucket", "Trades", "Net R", "Exp (R)", "PF",
         "2016-19 N (Exp)", "2020-22 N (Exp)", "Buy N (Exp)", "Sell N (Exp)"
     ], conf_rows)
     out.append("")
     return out
-
-
 def main():
     label = os.environ.get("REPORT_LABEL", "run")
     report_mode = os.environ.get("REPORT_MODE", "main").strip().lower()
@@ -623,7 +590,6 @@ def main():
         report_mode = "anatomy_p1"
     elif "--anatomy-p2" in sys.argv:
         report_mode = "anatomy_p2"
-
     expect = [p for p in os.environ.get("EXPECT_PAIRS", "").split(",") if p] or ALL_PAIRS
     frames, funnels, looks = [], {}, {}
     for p in expect:
@@ -661,7 +627,6 @@ def main():
     miss = [p for p in expect if p not in looks]
     failed = [p for p, v in looks.items() if not v.get("pass")]
     look_ok = (not miss) and (not failed) and bool(looks)
-
     active_mgmt = str(getattr(config, "MANAGEMENT_MODE", "legacy") or "legacy")
     L = [f"# Phase 4 cycle report: {label}", ""]
     if look_ok:
@@ -873,9 +838,6 @@ def main():
         L += table(["Month", "Trades", "Wins", "Losses", "Break-Even", "Win %",
                     "Net R", "Expectancy", "PF"], q_rows)
         L.append("")
-
-    # NOTE: Day-by-Day & Chart-by-Chart Trade Anatomy lives in the dedicated 78-month report.
-
     # Extras
     L += ["## Extras", "", "### Scorecards side by side (With-Trend Zones vs. Pullbacks)"]
     cards = (
@@ -905,10 +867,8 @@ def main():
              f"{fmt(pres['net_r'].sum())} R. Equal: "
              f"{'YES' if (len(pres) == V1_PULLBACK[0] and abs(float(pres['net_r'].sum()) - V1_PULLBACK[1]) < 0.015) else 'NO'}.")
     L.append("")
-
     # Phase 1-3 Management Ladder, Stress Tests, and ICT Confluence Telemetry
     L += render_phase1_to_3_diagnostics(res, zres, pres, win_months)
-
     L += ["### Buy / sell split by entry model"]
     for name, a, r in (
         ("COMBINED (All Zones + Pullbacks) (MAIN)", call, cres),
@@ -936,11 +896,11 @@ def main():
         if len(sub) == 0:
             continue
         wins, losses, be = win_loss_be_counts(sub)
-        non_tgt = sub[sub["outcome"] != "target"]
+        non_tgt = sub[~sub["outcome"].isin(["target", "partial_target"])]
         n_nt = len(non_tgt)
         mfe_all = float(sub["mfe_r"].median()) if sub["mfe_r"].notna().any() else np.nan
         mae_all = float(sub["mae_r"].median()) if sub["mae_r"].notna().any() else np.nan
-        w_sub = sub[sub["outcome"] == "target"]
+        w_sub = sub[sub["outcome"].isin(["target", "partial_target"])]
         mae_win = float(w_sub["mae_r"].median()) if len(w_sub) and w_sub["mae_r"].notna().any() else np.nan
         r10 = int((non_tgt["mfe_r"] >= 1.0).sum()) if n_nt else 0
         r15 = int((non_tgt["mfe_r"] >= 1.5).sum()) if n_nt else 0
@@ -1184,16 +1144,13 @@ def main():
     else:
         L.append("No resolved zone sells.")
     L.append("")
-
     md_main = "\n".join(L)
     anat_all_lines = render_all_months_deep_dive(m_records, label, year_filter=None)
     md_anatomy_all = "\n".join(anat_all_lines)
-
     out = ROOT / "reports" / "phase4"
     out.mkdir(parents=True, exist_ok=True)
     (out / f"report_cycle_{label}.md").write_text(md_main)
     (out / f"report_cycle_{label}_monthly_anatomy.md").write_text(md_anatomy_all)
-
     if report_mode == "anatomy":
         md_out = md_anatomy_all
     elif report_mode == "anatomy_p1":
@@ -1202,11 +1159,9 @@ def main():
         md_out = "\n".join(render_all_months_deep_dive(m_records, label, year_filter={2020, 2021, 2022}))
     else:
         md_out = md_main
-
     print(md_out)
     gh = os.environ.get("GITHUB_STEP_SUMMARY")
     if gh:
-        # Guard against GitHub Actions 1024 KB step summary hard limit
         encoded = md_out.encode("utf-8")
         if len(encoded) > 990_000:
             trunc_note = (
@@ -1218,7 +1173,5 @@ def main():
             md_gh = md_out + "\n"
         with open(gh, "a") as f:
             f.write(md_gh)
-
-
 if __name__ == "__main__":
     main()
