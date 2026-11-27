@@ -1,3 +1,7 @@
+"""Major-Swing Zone Layer (D1 / H4 zones -> M15 confirmation -> static 3R or liquidity target).
+Wraps CycleRecorder without changing a single line of cycle.py, MapRecorder,
+or aggressive.py. Enabled only for the `mz` variant via SETTINGS["enabled"].
+"""
 from bisect import bisect_left, bisect_right, insort
 from collections import defaultdict, deque
 import pandas as pd
@@ -5,844 +9,831 @@ from src import config
 from src.research.engine import aggressive as ag
 from src.research.engine import cycle as cy
 from src.research.engine.bias import htf_bias
+
 SETTINGS = {"enabled": False, "rules": False, "pip": 0.0001, "spread": 0.0}
 LIQ_CAP = 100
-H1_OPPOSING_HTF_MIN_R = 1.5
-H1_ZONE_MAX_AGE = pd.Timedelta(hours=96)
-H1_SCAN_MAX_DURATION = pd.Timedelta(hours=48)
-H1_ORDER_EXPIRY = pd.Timedelta(hours=48)
-def _on():
-    return bool(SETTINGS["enabled"])
-def _rules():
-    return bool(SETTINGS["enabled"]) and bool(SETTINGS.get("rules", False))
+H1_OPPOSING_HTF_MIN_R = 3.0
+H1_ZONE_MAX_AGE = pd.Timedelta(hours=48)
+H1_SCAN_MAX_DURATION = pd.Timedelta(hours=24)
+H1_ORDER_EXPIRY = pd.Timedelta(hours=24)
+
+
+def _ny_killzone_info(ts):
+    t = pd.Timestamp(ts)
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    ny = t.tz_convert("America/New_York")
+    h = ny.hour
+    if 2 <= h < 5:
+        kz = "London_KZ"
+    elif 7 <= h < 10:
+        kz = "NY_AM_KZ"
+    elif 10 <= h < 12:
+        kz = "London_Close_KZ"
+    elif 20 <= h < 24:
+        kz = "Asian_KZ"
+    else:
+        kz = "Outside_KZ"
+    return h, kz
+
+
+def _fvg_overlaps_ob(fvgs, ob_top, ob_bot):
+    for f in fvgs or []:
+        if max(float(f["bottom"]), float(ob_bot)) <= min(float(f["top"]), float(ob_top)):
+            return True
+    return False
+
+
 class ZoneRecorder(cy.CycleRecorder):
-    def __init__(self, log, first_read=None):
-        super().__init__(log, first_read)
-        self._spread = float(SETTINGS.get("spread", 0.0))
-        self.zorders = []
-        self._n_z = 0
-        self._n_zo = 0
-        self._ev = None
-        self._zpb_id = None
-        self._zlocked = False
-        self._zbos = False
-        self._zbos_time = None
-        n = int(config.LTF_SWING_N)
-        self._swin = deque(maxlen=2 * n + 1)
-        self._sw_hi = []
-        self._sw_lo = []
-        self._spent = set()
-        self._watch = []
-        self._prev15 = None
-        # --- 1H Continuation Zone stream state ---
-        self._h1_q = []
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._z_bias = {"D1": None, "H4": None}
+        self._z_zones = []
+        self._z_zid = 0
+        self._z_scans = []
+        self._z_ltf_sw = deque(maxlen=40)
+        self._z_seen = {"D1": 0, "H4": 0}
+        self._z_liq = {"H1": deque(maxlen=LIQ_CAP), "H4": deque(maxlen=LIQ_CAP), "D1": deque(maxlen=LIQ_CAP)}
+        self._z_fvg = {"D1": deque(maxlen=60), "H4": deque(maxlen=120), "H1": deque(maxlen=240)}
+        self._z_bars = {"D1": deque(maxlen=40), "H4": deque(maxlen=60), "H1": deque(maxlen=240)}
+        self._z_watch = []
+        self._z_pend = []
+        self._z_filled = []
+        self.zone_orders = []
+        self.zone_skipped = defaultdict(int)
+        self._z_oid = 0
+        # --- H1 continuation stream (additive, strictly isolated from D1/H4) ---
+        self._h1_seen = 0
         self._h1_zones = []
-        self._h1_scan = None
-        self._h1_bos = False
-        self._h1_bos_time = None
-        self._h1_bias = None
-        self._n_h1_scan = 0
-        if _rules():
-            if not (float(SETTINGS.get("pip", 0.0)) > 0.0
-                    and float(SETTINGS.get("spread", 0.0)) > 0.0):
-                raise ValueError("zone rules on: set SETTINGS pip and spread first")
-    def on_bar_close(self, bar, feed):
-        if _on():
-            if bar.tf == self.ltf:
-                self._swings(bar)
-            if _rules() and bar.tf == "M15":
-                if self._prev15 is not None:
-                    self._watch_orders(self._prev15, bar)
-                self._resolve_fills(bar)
-                self._prev15 = bar
-        n0 = len(self.events)
-        super().on_bar_close(bar, feed)
-        if _on() and _rules() and bar.tf == "H1":
-            new_h1 = self.events[n0:]
-            if new_h1:
-                self._h1_q.extend(new_h1)
-    def _swings(self, bar):
-        h = float(bar.high)
-        l = float(bar.low)
-        if self._sw_hi:
-            k = bisect_left(self._sw_hi, h)
-            if k:
-                del self._sw_hi[:k]
-        if self._sw_lo:
-            k = bisect_right(self._sw_lo, l)
-            if k < len(self._sw_lo):
-                del self._sw_lo[k:]
-        self._swin.append((h, l))
-        n = int(config.LTF_SWING_N)
-        if len(self._swin) == 2 * n + 1:
-            highs = [x[0] for x in self._swin]
-            lows = [x[1] for x in self._swin]
-            ch, cl = highs[n], lows[n]
-            if ch == max(highs) and ch > max(highs[:n]) and ch > max(highs[n + 1:]):
-                insort(self._sw_hi, ch)
-            if cl == min(lows) and cl < min(lows[:n]) and cl < min(lows[n + 1:]):
-                insort(self._sw_lo, cl)
-    def _cancel_dist(self):
-        return float(config.ZONE_CANCEL_PIPS) * float(SETTINGS["pip"])
-    def _resolve_fills(self, bar):
-        if not self._watch:
+        self._h1_zid = 0
+        self._h1_scans = []
+        self._h1_pend = []
+
+    def on_bar(self, tf, bar):
+        super().on_bar(tf, bar)
+        if not SETTINGS["enabled"]:
             return
+        if tf in ("D1", "H4", "H1"):
+            self._z_on_htf_bar(tf, bar)
+        if tf in ("D1", "H4"):
+            self._z_on_htf(tf, bar)
+        elif tf == "H1":
+            self._h1_on_bar(bar)
+        elif tf == config.LTF_TF:
+            self._z_on_ltf(bar)
+            self._h1_on_ltf(bar)
+
+    # --- HTF bar / FVG / liquidity tracking ---
+    def _z_on_htf_bar(self, tf, bar):
+        b = {
+            "time": bar.time,
+            "open": float(bar.open),
+            "high": float(bar.high),
+            "low": float(bar.low),
+            "close": float(bar.close),
+        }
+        buf = self._z_bars[tf]
+        buf.append(b)
+        for g in self._z_fvg[tf]:
+            if g["mitigated"]:
+                continue
+            if g["dir"] == "bullish" and b["low"] <= g["top"]:
+                g["mitigated"] = True
+            elif g["dir"] == "bearish" and b["high"] >= g["bottom"]:
+                g["mitigated"] = True
+        if len(buf) >= 3:
+            b0, b1, b2 = buf[-3], buf[-2], buf[-1]
+            atr = self._atr.get(tf) or 0.0
+            min_sz = config.FVG_MIN_SIZE_ATR * atr
+            if b2["low"] - b0["high"] > min_sz:
+                self._z_fvg[tf].append({
+                    "tf": tf, "dir": "bullish", "top": b2["low"], "bottom": b0["high"],
+                    "created_time": b2["time"], "mitigated": False, "ob_candle": b0, "imp_candle": b1,
+                })
+            elif b0["low"] - b2["high"] > min_sz:
+                self._z_fvg[tf].append({
+                    "tf": tf, "dir": "bearish", "top": b0["low"], "bottom": b2["high"],
+                    "created_time": b2["time"], "mitigated": False, "ob_candle": b0, "imp_candle": b1,
+                })
+        for p in self._z_liq[tf]:
+            if p["swept"]:
+                continue
+            if p["side"] == "BSL" and b["high"] > p["price"]:
+                p["swept"] = True
+            elif p["side"] == "SSL" and b["low"] < p["price"]:
+                p["swept"] = True
+        sw_list = self._sw[tf]
+        if sw_list:
+            last = sw_list[-1]
+            pool = self._z_liq[tf]
+            if not pool or pool[-1]["time"] != last["time"] or pool[-1]["type"] != last["type"]:
+                pool.append({
+                    "tf": tf,
+                    "side": "BSL" if last["type"] == "high" else "SSL",
+                    "type": last["type"],
+                    "price": float(last["price"]),
+                    "time": last["time"],
+                    "swept": False,
+                })
+
+    # --- D1 / H4 zone building (impulse leg between consecutive major swings) ---
+    def _z_on_htf(self, tf, bar):
+        sw = self._sw[tf]
+        if len(sw) > self._z_seen[tf]:
+            self._z_seen[tf] = len(sw)
+            if len(sw) >= 2:
+                self._z_build_from_leg(tf, sw[-2], sw[-1], bar.time)
+        n = config.MAJOR_BIAS_FIRST_READ if config.MAJOR_HTF else config.BIAS_FIRST_READ_SWINGS
+        self._z_bias[tf] = htf_bias(sw, float(bar.close), n)
+        b_close = float(bar.close)
+        b_high, b_low = float(bar.high), float(bar.low)
+        for z in self._z_zones:
+            if z["tf"] != tf or z["status"] == "invalidated":
+                continue
+            if z["status"] in ("fresh", "touched") and z["created_time"] < bar.time:
+                if b_low <= z["top"] and b_high >= z["bottom"]:
+                    z["status"] = "touched"
+                    if z["first_touch_time"] is None:
+                        z["first_touch_time"] = bar.time
+            if z["dir"] == "bullish" and b_close < z["bottom"]:
+                z["status"] = "invalidated"
+                if z["kind"] == "ob" and not z.get("flipped") and not SETTINGS["rules"]:
+                    self._z_flip_breaker(z, bar.time)
+            elif z["dir"] == "bearish" and b_close > z["top"]:
+                z["status"] = "invalidated"
+                if z["kind"] == "ob" and not z.get("flipped") and not SETTINGS["rules"]:
+                    self._z_flip_breaker(z, bar.time)
+
+    def _z_build_from_leg(self, tf, s_prev, s_last, confirmed_time):
+        if s_prev["type"] == "low" and s_last["type"] == "high" and s_last["price"] > s_prev["price"]:
+            direction = "bullish"
+        elif s_prev["type"] == "high" and s_last["type"] == "low" and s_last["price"] < s_prev["price"]:
+            direction = "bearish"
+        else:
+            return
+        bars = [b for b in self._z_bars[tf] if s_prev["time"] <= b["time"] <= s_last["time"]]
+        if not bars:
+            return
+        want_opp = "bearish" if direction == "bullish" else "bullish"
+        chosen = None
+        for b in bars:
+            col = "bullish" if b["close"] > b["open"] else ("bearish" if b["close"] < b["open"] else "doji")
+            if col == want_opp:
+                chosen = b
+                break
+        if chosen is None:
+            chosen = bars[0]
+        top, bot = float(chosen["high"]), float(chosen["low"])
+        if top <= bot:
+            return
+        fvg_hit = None
+        for g in self._z_fvg[tf]:
+            if g["dir"] == direction and s_prev["time"] <= g["created_time"] <= s_last["time"]:
+                fvg_hit = g
+                break
+        if SETTINGS["rules"]:
+            if fvg_hit is None:
+                self.zone_skipped["z_no_htf_fvg"] += 1
+                return
+            self._z_add_zone(
+                tf, "ob_fvg", direction, top, bot, confirmed_time,
+                s_prev["price"], s_last["price"], has_fvg=True,
+            )
+            return
+        self._z_add_zone(
+            tf, "ob", direction, top, bot, confirmed_time,
+            s_prev["price"], s_last["price"], has_fvg=(fvg_hit is not None),
+        )
+        if fvg_hit is not None:
+            self._z_add_zone(
+                tf, "fvg", direction, float(fvg_hit["top"]), float(fvg_hit["bottom"]),
+                confirmed_time, s_prev["price"], s_last["price"], has_fvg=True,
+            )
+
+    def _z_add_zone(self, tf, kind, direction, top, bottom, ctime, sp_start, sp_end, has_fvg=False):
+        if top <= bottom:
+            return
+        self._z_zid += 1
+        self._z_zones.append({
+            "id": self._z_zid, "tf": tf, "kind": kind, "dir": direction,
+            "top": top, "bottom": bottom, "created_time": ctime,
+            "status": "fresh", "first_touch_time": None, "used": False, "flipped": False,
+            "has_fvg": has_fvg, "leg_start": float(sp_start), "leg_end": float(sp_end),
+        })
+
+    def _z_flip_breaker(self, z, ctime):
+        z["flipped"] = True
+        new_dir = "bearish" if z["dir"] == "bullish" else "bullish"
+        self._z_add_zone(
+            z["tf"], "breaker", new_dir, z["top"], z["bottom"], ctime,
+            z["leg_start"], z["leg_end"], has_fvg=z["has_fvg"],
+        )
+
+    # --- M15 confirmation inside active D1/H4 zones ---
+    def _z_on_ltf(self, bar):
+        b = {
+            "time": bar.time,
+            "open": float(bar.open),
+            "high": float(bar.high),
+            "low": float(bar.low),
+            "close": float(bar.close),
+        }
+        sw = self._sw[config.LTF_TF]
+        if len(sw) > len(self._z_ltf_sw) or (sw and (not self._z_ltf_sw or sw[-1]["time"] != self._z_ltf_sw[-1]["time"])):
+            self._z_ltf_sw.append(dict(sw[-1]))
+        if SETTINGS["rules"]:
+            self._z_update_orders(b)
+        active_ids = {s["zone"]["id"] for s in self._z_scans}
+        for z in self._z_zones:
+            if z["status"] == "invalidated" or z["used"] or z["id"] in active_ids:
+                continue
+            if z["created_time"] >= b["time"]:
+                continue
+            if not self._z_bias_allows(z):
+                continue
+            if b["low"] <= z["top"] and b["high"] >= z["bottom"]:
+                if z["first_touch_time"] is None:
+                    z["first_touch_time"] = b["time"]
+                    z["status"] = "touched"
+                self._z_scans.append({
+                    "zone": z, "touch_time": b["time"], "choch": None,
+                    "swept": self._z_check_sweep(z, b),
+                })
+                active_ids.add(z["id"])
         keep = []
-        now = bar.close_time
-        spent_now = set()
-        spent_sell_now = set()
-        sym_spent = bool(getattr(config, "SYM_SPENT_ZONE_BOTH", False))
-        for w in self._watch:
-            o = w["o"]
-            zid = o["zone_id"]
-            sell = o["side"] == "sell"
-            is_h1 = (o.get("zone_tf") == "H1")
-            if ((sell or sym_spent) and (zid in self._spent or zid in spent_sell_now)) or (
-                is_h1 and (zid in self._spent or zid in spent_now)
-            ):
-                if o["end_time"] is None:
-                    o["end_time"] = now
-                    o["end_reason"] = "zone_spent"
+        for s in self._z_scans:
+            z = s["zone"]
+            if z["status"] == "invalidated" or z["used"]:
                 continue
-            if w["st"] != "touched":
-                keep.append(w)
+            if not self._z_bias_allows(z):
                 continue
-            fill = float(bar.open)
-            stop = float(o["stop"])
-            if (sell and fill >= stop) or ((not sell) and fill <= stop):
-                self.counts["z_fill_beyond_stop"] += 1
-                continue
-            risk = abs(fill - stop)
-            if float(SETTINGS["spread"]) / risk > float(config.MAX_SPREAD_RISK_RATIO):
-                self.counts["z_fill_skipped_spread"] += 1
-                continue
-            if zid not in self._spent:
-                self._spent.add(zid)
-                self.counts["z_zone_spent"] += 1
-                if is_h1:
-                    self.counts["h1_zone_spent"] += 1
-                self._log("z_spent", now, zone=zid, order=o["id"])
-            spent_now.add(zid)
-            if sell or sym_spent:
-                spent_sell_now.add(zid)
-        if spent_now:
-            still = []
-            for w in keep:
-                o = w["o"]
-                zid = o["zone_id"]
-                is_h1 = (o.get("zone_tf") == "H1")
-                if ((o["side"] == "sell" or sym_spent) and zid in spent_sell_now) or (
-                    is_h1 and zid in spent_now
-                ):
-                    if o["end_time"] is None:
-                        o["end_time"] = now
-                        o["end_reason"] = "zone_spent"
+            if not s["swept"] and self._z_check_sweep(z, b):
+                s["swept"] = True
+            if s["choch"] is None:
+                ch = self._z_detect_choch(z["dir"], s["touch_time"], b)
+                if ch is not None:
+                    s["choch"] = ch
+                    self._z_try_emit(s, b)
+                    if z["used"]:
+                        continue
+            keep.append(s)
+        self._z_scans = keep
+        self._z_step_watches(b)
+
+    def _z_update_orders(self, b):
+        still_p = []
+        for p in self._z_pend:
+            if p["side"] == "buy" and b["low"] <= p["entry"]:
+                p["fill_time"] = b["time"]
+                self._z_filled.append(p)
+            elif p["side"] == "sell" and b["high"] >= p["entry"]:
+                p["fill_time"] = b["time"]
+                self._z_filled.append(p)
+            else:
+                if abs(b["close"] - p["entry"]) <= config.ZONE_CANCEL_PIPS * SETTINGS["pip"]:
+                    still_p.append(p)
+        self._z_pend = still_p
+        still_f = []
+        for f in self._z_filled:
+            if f["side"] == "buy":
+                if b["low"] <= f["stop"] or b["high"] >= f["target"]:
                     continue
-                still.append(w)
-            keep = still
-            if (self.state == cy.SCAN and self._scan is not None
-                    and self._scan["zone"]["id"] in spent_sell_now):
-                sc = self._scan
-                for s in sc.get("zsetups", []):
-                    s["br"] = "none"
-                    s["ob"] = "none"
-                self._zend(sc, now, "zone_spent")
-            if self._h1_scan is not None and self._h1_scan["zone"]["id"] in spent_now:
-                hsc = self._h1_scan
-                for s in hsc.get("zsetups", []):
-                    s["br"] = "none"
-                    s["ob"] = "none"
-                self._h1_end(hsc, now, "zone_spent")
-                self._h1_scan = None
-        self._watch = keep
-    def _watch_orders(self, p, arrival):
-        if not self._watch:
-            return
-        pclose = p.close_time
-        cancel = self._cancel_dist()
-        keep = []
-        for w in self._watch:
-            if w["st"] != "pending":
-                keep.append(w)
-                continue
-            o = w["o"]
-            if pclose <= o["placed_time"]:
-                keep.append(w)
-                continue
-            if (o.get("zone_tf") == "H1" and o["end_time"] is None
-                    and pclose - o["placed_time"] >= H1_ORDER_EXPIRY):
-                o["end_time"] = pclose
-                o["end_reason"] = "h1_expired_24h"
-                self.counts["h1_orders_expired_24h"] += 1
-                continue
-            end = o["end_time"]
-            if end is not None:
-                if o["end_reason"] == "ceiling_break":
-                    live = pclose <= end
-                else:
-                    live = pclose < end
-                if not live:
+            else:
+                if b["high"] >= f["stop"] or b["low"] <= f["target"]:
                     continue
-            sell = o["side"] == "sell"
-            entry = float(o["entry"])
-            if (end is None or end > pclose) and cancel > 0.0:
-                if sell:
-                    ran = float(p.low) <= entry - cancel
-                else:
-                    ran = float(p.high) >= entry + cancel
-                if ran:
-                    o["end_time"] = pclose
-                    o["end_reason"] = "ran_away"
-                    self.counts["z_ran_away"] += 1
-                    self._log("z_ran_away", arrival.close_time,
-                              order=o["id"], zone=o["zone_id"])
+            still_f.append(f)
+        self._z_filled = still_f
+
+    def _z_bias_allows(self, z):
+        want = z["dir"]
+        d1, h4 = self._z_bias["D1"], self._z_bias["H4"]
+        if z["tf"] == "D1":
+            return d1 == want
+        return h4 == want and (d1 == want or d1 in (None, "neutral"))
+
+    def _z_check_sweep(self, z, b):
+        want_side = "SSL" if z["dir"] == "bullish" else "BSL"
+        for tf in ("H1", "H4", "D1"):
+            for p in self._z_liq[tf]:
+                if p["side"] != want_side or p["time"] >= b["time"]:
                     continue
-            touched = float(p.high) >= entry if sell else float(p.low) <= entry
-            if touched:
-                w["st"] = "touched"
-                keep.append(w)
-            elif end is None or pclose < end:
-                keep.append(w)
-        self._watch = keep
-    def _freeze_zones(self):
-        if not _rules():
-            return super()._freeze_zones()
-        buy_zone = self.ctx["zone_side"] == "buy"
-        out = []
-        for tf in ("D1", "H4"):
-            for p in self.books[tf].usable(self.ctx["zone_side"], include_used=True):
-                if p.id in self._spent:
-                    self.counts["z_spent_skipped"] += 1
-                    continue
-                z = self._refine(p, buy_zone)
-                # Phase 2 diagnostic: check if clean H1 base refinement exists inside HTF zone
-                side_str = "buy" if buy_zone else "sell"
-                dummy_c = defaultdict(int)
-                h1_cand = ag.pick_h1_base(
-                    self.books["H1"], side_str, p.candle_time, p.born_time, p, dummy_c
-                )
-                z["h1_cand"] = h1_cand
-                if bool(getattr(config, "ZONE_H1_REFINEMENT", False)) and h1_cand is not None:
-                    z["low"] = float(h1_cand.low)
-                    z["high"] = float(h1_cand.high)
-                    z["refined_h1"] = True
-                else:
-                    z["refined_h1"] = False
-                out.append(z)
-        return out
-    def _zone_touched(self, bar):
-        if not _rules():
-            return super()._zone_touched(bar)
-        up = self.ctx["up"]
-        best = None
-        for z in self._pb["zones"]:
-            if z["poi"].state not in ("fresh", "used") or z["id"] in self._spent:
-                continue
-            if up:
-                hit = bar.low <= z["high"]
-                near = z["high"]
-            else:
-                hit = bar.high >= z["low"]
-                near = z["low"]
-            if hit and (best is None or (near > best[0] if up else near < best[0])):
-                best = (near, z)
-        return best[1] if best is not None else None
-    def _on_m15(self, bar, ev):
-        self._ev = ev
-        super()._on_m15(bar, ev)
-        if _on() and _rules() and self.ltf == "M15" and bool(getattr(config, "H1_STREAM_ENABLED", True)):
-            self._h1_step(bar, ev, bar.close_time)
-    def _start_pullback(self, bar, ev, now):
-        unlock_sell = _rules() and (not self.ctx["up"])
-        self._zbos = unlock_sell
-        self._zbos_time = ev["time"] if unlock_sell else None
-        super()._start_pullback(bar, ev, now)
-    def _pull_step(self, bar, ev, now):
-        if _on() and self._pb is not None:
-            self._zpb_id = self._pb["id"]
-            self._zlocked = bool(self._pb["locked"])
-        super()._pull_step(bar, ev, now)
-    def _on_bos(self, ev, now):
-        if _on():
-            self._mark_bos(ev, now)
-        super()._on_bos(ev, now)
-    def _on_choch_other(self, now):
-        if _on() and self._zbos and (not _rules() or self.ctx["up"]):
-            self.counts["z_bos_cleared_by_choch"] += 1
-            self._zbos = False
-            self._zbos_time = None
-        super()._on_choch_other(now)
-    def _check_bias(self, now):
-        if (_on() and self.state == cy.SCAN and self._scan is not None
-                and htf_bias(self.bias["D1"], self.bias["H4"]) != self.ctx["bias"]):
-            self._zend(self._scan, now, "bias_lost")
-        super()._check_bias(now)
-    def _mark_bos(self, ev, now):
-        self._zbos = True
-        self._zbos_time = ev["time"]
-        self.counts["z_bos_seen"] += 1
-        self._log("z_bos", now, direction=ev["direction"])
-    def _scan_step(self, bar, now):
-        if not _on():
-            return super()._scan_step(bar, now)
-        sc = self._scan
-        if "zorders" not in sc:
-            sc["zorders"] = []
-            sc["zsetups"] = []
-            sc["pb_id"] = self._zpb_id
-            sc["locked"] = self._zlocked
-            sc["touch_time"] = now
-            self.counts["z_scan"] += 1
-            z = sc["zone"]
-            self._log("z_touch", now, pb=sc["pb_id"], zone=z["id"], zone_tf=z["tf"],
-                      zone_low=float(z["low"]), zone_high=float(z["high"]),
-                      ceiling=float(sc["ceiling"]), bos_seen=bool(self._zbos))
-        super()._scan_step(bar, now)
-        if self._scan is None:
-            why = "ceiling_break" if self.state == cy.ARMED else "zone_far_break"
-            self._zend(sc, now, why)
-            return
-        sym_spent = bool(getattr(config, "SYM_SPENT_ZONE_BOTH", False))
-        if _rules() and ((not self.ctx["up"]) or sym_spent) and sc["zone"]["id"] in self._spent:
-            return
-        for s in sc["zsetups"]:
-            if s["br"] == "wait":
-                self._z_try_breaker(s, sc, bar, now)
-            if s["ob"] == "wait_sweep":
-                self._z_try_ob(s, sc, bar, now)
-        self._z_event(sc, bar, now)
-    def _z_event(self, sc, bar, now):
-        ev = self._ev
-        if ev is None:
-            return
-        lab = ev["label"]
-        d = ev["direction"]
-        c = self.ctx
-        if lab == "BOS" and d == c["choch_dir"]:
-            self._mark_bos(ev, now)
-        elif lab == "CHoCH" and d == c["other_dir"]:
-            if self._zbos:
-                self._z_new_choch(sc, bar, ev, now)
-            else:
-                self.counts["z_choch_no_bos"] += 1
-            if not c["up"]:
-                self._zbos = False
-                self._zbos_time = None
-        elif lab == "BOS" and d == c["other_dir"]:
-            for s in sc["zsetups"]:
-                if s["ob"] == "wait_bos" and s["choch_time"] < ev["time"]:
-                    p = cy._num(ev["last_opposite_price"])
-                    if p is None:
-                        s["ob"] = "none"
-                        self.counts["z_ob_no_idm"] += 1
-                    else:
-                        s["idm"] = p
-                        s["ob"] = "wait_sweep"
-                        self.counts["z_idm_set"] += 1
-        elif lab == "CHoCH" and d == c["choch_dir"]:
-            if _rules() and (not c["up"]):
-                self._mark_bos(ev, now)
-            for s in sc["zsetups"]:
-                if s["ob"] == "wait_bos":
-                    s["ob"] = "none"
-                    self.counts["z_ob_no_bos"] += 1
-    def _z_new_choch(self, sc, bar, ev, now):
-        self._n_z += 1
-        box = self._choch_poi(ev)
-        breaker = self.books[self.ltf].choch_breaker.get(ev["time"])
-        tsell = not self.ctx["up"]
-        disp_atr, close_pct = self._compute_choch_disp(bar, ev, tsell)
-        s = {"id": f"{sc['pb_id']}-Z{self._n_z}", "choch_time": ev["time"],
-             "choch_level": cy._num(ev["broken_swing_price"]), "box": box,
-             "breaker": breaker, "br": "none", "ob": "none", "idm": None,
-             "idm_sweep_time": None, "bos_time": self._zbos_time,
-             "disp_body_atr": disp_atr, "disp_close_pct": close_pct}
-        sc["zsetups"].append(s)
-        self.counts["z_setups"] += 1
-        self._log("z_setup", now, setup=s["id"], choch_level=float(s["choch_level"] or 0.0))
-        # Note: under rules=True on M15, both skip_br_buy and skip_br_sell are True (zone breakers disabled)
-        skip_br_buy = _rules() and self.ltf == "M15" and self.ctx["up"]
-        skip_br_sell = _rules() and (not self.ctx["up"])
-        if breaker is None:
-            self.counts["z_no_breaker"] += 1
-        elif skip_br_buy:
-            self.counts["z_breaker_buy_skipped"] += 1
-        elif skip_br_sell:
-            self.counts["z_breaker_sell_skipped"] += 1
-        else:
-            s["br"] = "wait"
-            self._z_try_breaker(s, sc, bar, now)
-        if box is None:
-            self.counts["z_no_choch_box"] += 1
-        else:
-            s["ob"] = "wait_bos"
-    def _z_try_breaker(self, s, sc, bar, now):
-        p = s["breaker"]
-        if p.state != "dead":
-            return
-        s["br"] = "none"
-        self._zplace(s, sc, "breaker", p, bar, now)
-    def _z_try_ob(self, s, sc, bar, now):
-        tsell = not self.ctx["up"]
-        box = s["box"]
-        if box.state == "dead":
-            s["ob"] = "none"
-            self.counts["z_ob_box_dead"] += 1
-            return
-        idm = s["idm"]
-        swept = bar.high > idm if tsell else bar.low < idm
-        if not swept:
-            return
-        s["ob"] = "none"
-        s["idm_sweep_time"] = now
-        if box.state != "fresh" and not bool(config.TRADE_USED_POIS):
-            self.counts["z_ob_box_used"] += 1
-            return
-        near = box.low if tsell else box.high
-        touched = bar.high >= near if tsell else bar.low <= near
-        if touched:
-            self.counts["z_ob_same_bar"] += 1
-            if (not tsell) or bool(getattr(config, "SYM_SAME_BAR_SKIP_BOTH", False)):
-                return
-        self._zplace(s, sc, "ob", box, bar, now)
-    def _liq(self, entry, ceiling, tsell):
-        if tsell:
-            lo = self._sw_lo
-            a = bisect_left(lo, ceiling)
-            b = bisect_left(lo, entry)
-            return [float(x) for x in reversed(lo[a:b])][:LIQ_CAP]
-        hi = self._sw_hi
-        a = bisect_right(hi, entry)
-        b = bisect_right(hi, ceiling)
-        return [float(x) for x in hi[a:b]][:LIQ_CAP]
-    def _zplace(self, s, sc, kind, p, bar, now):
-        tsell = not self.ctx["up"]
-        atr = self.atr.value_at(p.candle_time)
-        if atr is None:
-            self.counts["z_" + kind + "_no_atr"] += 1
-            return None
-        entry = p.low if tsell else p.high
-        edge = p.high if tsell else p.low
-        ahead = bar.close < entry if tsell else bar.close > entry
-        if not ahead:
-            self.counts["z_" + kind + "_entry_not_ahead"] += 1
-            return None
-        buf = float(config.STOP_BUFFER_ATR) * float(atr)
-        raw_stop = edge + buf if tsell else edge - buf
-        stop = raw_stop
-        min_risk_padded = False
-        if self._spread > 0.0:
-            min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
-            if abs(entry - stop) < min_risk:
-                if bool(getattr(config, "SKIP_MIN_RISK_PADDED", False)):
-                    self.counts["z_" + kind + "_min_risk_skipped"] += 1
-                    return None
-                stop = entry + min_risk if tsell else entry - min_risk
-                min_risk_padded = True
-                self.counts["z_" + kind + "_min_risk_padded"] += 1
-        ceiling = float(sc["ceiling"])
-        z = sc["zone"]
-        risk = abs(float(entry) - float(stop))
-        dest_room_r = (abs(ceiling - float(entry)) / risk) if risk > 0 else None
-        # Dealing range position: distance from ceiling to HTF zone far edge (100% = at zone far edge)
-        z_far = float(z["high"]) if tsell else float(z["low"])
-        span = abs(ceiling - z_far)
-        deal_pct = None
-        if span > 0:
-            deal_pct = ((float(entry) - ceiling) / span * 100.0) if tsell else ((ceiling - float(entry)) / span * 100.0)
-        h1_cand = z.get("h1_cand")
-        h1_refined_ok = False
-        if h1_cand is not None:
-            if tsell:
-                h1_refined_ok = float(entry) >= float(h1_cand.low)
-            else:
-                h1_refined_ok = float(entry) <= float(h1_cand.high)
-        fvg_overlap = self._check_ob_fvg_overlap(p, now, tsell)
-        ny_hour, killzone = cy._ny_killzone(now)
-        if bool(getattr(config, "ZONE_REQUIRE_DISCOUNT_PREMIUM", False)) and deal_pct is not None:
-            if deal_pct < 50.0:
-                self.counts["z_deal_half_skipped"] += 1
-                return None
-        if bool(getattr(config, "KILLZONE_ONLY", False)) and killzone == "Outside_KZ":
-            self.counts["z_outside_kz_skipped"] += 1
-            return None
-        self._n_zo += 1
-        order = {"id": f"ZO{self._n_zo}", "pullback": sc["pb_id"], "setup": s["id"],
-                 "variant": "plain", "kind": kind, "leg": "zone",
-                 "side": "sell" if tsell else "buy",
-                 "htf_bias": self.ctx["bias"],
-                 "placed_time": now, "entry": float(entry), "stop": float(stop),
-                 "raw_stop": float(raw_stop), "min_risk_padded": bool(min_risk_padded),
-                 "stop_edge": float(edge), "box_low": float(p.low),
-                 "box_high": float(p.high), "box_time": p.candle_time,
-                 "atr": float(atr),
-                 "ceiling": ceiling, "ceiling_locked": bool(sc["locked"]),
-                 "end_time": None, "end_reason": None,
-                 "liq": self._liq(entry, ceiling, tsell),
-                 "bos_time": s["bos_time"], "zone_touch_time": sc["touch_time"],
-                 "zone_tf": z["tf"], "zone_low": float(z["low"]),
-                 "zone_high": float(z["high"]), "choch_time": s["choch_time"],
-                 "choch_level": s["choch_level"],
-                 "idm_level": cy._num(s.get("idm")),
-                 "idm_sweep_time": s.get("idm_sweep_time"),
-                 "zone_id": z["id"],
-                 "dest_room_r": dest_room_r,
-                 "opp_h1_in_path": False,
-                 "deal_pct": deal_pct,
-                 "local_ote_pct": None,
-                 "fvg_overlap": bool(fvg_overlap),
-                 "sweep_reclaim": True,
-                 "disp_body_atr": s.get("disp_body_atr"),
-                 "disp_close_pct": s.get("disp_close_pct"),
-                 "ny_hour": ny_hour,
-                 "killzone": killzone,
-                 "h1_refined_ok": bool(h1_refined_ok)}
-        sc["zorders"].append(order)
-        self.zorders.append(order)
-        if _rules():
-            self._watch.append({"o": order, "st": "pending"})
-        self.counts["z_orders_" + kind] += 1
-        self._log("z_order", now, id=order["id"], order_kind=kind, side=order["side"],
-                  entry=order["entry"], stop=order["stop"], setup=s["id"],
-                  liq_n=len(order["liq"]))
-        return order
-    def _zend(self, sc, now, reason):
-        n = 0
-        for o in sc.get("zorders", []):
-            if o["end_time"] is None:
-                o["end_time"] = now
-                o["end_reason"] = reason
-                n += 1
-        self.counts["z_end_" + reason] += 1
-        self._log("z_end", now, reason=reason, cancelled=n)
-    # =========================================================================
-    # 1H Continuation Zone Stream (Addition 1 + Addition 2: Persistent HTF Trend)
-    # =========================================================================
-    def _h1_step(self, bar, ev, now):
-        hb = htf_bias(self.bias["D1"], self.bias["H4"])
-        q, self._h1_q = self._h1_q, []
-        if hb not in ("bull", "bear"):
-            if self._h1_scan is not None:
-                self._h1_end(self._h1_scan, now, "bias_lost")
-                self._h1_scan = None
-            self._h1_zones = []
-            self._h1_bos = False
-            self._h1_bos_time = None
-            self._h1_bias = None
-            return
-        if self._h1_bias != hb:
-            if self._h1_scan is not None:
-                self._h1_end(self._h1_scan, now, "bias_lost")
-                self._h1_scan = None
-            self._h1_zones = []
-            self._h1_bos = False
-            self._h1_bos_time = None
-            self._h1_bias = hb
-        up = (hb == "bull")
-        htf_dir = "up" if up else "down"
-        zone_side = "buy" if up else "sell"
-        choch_dir = "down" if up else "up"
-        for hev in q:
-            if hev["label"] == "BOS" and hev["direction"] == htf_dir:
-                self.counts["h1_bos_aligned"] += 1
-                pois = self.books["H1"].pois
-                if (pois and pois[-1].origin == "BOS"
-                        and pois[-1].born_time == hev["time"]
-                        and pois[-1].side == zone_side
-                        and pois[-1].state == "fresh"):
-                    p = pois[-1]
-                    c_init = (
-                        max(float(hev["close"]), float(hev["broken_swing_price"] or hev["close"]))
-                        if up else
-                        min(float(hev["close"]), float(hev["broken_swing_price"] or hev["close"]))
-                    )
-                    z = {"id": p.id, "tf": "H1", "poi": p,
-                         "low": float(p.low), "high": float(p.high),
-                         "born_time": hev["time"], "ceiling": c_init}
-                    self._h1_zones.append(z)
-                    self.counts["h1_zones_born"] += 1
-        alive_zones = []
-        for z in self._h1_zones:
-            if z["poi"].state == "dead" or z["id"] in self._spent:
-                continue
-            if now - z["born_time"] > H1_ZONE_MAX_AGE:
-                self.counts["h1_zone_expired_48h"] += 1
-                continue
-            if up and float(bar.high) > z["ceiling"]:
-                z["ceiling"] = float(bar.high)
-            elif (not up) and float(bar.low) < z["ceiling"]:
-                z["ceiling"] = float(bar.low)
-            alive_zones.append(z)
-        self._h1_zones = alive_zones
-        if ev is not None:
-            if ev["label"] in ("BOS", "CHoCH") and ev["direction"] == choch_dir:
-                self._h1_bos = True
-                self._h1_bos_time = ev["time"]
-        if self._h1_scan is None:
-            touched_z = self._h1_zone_touched(bar, up, now)
-            if touched_z is not None:
-                self._n_h1_scan += 1
-                self._h1_scan = {
-                    "zone": touched_z,
-                    "ceiling": float(touched_z["ceiling"]),
-                    "locked": True,
-                    "pb_id": f"H1C{self._n_h1_scan}",
-                    "touch_time": now,
-                    "zorders": [],
-                    "zsetups": [],
-                }
-                self.counts["h1_scan"] += 1
-                self._log("h1_touch", now, pb=self._h1_scan["pb_id"],
-                          zone=touched_z["id"], zone_tf="H1",
-                          zone_low=float(touched_z["low"]),
-                          zone_high=float(touched_z["high"]),
-                          ceiling=float(touched_z["ceiling"]))
-        if self._h1_scan is not None:
-            self._h1_scan_step(bar, ev, now, up)
-    def _h1_zone_touched(self, bar, up, now):
-        best = None
-        for z in self._h1_zones:
-            if z["poi"].state != "fresh" or z["id"] in self._spent:
-                continue
-            if now <= z["born_time"]:
-                continue
-            if up:
-                hit = float(bar.low) <= z["high"]
-                near = z["high"]
-            else:
-                hit = float(bar.high) >= z["low"]
-                near = z["low"]
-            if hit and (best is None or (near > best[0] if up else near < best[0])):
-                best = (near, z)
-        return best[1] if best is not None else None
-    def _h1_scan_step(self, bar, ev, now, up):
-        sc = self._h1_scan
-        z = sc["zone"]
-        if now - sc["touch_time"] > H1_SCAN_MAX_DURATION and not sc["zorders"]:
-            self.counts["h1_scan_expired_24h"] += 1
-            self._h1_end(sc, now, "scan_expired_24h")
-            self._h1_scan = None
-            return
-        if not sc["zorders"]:
-            max_run = 0.5 * self._cancel_dist()
-            run_limit = (float(z["high"]) + max_run) if up else (float(z["low"]) - max_run)
-            if max_run > 0.0 and cy._beyond(bar.close, run_limit, up):
-                self.counts["h1_scan_ceiling_break"] += 1
-                self._h1_end(sc, now, "ceiling_break")
-                self._h1_scan = None
-                return
-            if up and float(bar.high) > sc["ceiling"]:
-                sc["ceiling"] = float(bar.high)
-            elif (not up) and float(bar.low) < sc["ceiling"]:
-                sc["ceiling"] = float(bar.low)
-        else:
-            if cy._beyond(bar.close, sc["ceiling"], up):
-                self.counts["h1_scan_ceiling_break"] += 1
-                self._h1_end(sc, now, "ceiling_break")
-                self._h1_scan = None
-                return
-        far = z["low"] if up else z["high"]
-        if cy._beyond(bar.close, far, not up) or z["poi"].state == "dead":
-            z["poi"].state = "dead"
-            self.counts["h1_scan_far_break"] += 1
-            self._h1_end(sc, now, "zone_far_break")
-            self._h1_scan = None
-            return
-        if z["id"] in self._spent:
-            self._h1_end(sc, now, "zone_spent")
-            self._h1_scan = None
-            return
-        for s in sc["zsetups"]:
-            if s["ob"] == "wait_sweep":
-                self._h1_try_ob(s, sc, bar, now, up)
-        if ev is None:
-            return
-        lab = ev["label"]
-        d = ev["direction"]
-        choch_dir = "down" if up else "up"
-        other_dir = "up" if up else "down"
-        if lab == "BOS" and d == choch_dir:
-            self._h1_bos = True
-            self._h1_bos_time = ev["time"]
-        elif lab == "CHoCH" and d == other_dir:
-            if self.state == cy.SCAN and self._scan is not None and self._zbos:
-                self.counts["h1_duplicate_with_htf_zone_skipped"] += 1
-                return
-            if self._h1_bos and self._h1_bos_time is not None:
-                self._h1_new_choch(sc, bar, ev, now, up)
-            else:
-                self.counts["h1_choch_no_bos"] += 1
-            if not up:
-                self._h1_bos = False
-                self._h1_bos_time = None
-        elif lab == "BOS" and d == other_dir:
-            for s in sc["zsetups"]:
-                if s["ob"] == "wait_bos" and s["choch_time"] < ev["time"]:
-                    p = cy._num(ev["last_opposite_price"])
-                    if p is None:
-                        s["ob"] = "none"
-                        self.counts["h1_ob_no_idm"] += 1
-                    else:
-                        s["idm"] = p
-                        s["ob"] = "wait_sweep"
-                        self.counts["h1_idm_set"] += 1
-        elif lab == "CHoCH" and d == choch_dir:
-            self._h1_bos = True
-            self._h1_bos_time = ev["time"]
-            for s in sc["zsetups"]:
-                if s["ob"] == "wait_bos":
-                    s["ob"] = "none"
-                    self.counts["h1_ob_no_bos"] += 1
-    def _h1_new_choch(self, sc, bar, ev, now, up):
-        self._n_z += 1
-        box = self._choch_poi(ev)
-        tsell = not up
-        disp_atr, close_pct = self._compute_choch_disp(bar, ev, tsell)
-        s = {"id": f"{sc['pb_id']}-Z{self._n_z}", "choch_time": ev["time"],
-             "choch_level": cy._num(ev["broken_swing_price"]), "box": box,
-             "breaker": None, "br": "none", "ob": "none", "idm": None,
-             "idm_sweep_time": None, "bos_time": self._h1_bos_time,
-             "disp_body_atr": disp_atr, "disp_close_pct": close_pct}
-        sc["zsetups"].append(s)
-        self.counts["h1_setups"] += 1
-        self._log("h1_setup", now, setup=s["id"], choch_level=float(s["choch_level"] or 0.0))
-        if box is None:
-            self.counts["h1_no_choch_box"] += 1
-        else:
-            s["ob"] = "wait_bos"
-    def _h1_try_ob(self, s, sc, bar, now, up):
-        tsell = not up
-        box = s["box"]
-        if box.state == "dead":
-            s["ob"] = "none"
-            self.counts["h1_ob_box_dead"] += 1
-            return
-        idm = s["idm"]
-        swept = bar.high > idm if tsell else bar.low < idm
-        if not swept:
-            return
-        s["ob"] = "none"
-        s["idm_sweep_time"] = now
-        if box.state != "fresh" and not bool(config.TRADE_USED_POIS):
-            self.counts["h1_ob_box_used"] += 1
-            return
-        near = box.low if tsell else box.high
-        touched = bar.high >= near if tsell else bar.low <= near
-        if touched:
-            self.counts["h1_ob_same_bar"] += 1
-            if (not tsell) or bool(getattr(config, "SYM_SAME_BAR_SKIP_BOTH", False)):
-                return
-        self._h1_place(s, sc, "ob", box, bar, now, up)
-    def _h1_blocked_by_opposing_htf_zone(self, entry, risk, tsell):
-        need = float(H1_OPPOSING_HTF_MIN_R) * risk
-        opp_side = "buy" if tsell else "sell"
-        for tf in ("D1", "H4"):
-            for p in self.books[tf].usable(opp_side, include_used=True):
-                if tsell:
-                    if float(p.high) < entry and (entry - float(p.high)) < need:
-                        return True
-                else:
-                    if float(p.low) > entry and (float(p.low) - entry) < need:
+                if z["bottom"] <= p["price"] <= z["top"]:
+                    if (want_side == "SSL" and b["low"] < p["price"]) or (want_side == "BSL" and b["high"] > p["price"]):
                         return True
         return False
-    def _h1_place(self, s, sc, kind, p, bar, now, up):
-        tsell = not up
-        if now.hour < 6:
-            self.counts["h1_asian_skipped"] += 1
+
+    def _z_detect_choch(self, direction, touch_time, b):
+        want_type = "high" if direction == "bullish" else "low"
+        ref = None
+        for s in reversed(self._z_ltf_sw):
+            if s["type"] == want_type and s["time"] <= b["time"]:
+                ref = s
+                break
+        if ref is None:
             return None
-        atr = self.atr.value_at(p.candle_time)
-        if atr is None:
-            self.counts["h1_" + kind + "_no_atr"] += 1
-            return None
-        entry = p.low if tsell else p.high
-        edge = p.high if tsell else p.low
-        ahead = bar.close < entry if tsell else bar.close > entry
-        if not ahead:
-            self.counts["h1_" + kind + "_entry_not_ahead"] += 1
-            return None
-        box_w = float(p.high) - float(p.low)
-        if box_w < 0.25 * float(atr) or box_w > 1.75 * float(atr):
-            self.counts["h1_ob_box_size_filtered"] += 1
-            return None
-        if s.get("idm") is not None:
-            idm_dist = (float(entry) - float(s["idm"])) if tsell else (float(s["idm"]) - float(entry))
-            if idm_dist < 0.50 * float(atr):
-                self.counts["h1_ob_idm_too_close"] += 1
-                return None
-        buf = float(config.STOP_BUFFER_ATR) * float(atr)
-        raw_stop = edge + buf if tsell else edge - buf
-        stop = raw_stop
-        min_risk_padded = False
-        if self._spread > 0.0:
-            min_risk = (self._spread / float(config.MAX_SPREAD_RISK_RATIO)) * 1.0001
-            if abs(entry - stop) < min_risk:
-                if bool(getattr(config, "SKIP_MIN_RISK_PADDED", False)):
-                    self.counts["h1_" + kind + "_min_risk_skipped"] += 1
-                    return None
-                stop = entry + min_risk if tsell else entry - min_risk
-                min_risk_padded = True
-                self.counts["h1_" + kind + "_min_risk_padded"] += 1
-        risk = abs(float(entry) - float(stop))
-        if risk > 0 and self._h1_blocked_by_opposing_htf_zone(float(entry), risk, tsell):
-            self.counts["h1_blocked_opposing_htf_zone"] += 1
-            return None
-        ceiling = float(sc["ceiling"])
-        z = sc["zone"]
-        dest_room_r = (abs(ceiling - float(entry)) / risk) if risk > 0 else None
-        z_far = float(z["high"]) if tsell else float(z["low"])
-        span = abs(ceiling - z_far)
-        deal_pct = ((float(entry) - ceiling) / span * 100.0) if (span > 0 and tsell) else (
-            ((ceiling - float(entry)) / span * 100.0) if span > 0 else None
+        if direction == "bullish" and b["close"] > ref["price"]:
+            return {"dir": "bullish", "level": ref["price"], "time": b["time"], "ref_time": ref["time"]}
+        if direction == "bearish" and b["close"] < ref["price"]:
+            return {"dir": "bearish", "level": ref["price"], "time": b["time"], "ref_time": ref["time"]}
+        return None
+
+    def _z_try_emit(self, s, b):
+        z = s["zone"]
+        ch = s["choch"]
+        direction = z["dir"]
+        sell = direction == "bearish"
+        ltf_bars = list(self._ltf)
+        if not ltf_bars:
+            return
+        idx_ch = len(ltf_bars) - 1
+        idx_start = max(0, idx_ch - 20)
+        for i in range(idx_ch, -1, -1):
+            if ltf_bars[i]["time"] <= ch["ref_time"]:
+                idx_start = i
+                break
+        leg_bars = ltf_bars[idx_start:idx_ch + 1]
+        atr_ltf = self._atr.get(config.LTF_TF) or 0.0
+        fvgs = cy.leg_fvgs(leg_bars, direction, atr_ltf)
+        idm_swept = self._z_has_idm(direction, s["touch_time"], b["time"], ltf_bars, idx_start, idx_ch)
+        if not idm_swept and not fvgs:
+            self.zone_skipped["z_no_idm_no_fvg"] += 1
+            return
+        ob = cy.find_ob(ltf_bars, idx_start, idx_ch, direction)
+        if ob is None:
+            self.zone_skipped["z_no_ltf_ob"] += 1
+            return
+        if SETTINGS["rules"] and not sell and b["low"] <= float(ob["high"]):
+            self.zone_skipped["z_ob_touched_same_bar"] += 1
+            return
+        if getattr(config, "SYM_SAME_BAR_SKIP_BOTH", False) and sell and b["high"] >= float(ob["low"]):
+            self.zone_skipped["z_ob_touched_same_bar"] += 1
+            return
+
+        # --- Phase 2: Check if entry sits inside a clean H1 base inside the D1/H4 zone ---
+        h1_bars_list = list(self._z_bars["H1"])
+        h1_sw_list = list(self._sw["H1"])
+        h1_atr = self._atr.get("H1") or 0.0
+        h1_base = ag.pick_h1_base(
+            h1_bars_list, h1_sw_list, z["created_time"], b["time"],
+            "sell" if sell else "buy", h1_atr,
         )
-        fvg_overlap = self._check_ob_fvg_overlap(p, now, tsell)
-        ny_hour, killzone = cy._ny_killzone(now)
-        self._n_zo += 1
-        order = {"id": f"ZO{self._n_zo}", "pullback": sc["pb_id"], "setup": s["id"],
-                 "variant": "plain", "kind": kind, "leg": "zone",
-                 "side": "sell" if tsell else "buy",
-                 "htf_bias": "bull" if up else "bear",
-                 "placed_time": now, "entry": float(entry), "stop": float(stop),
-                 "raw_stop": float(raw_stop), "min_risk_padded": bool(min_risk_padded),
-                 "stop_edge": float(edge), "box_low": float(p.low),
-                 "box_high": float(p.high), "box_time": p.candle_time,
-                 "atr": float(atr),
-                 "ceiling": ceiling, "ceiling_locked": True,
-                 "end_time": None, "end_reason": None,
-                 "liq": self._liq(entry, ceiling, tsell),
-                 "bos_time": s["bos_time"], "zone_touch_time": sc["touch_time"],
-                 "zone_tf": "H1", "zone_low": float(z["low"]),
-                 "zone_high": float(z["high"]), "choch_time": s["choch_time"],
-                 "choch_level": s["choch_level"],
-                 "idm_level": cy._num(s.get("idm")),
-                 "idm_sweep_time": s.get("idm_sweep_time"),
-                 "zone_id": z["id"],
-                 "dest_room_r": dest_room_r,
-                 "opp_h1_in_path": False,
-                 "deal_pct": deal_pct,
-                 "local_ote_pct": None,
-                 "fvg_overlap": bool(fvg_overlap),
-                 "sweep_reclaim": True,
-                 "disp_body_atr": s.get("disp_body_atr"),
-                 "disp_close_pct": s.get("disp_close_pct"),
-                 "ny_hour": ny_hour,
-                 "killzone": killzone,
-                 "h1_refined_ok": True}
-        sc["zorders"].append(order)
-        self.zorders.append(order)
-        if _rules():
-            self._watch.append({"o": order, "st": "pending"})
-        self.counts["z_orders_" + kind] += 1
-        self.counts["h1_orders_" + kind] += 1
-        self._log("z_order", now, id=order["id"], order_kind=kind, side=order["side"],
-                  entry=order["entry"], stop=order["stop"], setup=s["id"],
-                  zone_tf="H1", liq_n=len(order["liq"]))
-        return order
-    def _h1_end(self, sc, now, reason):
-        n = 0
-        for o in sc.get("zorders", []):
-            if o["end_time"] is None:
-                o["end_time"] = now
-                o["end_reason"] = reason
-                n += 1
-        self.counts["h1_end_" + reason] += 1
-        self._log("h1_end", now, reason=reason, cancelled=n)
+        in_h1_base = False
+        if h1_base is not None:
+            hb_lo, hb_hi = float(h1_base[0]), float(h1_base[1])
+            ob_mid = 0.5 * (float(ob["high"]) + float(ob["low"]))
+            if hb_lo <= ob_mid <= hb_hi:
+                in_h1_base = True
+        if getattr(config, "ZONE_H1_REFINEMENT", False) and not in_h1_base:
+            self.zone_skipped["z_not_in_h1_base"] += 1
+            return
+
+        # --- Phase 3: Compute D1/H4 Zone Dealing Range Location ---
+        leg_lo = min(float(z["leg_start"]), float(z["leg_end"]))
+        leg_hi = max(float(z["leg_start"]), float(z["leg_end"]))
+        leg_rng = leg_hi - leg_lo
+        ob_entry_est = float(ob["low"]) if sell else float(ob["high"])
+        if leg_rng > 1e-9:
+            deal_pct = ((leg_hi - ob_entry_est) / leg_rng * 100.0) if not sell else ((ob_entry_est - leg_lo) / leg_rng * 100.0)
+        else:
+            deal_pct = 50.0
+        if getattr(config, "ZONE_REQUIRE_DISCOUNT_PREMIUM", False) and deal_pct < 50.0:
+            self.zone_skipped["z_not_discount_premium"] += 1
+            return
+
+        fvg_ov = _fvg_overlaps_ob(fvgs, ob["high"], ob["low"])
+        ch_body = abs(float(b["close"]) - float(b["open"]))
+        disp_atr = (ch_body / atr_ltf) if atr_ltf > 1e-9 else 0.0
+        ch_rng = float(b["high"]) - float(b["low"])
+        disp_close_pct = ((float(b["close"]) - float(b["low"])) / ch_rng) if (not sell and ch_rng > 1e-9) else (
+            ((float(b["high"]) - float(b["close"])) / ch_rng) if (sell and ch_rng > 1e-9) else 0.5
+        )
+
+        meta = {
+            "in_h1_base": in_h1_base,
+            "deal_pct": round(deal_pct, 2),
+            "local_ote_pct": round(deal_pct, 2),
+            "fvg_overlap": bool(fvg_ov),
+            "sweep_reclaim": bool(s["swept"]),
+            "disp_body_atr": round(disp_atr, 3),
+            "disp_close_pct": round(disp_close_pct, 3),
+        }
+
+        z["used"] = True
+        self._z_emit_pair(
+            z, "ob", direction, float(ob["high"]), float(ob["low"]),
+            b["time"], s["swept"], idm_swept, bool(fvgs), meta=meta,
+        )
+        self._z_watch.append({
+            "zone": z, "dir": direction, "top": float(ob["high"]), "bottom": float(ob["low"]),
+            "born": b["time"], "swept": s["swept"], "idm": idm_swept, "fvg": bool(fvgs),
+            "meta": meta,
+        })
+
+    def _z_has_idm(self, direction, touch_time, now_time, ltf_bars, idx_start, idx_ch):
+        want_type = "low" if direction == "bullish" else "high"
+        for s in self._z_ltf_sw:
+            if s["type"] != want_type or s["time"] < touch_time or s["time"] >= now_time:
+                continue
+            for b in ltf_bars[idx_start:idx_ch + 1]:
+                if b["time"] <= s["time"]:
+                    continue
+                if direction == "bullish" and b["low"] < s["price"]:
+                    return True
+                if direction == "bearish" and b["high"] > s["price"]:
+                    return True
+        return False
+
+    def _z_step_watches(self, b):
+        if SETTINGS["rules"]:
+            self._z_watch = []
+            return
+        keep = []
+        for w in self._z_watch:
+            if w["dir"] == "bullish" and b["close"] < w["bottom"]:
+                self._z_emit_pair(
+                    w["zone"], "breaker", "bearish", w["top"], w["bottom"],
+                    b["time"], w["swept"], w["idm"], w["fvg"], meta=w.get("meta"),
+                )
+            elif w["dir"] == "bearish" and b["close"] > w["top"]:
+                self._z_emit_pair(
+                    w["zone"], "breaker", "bullish", w["top"], w["bottom"],
+                    b["time"], w["swept"], w["idm"], w["fvg"], meta=w.get("meta"),
+                )
+            else:
+                keep.append(w)
+        self._z_watch = keep
+
+    # --- Emit both static 3R and liquidity-targeted orders for a confirmed setup ---
+    def _z_emit_pair(self, z, kind, direction, ob_top, ob_bot, placed_time, swept, idm, has_fvg, meta=None):
+        meta = meta or {}
+        ny_h, kz = _ny_killzone_info(placed_time)
+        if getattr(config, "KILLZONE_ONLY", False) and kz == "Outside_KZ":
+            self.zone_skipped["z_outside_killzone"] += 1
+            return
+        if SETTINGS["rules"]:
+            side_now = "sell" if direction == "bearish" else "buy"
+            if any(p["side"] == side_now for p in self._z_pend):
+                self.zone_skipped["z_dup_pending_side"] += 1
+                return
+            if any(f["side"] == side_now for f in self._z_filled):
+                self.zone_skipped["z_open_trade_side"] += 1
+                return
+        sell = direction == "bearish"
+        spread = float(SETTINGS["spread"])
+        atr_h1 = self._atr.get("H1") or 0.0
+        buf = config.STOP_BUFFER_ATR * atr_h1
+        if sell:
+            entry = ob_bot
+            stop = ob_top + buf + spread
+            risk = stop - entry
+        else:
+            entry = ob_top + spread
+            stop = ob_bot - buf
+            risk = entry - stop
+        if risk <= 0:
+            self.zone_skipped["z_bad_risk"] += 1
+            return
+        min_risk = (spread / config.MAX_SPREAD_RISK_RATIO) * 1.0001 if spread > 0 else 0.0
+        min_risk_padded = False
+        if risk < min_risk:
+            if getattr(config, "SKIP_MIN_RISK_PADDED", False):
+                self.zone_skipped["z_ob_min_risk_skipped"] += 1
+                return
+            if sell:
+                stop = entry + min_risk
+            else:
+                stop = entry - min_risk
+            risk = min_risk
+            min_risk_padded = True
+            self.zone_skipped["z_ob_min_risk_padded"] += 1
+        t_static = entry - config.RR_STATIC * risk if sell else entry + config.RR_STATIC * risk
+        if SETTINGS["rules"] and not self._z_room_ok(direction, entry, risk, z["id"]):
+            self.zone_skipped["z_opposing_zone_blocks_3r"] += 1
+            return
+        self._z_oid += 1
+        base = {
+            "order_id": f"Z_{self._z_oid}", "leg": "zone", "kind": kind,
+            "side": "sell" if sell else "buy", "placed_time": placed_time,
+            "entry": entry, "stop": stop, "zone_id": z["id"], "zone_tf": z["tf"],
+            "zone_kind": z["kind"], "zone_top": z["top"], "zone_bottom": z["bottom"],
+            "zone_created": z["created_time"], "liq_swept": swept, "idm_swept": idm,
+            "has_fvg": has_fvg,
+            "min_risk_padded": min_risk_padded,
+            "in_h1_base": meta.get("in_h1_base", False),
+            "deal_pct": meta.get("deal_pct", 50.0),
+            "local_ote_pct": meta.get("local_ote_pct", 50.0),
+            "fvg_overlap": meta.get("fvg_overlap", has_fvg),
+            "sweep_reclaim": meta.get("sweep_reclaim", swept),
+            "disp_body_atr": meta.get("disp_body_atr", 0.0),
+            "disp_close_pct": meta.get("disp_close_pct", 0.5),
+            "ny_hour": ny_h,
+            "killzone": kz,
+        }
+        o_static = dict(base, target=t_static, target_mode="static", target_r=config.RR_STATIC, liq_tf=None)
+        self.zone_orders.append(o_static)
+        if SETTINGS["rules"]:
+            self._z_pend.append({
+                "side": o_static["side"], "entry": entry, "stop": stop,
+                "target": t_static, "placed_time": placed_time,
+            })
+        liq = self._z_pick_liquidity_target(direction, entry, risk)
+        if liq is not None:
+            t_liq, r_liq, ltf = liq
+            self.zone_orders.append(dict(base, order_id=f"Z_{self._z_oid}L", target=t_liq, target_mode="liquidity", target_r=r_liq, liq_tf=ltf))
+        else:
+            self.zone_skipped["z_no_liq_target_3r"] += 1
+
+    def _z_room_ok(self, direction, entry, risk, own_id):
+        req = H1_OPPOSING_HTF_MIN_R * risk
+        opp_dir = "bearish" if direction == "bullish" else "bullish"
+        for z in self._z_zones:
+            if z["id"] == own_id or z["status"] == "invalidated" or z["dir"] != opp_dir:
+                continue
+            if direction == "bullish" and z["bottom"] > entry and (z["bottom"] - entry) < req:
+                return False
+            if direction == "bearish" and z["top"] < entry and (entry - z["top"]) < req:
+                return False
+        return True
+
+    def _z_pick_liquidity_target(self, direction, entry, risk):
+        want_side = "BSL" if direction == "bullish" else "SSL"
+        best = None
+        for tf in ("H1", "H4", "D1"):
+            for p in self._z_liq[tf]:
+                if p["swept"] or p["side"] != want_side:
+                    continue
+                dist = (p["price"] - entry) if direction == "bullish" else (entry - p["price"])
+                r = dist / risk
+                if r < config.MIN_TARGET_R:
+                    continue
+                if best is None or dist < best[0]:
+                    best = (dist, p["price"], r, tf)
+        if best is None:
+            return None
+        return best[1], best[2], best[3]
+
+    # ==================================================================
+    # H1 CONTINUATION STREAM (additive; only runs when SETTINGS["rules"])
+    # ==================================================================
+    def _h1_on_bar(self, bar):
+        if not SETTINGS["rules"] or not getattr(config, "H1_STREAM_ENABLED", True):
+            return
+        sw = self._sw["H1"]
+        if len(sw) > self._h1_seen:
+            self._h1_seen = len(sw)
+            if len(sw) >= 2:
+                self._h1_build_from_leg(sw[-2], sw[-1], bar.time)
+        b_close = float(bar.close)
+        b_high, b_low = float(bar.high), float(bar.low)
+        for z in self._h1_zones:
+            if z["status"] == "invalidated":
+                continue
+            if (bar.time - z["created_time"]) > H1_ZONE_MAX_AGE:
+                z["status"] = "invalidated"
+                continue
+            if z["status"] == "fresh" and z["created_time"] < bar.time:
+                if b_low <= z["top"] and b_high >= z["bottom"]:
+                    z["status"] = "touched"
+                    if z["first_touch_time"] is None:
+                        z["first_touch_time"] = bar.time
+            if z["dir"] == "bullish" and b_close < z["bottom"]:
+                z["status"] = "invalidated"
+            elif z["dir"] == "bearish" and b_close > z["top"]:
+                z["status"] = "invalidated"
+
+    def _h1_build_from_leg(self, s_prev, s_last, confirmed_time):
+        if s_prev["type"] == "low" and s_last["type"] == "high" and s_last["price"] > s_prev["price"]:
+            direction = "bullish"
+        elif s_prev["type"] == "high" and s_last["type"] == "low" and s_last["price"] < s_prev["price"]:
+            direction = "bearish"
+        else:
+            return
+        bars = [b for b in self._z_bars["H1"] if s_prev["time"] <= b["time"] <= s_last["time"]]
+        if not bars:
+            return
+        want_opp = "bearish" if direction == "bullish" else "bullish"
+        chosen = None
+        for b in bars:
+            col = "bullish" if b["close"] > b["open"] else ("bearish" if b["close"] < b["open"] else "doji")
+            if col == want_opp:
+                chosen = b
+                break
+        if chosen is None:
+            chosen = bars[0]
+        top, bot = float(chosen["high"]), float(chosen["low"])
+        if top <= bot:
+            return
+        fvg_hit = None
+        for g in self._z_fvg["H1"]:
+            if g["dir"] == direction and s_prev["time"] <= g["created_time"] <= s_last["time"]:
+                fvg_hit = g
+                break
+        if fvg_hit is None:
+            self.zone_skipped["h1_no_fvg"] += 1
+            return
+        self._h1_zid += 1
+        self._h1_zones.append({
+            "id": self._h1_zid, "tf": "H1", "kind": "ob_fvg", "dir": direction,
+            "top": top, "bottom": bot, "created_time": confirmed_time,
+            "status": "fresh", "first_touch_time": None, "used": False,
+            "has_fvg": True, "leg_start": float(s_prev["price"]), "leg_end": float(s_last["price"]),
+        })
+
+    def _h1_bias_allows(self, z):
+        want = z["dir"]
+        return self._z_bias["D1"] == want and self._z_bias["H4"] == want
+
+    def _h1_inside_parent_zone(self, z):
+        for pz in self._z_zones:
+            if pz["status"] == "invalidated" or pz["dir"] != z["dir"]:
+                continue
+            if pz["bottom"] <= z["top"] and pz["top"] >= z["bottom"]:
+                return True
+        return False
+
+    def _h1_on_ltf(self, bar):
+        if not SETTINGS["rules"] or not getattr(config, "H1_STREAM_ENABLED", True):
+            return
+        b = {
+            "time": bar.time,
+            "open": float(bar.open),
+            "high": float(bar.high),
+            "low": float(bar.low),
+            "close": float(bar.close),
+        }
+        self._h1_update_pend(b)
+        active_ids = {s["zone"]["id"] for s in self._h1_scans}
+        for z in self._h1_zones:
+            if z["status"] == "invalidated" or z["used"] or z["id"] in active_ids:
+                continue
+            if z["created_time"] >= b["time"]:
+                continue
+            if (b["time"] - z["created_time"]) > H1_ZONE_MAX_AGE:
+                z["status"] = "invalidated"
+                continue
+            if not self._h1_bias_allows(z):
+                continue
+            if self._h1_inside_parent_zone(z):
+                continue
+            if b["low"] <= z["top"] and b["high"] >= z["bottom"]:
+                if z["first_touch_time"] is None:
+                    z["first_touch_time"] = b["time"]
+                    z["status"] = "touched"
+                self._h1_scans.append({
+                    "zone": z, "touch_time": b["time"], "choch": None,
+                    "swept": self._z_check_sweep(z, b),
+                })
+                active_ids.add(z["id"])
+        keep = []
+        for s in self._h1_scans:
+            z = s["zone"]
+            if z["status"] == "invalidated" or z["used"]:
+                continue
+            if (b["time"] - s["touch_time"]) > H1_SCAN_MAX_DURATION:
+                z["used"] = True
+                self.zone_skipped["h1_scan_expired"] += 1
+                continue
+            if not self._h1_bias_allows(z):
+                continue
+            if not s["swept"] and self._z_check_sweep(z, b):
+                s["swept"] = True
+            if s["choch"] is None:
+                ch = self._z_detect_choch(z["dir"], s["touch_time"], b)
+                if ch is not None:
+                    s["choch"] = ch
+                    self._h1_try_emit(s, b)
+                    if z["used"]:
+                        continue
+            keep.append(s)
+        self._h1_scans = keep
+
+    def _h1_update_pend(self, b):
+        still = []
+        for p in self._h1_pend:
+            if (b["time"] - p["placed_time"]) > H1_ORDER_EXPIRY:
+                continue
+            if p["side"] == "buy" and b["low"] <= p["entry"]:
+                self._z_filled.append(dict(p, fill_time=b["time"]))
+            elif p["side"] == "sell" and b["high"] >= p["entry"]:
+                self._z_filled.append(dict(p, fill_time=b["time"]))
+            else:
+                if abs(b["close"] - p["entry"]) <= config.ZONE_CANCEL_PIPS * SETTINGS["pip"]:
+                    still.append(p)
+        self._h1_pend = still
+
+    def _h1_try_emit(self, s, b):
+        z = s["zone"]
+        ch = s["choch"]
+        direction = z["dir"]
+        sell = direction == "bearish"
+        ltf_bars = list(self._ltf)
+        if not ltf_bars:
+            return
+        idx_ch = len(ltf_bars) - 1
+        idx_start = max(0, idx_ch - 20)
+        for i in range(idx_ch, -1, -1):
+            if ltf_bars[i]["time"] <= ch["ref_time"]:
+                idx_start = i
+                break
+        leg_bars = ltf_bars[idx_start:idx_ch + 1]
+        atr_ltf = self._atr.get(config.LTF_TF) or 0.0
+        fvgs = cy.leg_fvgs(leg_bars, direction, atr_ltf)
+        idm_swept = self._z_has_idm(direction, s["touch_time"], b["time"], ltf_bars, idx_start, idx_ch)
+        if not idm_swept or not fvgs:
+            self.zone_skipped["h1_need_idm_and_fvg"] += 1
+            return
+        ob = cy.find_ob(ltf_bars, idx_start, idx_ch, direction)
+        if ob is None:
+            self.zone_skipped["h1_no_ltf_ob"] += 1
+            return
+        if b["low"] <= float(ob["high"]) and b["high"] >= float(ob["low"]):
+            self.zone_skipped["h1_ob_touched_same_bar"] += 1
+            return
+        side_now = "sell" if sell else "buy"
+        if any(p["side"] == side_now for p in self._z_pend) or any(p["side"] == side_now for p in self._h1_pend):
+            self.zone_skipped["h1_dup_pending_side"] += 1
+            return
+        if any(f["side"] == side_now for f in self._z_filled):
+            self.zone_skipped["h1_open_trade_side"] += 1
+            return
+
+        ny_h, kz = _ny_killzone_info(b["time"])
+        if getattr(config, "KILLZONE_ONLY", False) and kz == "Outside_KZ":
+            self.zone_skipped["h1_outside_killzone"] += 1
+            return
+
+        spread = float(SETTINGS["spread"])
+        atr_h1 = self._atr.get("H1") or 0.0
+        buf = config.STOP_BUFFER_ATR * atr_h1
+        ob_top, ob_bot = float(ob["high"]), float(ob["low"])
+        if sell:
+            entry = ob_bot
+            stop = ob_top + buf + spread
+            risk = stop - entry
+        else:
+            entry = ob_top + spread
+            stop = ob_bot - buf
+            risk = entry - stop
+        if risk <= 0:
+            self.zone_skipped["h1_bad_risk"] += 1
+            return
+        min_risk = (spread / config.MAX_SPREAD_RISK_RATIO) * 1.0001 if spread > 0 else 0.0
+        min_risk_padded = False
+        if risk < min_risk:
+            if getattr(config, "SKIP_MIN_RISK_PADDED", False):
+                self.zone_skipped["h1_ob_min_risk_skipped"] += 1
+                return
+            stop = (entry + min_risk) if sell else (entry - min_risk)
+            risk = min_risk
+            min_risk_padded = True
+            self.zone_skipped["h1_ob_min_risk_padded"] += 1
+        t_static = entry - config.RR_STATIC * risk if sell else entry + config.RR_STATIC * risk
+        if not self._z_room_ok(direction, entry, risk, -1):
+            self.zone_skipped["h1_opposing_zone_blocks_3r"] += 1
+            return
+
+        leg_lo = min(float(z["leg_start"]), float(z["leg_end"]))
+        leg_hi = max(float(z["leg_start"]), float(z["leg_end"]))
+        leg_rng = leg_hi - leg_lo
+        if leg_rng > 1e-9:
+            deal_pct = ((leg_hi - entry) / leg_rng * 100.0) if not sell else ((entry - leg_lo) / leg_rng * 100.0)
+        else:
+            deal_pct = 50.0
+        fvg_ov = _fvg_overlaps_ob(fvgs, ob_top, ob_bot)
+        ch_body = abs(float(b["close"]) - float(b["open"]))
+        disp_atr = (ch_body / atr_ltf) if atr_ltf > 1e-9 else 0.0
+        ch_rng = float(b["high"]) - float(b["low"])
+        disp_close_pct = ((float(b["close"]) - float(b["low"])) / ch_rng) if (not sell and ch_rng > 1e-9) else (
+            ((float(b["high"]) - float(b["close"])) / ch_rng) if (sell and ch_rng > 1e-9) else 0.5
+        )
+
+        z["used"] = True
+        self._z_oid += 1
+        exp_time = b["time"] + H1_ORDER_EXPIRY
+        base = {
+            "order_id": f"Z_{self._z_oid}", "leg": "zone", "kind": "ob",
+            "side": side_now, "placed_time": b["time"], "expiry_time": exp_time,
+            "entry": entry, "stop": stop, "zone_id": z["id"], "zone_tf": "H1",
+            "zone_kind": z["kind"], "zone_top": z["top"], "zone_bottom": z["bottom"],
+            "zone_created": z["created_time"], "liq_swept": s["swept"], "idm_swept": True,
+            "has_fvg": True,
+            "min_risk_padded": min_risk_padded,
+            "in_h1_base": True,
+            "deal_pct": round(deal_pct, 2),
+            "local_ote_pct": round(deal_pct, 2),
+            "fvg_overlap": bool(fvg_ov),
+            "sweep_reclaim": bool(s["swept"]),
+            "disp_body_atr": round(disp_atr, 3),
+            "disp_close_pct": round(disp_close_pct, 3),
+            "ny_hour": ny_h,
+            "killzone": kz,
+        }
+        self.zone_orders.append(dict(base, target=t_static, target_mode="static", target_r=config.RR_STATIC, liq_tf=None))
+        self._h1_pend.append({
+            "side": side_now, "entry": entry, "stop": stop,
+            "target": t_static, "placed_time": b["time"],
+        })
+        liq = self._z_pick_liquidity_target(direction, entry, risk)
+        if liq is not None:
+            t_liq, r_liq, ltf = liq
+            self.zone_orders.append(dict(base, order_id=f"Z_{self._z_oid}L", target=t_liq, target_mode="liquidity", target_r=r_liq, liq_tf=ltf))
