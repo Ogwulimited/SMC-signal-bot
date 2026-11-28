@@ -75,7 +75,7 @@ SPREAD_PRICE = {
     "nzdcad": 0.00020,
     "nzdchf": 0.00020,
     "cadjpy": 0.020,
-    "cadchf": 0.020,
+    "cadchf": 0.00020,
     "chfjpy": 0.020,
 }
 MAX_SPREAD_RISK_RATIO = 0.15
@@ -115,18 +115,20 @@ ZONE_CANCEL_PIPS = 150         # cancel a pending zone order if price runs this 
 # ======================================================================
 # --- Phase 1: Trade Management Ladder ---
 # Options:
-#   "legacy"   : Baseline asymmetric BE@2.0R (only PB OB Sell & H1 Zone)
-#   "be_10"    : Symmetric BE@1.0R across all Zone & Pullback trades (full 3R target)
-#   "be_15"    : Symmetric BE@1.5R across all Zone & Pullback trades (full 3R target)
-#   "be_20"    : Symmetric BE@2.0R across all Zone & Pullback trades (full 3R target)
-#   "be_25"    : Symmetric BE@2.5R across all Zone & Pullback trades (full 3R target)
-#   "be10_p20" : Symmetric BE@1.0R + 50% Partial at +2.0R, 50% runner to +3.0R
-#   "p15_be"   : 50% Partial at +1.5R + BE@1.5R, 50% runner to +3.0R
-#   "be15_p20" : Symmetric BE@1.5R + 50% Partial at +2.0R, 50% runner to +3.0R
-#   "p20_be"   : 50% Partial at +2.0R + BE@2.0R, 50% runner to +3.0R
-#   "be20_p25" : Symmetric BE@2.0R + 50% Partial at +2.5R, 50% runner to +3.0R
-#   "p25_be"   : 50% Partial at +2.5R + BE@2.5R, 50% runner to +3.0R
-MANAGEMENT_MODE = "legacy"
+#   "legacy"       : Baseline asymmetric BE@2.0R (only PB OB Sell & H1 Zone)
+#   "pb_ob_be20"   : Stream BE@2.0R on PB OB (Buy+Sell) & H1 Zone; D1/H4 & Breakers un-choked
+#   "pb_ob_be20_25": Stream BE@2.0R on PB OB Buy & H1 Zone, BE@2.5R on PB OB Sell; D1/H4 & Breakers un-choked
+#   "be_10"        : Symmetric BE@1.0R across all Zone & Pullback trades (full 3R target)
+#   "be_15"        : Symmetric BE@1.5R across all Zone & Pullback trades (full 3R target)
+#   "be_20"        : Symmetric BE@2.0R across all Zone & Pullback trades (full 3R target)
+#   "be_25"        : Symmetric BE@2.5R across all Zone & Pullback trades (full 3R target)
+#   "be10_p20"     : Symmetric BE@1.0R + 50% Partial at +2.0R, 50% runner to +3.0R
+#   "p15_be"       : 50% Partial at +1.5R + BE@1.5R, 50% runner to +3.0R
+#   "be15_p20"     : Symmetric BE@1.5R + 50% Partial at +2.0R, 50% runner to +3.0R
+#   "p20_be"       : 50% Partial at +2.0R + BE@2.0R, 50% runner to +3.0R
+#   "be20_p25"     : Symmetric BE@2.0R + 50% Partial at +2.5R, 50% runner to +3.0R
+#   "p25_be"       : 50% Partial at +2.5R + BE@2.5R, 50% runner to +3.0R
+MANAGEMENT_MODE = "pb_ob_be20"
 # --- Phase 2: Stop Hygiene, H1 Zone Refinement & Destination Room ---
 SKIP_MIN_RISK_PADDED = False       # True = skip tight-stop orders that fail spread ratio instead of padding stop
 ZONE_H1_REFINEMENT = False         # True = refine D1/H4 zones down to clean H1 POI in zone.py
@@ -137,6 +139,7 @@ PB_BLOCK_OPPOSING_H1_PATH = False  # True = skip pullback if a fresh opposing H1
 ZONE_REQUIRE_DISCOUNT_PREMIUM = False  # True = Zone Buy in lower 50% (Discount), Zone Sell in upper 50% (Premium)
 PB_REQUIRE_DISCOUNT_PREMIUM = False    # True = Pullback entry must be >= 50% into dealing range
 PB_REQUIRE_OTE = False                 # True = Pullback entry must be in >= 62% OTE zone
+PB_MAX_LOCAL_OTE_PCT = 0.0             # > 0.0 = skip Pullback orders with local_ote_pct > threshold (e.g. 79.0)
 PB_REQUIRE_FVG_OVERLAP = False         # True = M15 OB must overlap an M15 FVG
 PB_REQUIRE_SWEEP_RECLAIM = False       # True = Impulse ceiling must sweep & reclaim a prior liquidity level
 PB_MIN_DISP_BODY_ATR = 0.0             # > 0.0 = require CHoCH displacement candle body >= X * ATR
