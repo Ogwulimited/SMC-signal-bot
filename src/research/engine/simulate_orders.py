@@ -30,28 +30,30 @@ LIQ_MIN_R = 3.0
 BE_TRIGGER_R = 2.0
 
 MGMT_PRESETS = {
-    "legacy":   {"mode": "legacy", "be_r": 2.0,   "part_r": None,  "part_f": 0.0},
-    "be_10":    {"mode": "all",    "be_r": 1.0,   "part_r": None,  "part_f": 0.0},
-    "be_15":    {"mode": "all",    "be_r": 1.5,   "part_r": None,  "part_f": 0.0},
-    "be_20":    {"mode": "all",    "be_r": 2.0,   "part_r": None,  "part_f": 0.0},
-    "be_25":    {"mode": "all",    "be_r": 2.5,   "part_r": None,  "part_f": 0.0},
-    "be10_p20": {"mode": "all",    "be_r": 1.0,   "part_r": 2.0,   "part_f": 0.5},
-    "p15_be":   {"mode": "all",    "be_r": 1.5,   "part_r": 1.5,   "part_f": 0.5},
-    "be15_p20": {"mode": "all",    "be_r": 1.5,   "part_r": 2.0,   "part_f": 0.5},
-    "p20_be":   {"mode": "all",    "be_r": 2.0,   "part_r": 2.0,   "part_f": 0.5},
-    "be20_p25": {"mode": "all",    "be_r": 2.0,   "part_r": 2.5,   "part_f": 0.5},
-    "p25_be":   {"mode": "all",    "be_r": 2.5,   "part_r": 2.5,   "part_f": 0.5},
+    "legacy":        {"mode": "legacy",      "be_r": 2.0,   "part_r": None,  "part_f": 0.0},
+    "pb_ob_be20":    {"mode": "pb_ob_h1",    "be_r": 2.0,   "part_r": None,  "part_f": 0.0},
+    "pb_ob_be20_25": {"mode": "pb_ob_20_25", "be_r": 2.0,   "part_r": None,  "part_f": 0.0},
+    "be_10":         {"mode": "all",         "be_r": 1.0,   "part_r": None,  "part_f": 0.0},
+    "be_15":         {"mode": "all",         "be_r": 1.5,   "part_r": None,  "part_f": 0.0},
+    "be_20":         {"mode": "all",         "be_r": 2.0,   "part_r": None,  "part_f": 0.0},
+    "be_25":         {"mode": "all",         "be_r": 2.5,   "part_r": None,  "part_f": 0.0},
+    "be10_p20":      {"mode": "all",         "be_r": 1.0,   "part_r": 2.0,   "part_f": 0.5},
+    "p15_be":        {"mode": "all",         "be_r": 1.5,   "part_r": 1.5,   "part_f": 0.5},
+    "be15_p20":      {"mode": "all",         "be_r": 1.5,   "part_r": 2.0,   "part_f": 0.5},
+    "p20_be":        {"mode": "all",         "be_r": 2.0,   "part_r": 2.0,   "part_f": 0.5},
+    "be20_p25":      {"mode": "all",         "be_r": 2.0,   "part_r": 2.5,   "part_f": 0.5},
+    "p25_be":        {"mode": "all",         "be_r": 2.5,   "part_r": 2.5,   "part_f": 0.5},
     # +/- 25% perturbation grid around BE@1.0, BE@1.5, BE@2.0, BE@2.5, and partials
-    "be_075":   {"mode": "all",    "be_r": 0.75,  "part_r": None,  "part_f": 0.0},
-    "be_1125":  {"mode": "all",    "be_r": 1.125, "part_r": None,  "part_f": 0.0},
-    "be_125":   {"mode": "all",    "be_r": 1.25,  "part_r": None,  "part_f": 0.0},
-    "be_1875":  {"mode": "all",    "be_r": 1.875, "part_r": None,  "part_f": 0.0},
-    "p15_lo":   {"mode": "all",    "be_r": 1.125, "part_r": 1.125, "part_f": 0.5},
-    "p15_hi":   {"mode": "all",    "be_r": 1.875, "part_r": 1.875, "part_f": 0.5},
-    "p20_lo":   {"mode": "all",    "be_r": 1.50,  "part_r": 1.50,  "part_f": 0.5},
-    "p20_hi":   {"mode": "all",    "be_r": 2.50,  "part_r": 2.50,  "part_f": 0.5},
-    "p25_lo":   {"mode": "all",    "be_r": 1.875, "part_r": 1.875, "part_f": 0.5},
-    "p25_hi":   {"mode": "all",    "be_r": 2.80,  "part_r": 2.80,  "part_f": 0.5},
+    "be_075":        {"mode": "all",         "be_r": 0.75,  "part_r": None,  "part_f": 0.0},
+    "be_1125":       {"mode": "all",         "be_r": 1.125, "part_r": None,  "part_f": 0.0},
+    "be_125":        {"mode": "all",         "be_r": 1.25,  "part_r": None,  "part_f": 0.0},
+    "be_1875":       {"mode": "all",         "be_r": 1.875, "part_r": None,  "part_f": 0.0},
+    "p15_lo":        {"mode": "all",         "be_r": 1.125, "part_r": 1.125, "part_f": 0.5},
+    "p15_hi":        {"mode": "all",         "be_r": 1.875, "part_r": 1.875, "part_f": 0.5},
+    "p20_lo":        {"mode": "all",         "be_r": 1.50,  "part_r": 1.50,  "part_f": 0.5},
+    "p20_hi":        {"mode": "all",         "be_r": 2.50,  "part_r": 2.50,  "part_f": 0.5},
+    "p25_lo":        {"mode": "all",         "be_r": 1.875, "part_r": 1.875, "part_f": 0.5},
+    "p25_hi":        {"mode": "all",         "be_r": 2.80,  "part_r": 2.80,  "part_f": 0.5},
 }
 
 _EXTRA_CONFLUENCE_COLS = (
@@ -77,6 +79,7 @@ TRADE_COLS = [
 
 _COPY = ("pullback", "setup", "variant", "kind", "side", "placed_time", "end_time",
          "end_reason", "ceiling", "ceiling_locked", "entry", "stop")
+
 _ZONE_COPY = ("bos_time", "zone_touch_time", "zone_tf", "zone_low", "zone_high",
               "choch_time", "choch_level", "htf_bias", "box_low", "box_high",
               "box_time", "idm_level", "idm_sweep_time")
@@ -103,6 +106,32 @@ def _liq_target(o, fill, risk, sell):
         if (sell and c < fill) or ((not sell) and c > fill):
             return c, "ceiling"
     return None, None
+
+
+def _resolve_be(spec, leg, sell, o):
+    """Resolve (use_be, be_trig_r) for stream-selective or all-card management presets."""
+    m = spec.get("mode", "all")
+    if m == "legacy":
+        use_be = (
+            (leg == "pullback" and sell and o["kind"] == "ob")
+            or (leg == "zone" and o.get("zone_tf") == "H1")
+        )
+        return use_be, float(BE_TRIGGER_R)
+    if m == "pb_ob_h1":
+        use_be = (
+            (leg == "pullback" and o["kind"] == "ob")
+            or (leg == "zone" and o.get("zone_tf") == "H1")
+        )
+        return use_be, 2.0
+    if m == "pb_ob_20_25":
+        if (leg == "pullback" and (not sell) and o["kind"] == "ob") or (
+            leg == "zone" and o.get("zone_tf") == "H1"
+        ):
+            return True, 2.0
+        if leg == "pullback" and sell and o["kind"] == "ob":
+            return True, 2.5
+        return False, None
+    return True, spec.get("be_r")
 
 
 def _eval_path(h, l, op, fill, stop, target, risk, sc, sell, limit, open_fill,
@@ -298,7 +327,6 @@ def simulate_order(o, a, spread, pair, mode="static"):
         rec[k] = o.get(k)
     for k in _EXTRA_CONFLUENCE_COLS:
         rec[k] = o.get(k)
-
     n = len(a["o"])
     entry = float(o["entry"])
     stop = float(o["stop"])
@@ -311,7 +339,6 @@ def simulate_order(o, a, spread, pair, mode="static"):
     else:
         e = int(a["close_t"].searchsorted(end, side="left"))
     e = min(max(e, s), n)
-
     touch = None
     if e > s:
         seg = (a["h"][s:e] >= entry) if sell else (a["l"][s:e] <= entry)
@@ -320,7 +347,6 @@ def simulate_order(o, a, spread, pair, mode="static"):
     if touch is None:
         rec["status"] = "unfilled_open" if end is None else "unfilled_cancelled"
         return rec
-
     rec["touch_time"] = a["close_t"][touch]
     open_fill = False
     if limit:
@@ -334,13 +360,11 @@ def simulate_order(o, a, spread, pair, mode="static"):
             rec["status"] = "unfilled_open"
             return rec
         fill = float(a["o"][f])
-
     rec["fill_time"] = a["open_t"][f]
     rec["fill_price"] = fill
     if (sell and fill >= stop) or ((not sell) and fill <= stop):
         rec["status"] = "fill_beyond_stop"
         return rec
-
     risk = abs(fill - stop)
     sc = float(spread) / risk
     rec["risk_r"] = risk
@@ -348,7 +372,6 @@ def simulate_order(o, a, spread, pair, mode="static"):
     if sc > float(config.MAX_SPREAD_RISK_RATIO):
         rec["status"] = "skipped_spread"
         return rec
-
     if mode == "liquidity":
         target, tkind = _liq_target(o, fill, risk, sell)
         if target is None:
@@ -359,45 +382,36 @@ def simulate_order(o, a, spread, pair, mode="static"):
         rr = float(config.RR_STATIC) if rr is None else float(rr)
         target = fill - rr * risk if sell else fill + rr * risk
         tkind = "static"
-
     rec["target_price"] = target
     rec["target_kind"] = tkind
     rec["target_r"] = abs(target - fill) / risk
     rec["status"] = "filled"
-
     h = a["h"][f:]
     l = a["l"][f:]
     op = a["o"][f:]
-
-    legacy_use_be = (
-        (leg == "pullback" and sell and o["kind"] == "ob")
-        or (leg == "zone" and o.get("zone_tf") == "H1")
-    )
-
+    legacy_use_be, legacy_be_r = _resolve_be(MGMT_PRESETS["legacy"], leg, sell, o)
     # Evaluate Legacy baseline first
     res_leg = _eval_path(
         h, l, op, fill, stop, target, risk, sc, sell, limit, open_fill,
-        legacy_use_be, float(BE_TRIGGER_R), None, 0.0
+        legacy_use_be, legacy_be_r, None, 0.0
     )
     rec["r_legacy"] = res_leg["net_r"]
     rec["out_legacy"] = res_leg["outcome"]
-
     # Evaluate all Management Ladder presets on static target plays
     if mode == "static":
         for k, spec in MGMT_PRESETS.items():
             if k == "legacy":
                 continue
+            k_use_be, k_be_r = _resolve_be(spec, leg, sell, o)
             r_k = _eval_path(
                 h, l, op, fill, stop, target, risk, sc, sell, limit, open_fill,
-                True, spec["be_r"], spec["part_r"], spec["part_f"]
+                k_use_be, k_be_r, spec["part_r"], spec["part_f"]
             )
             rec[f"r_{k}"] = r_k["net_r"]
             rec[f"out_{k}"] = r_k["outcome"]
-
         # Counterfactual Fill-1 vs Fill-2 on zone orders
         if leg == "zone":
             rec["fill1_net_r"] = _sim_zone_fill1_net_r(o, a, touch, stop, spread, sell)
-
         # Counterfactual unpadded stop outcome for min_risk_padded trades
         if o.get("min_risk_padded") and o.get("raw_stop") is not None:
             raw_stop = float(o["raw_stop"])
@@ -409,25 +423,23 @@ def simulate_order(o, a, spread, pair, mode="static"):
                 raw_target = fill - rr_val * raw_risk if sell else fill + rr_val * raw_risk
                 res_unpad = _eval_path(
                     h, l, op, fill, raw_stop, raw_target, raw_risk, raw_sc, sell, limit, open_fill,
-                    legacy_use_be, float(BE_TRIGGER_R), None, 0.0
+                    legacy_use_be, legacy_be_r, None, 0.0
                 )
                 rec["unpadded_net_r"] = res_unpad["net_r"]
-
     # Select active management mode from config.MANAGEMENT_MODE for primary outcome columns
     mgmt_mode = str(getattr(config, "MANAGEMENT_MODE", "legacy") or "legacy")
     if mode == "static" and mgmt_mode in MGMT_PRESETS and mgmt_mode != "legacy":
         spec = MGMT_PRESETS[mgmt_mode]
+        act_use_be, act_be_r = _resolve_be(spec, leg, sell, o)
         active = _eval_path(
             h, l, op, fill, stop, target, risk, sc, sell, limit, open_fill,
-            True, spec["be_r"], spec["part_r"], spec["part_f"]
+            act_use_be, act_be_r, spec["part_r"], spec["part_f"]
         )
     else:
         active = res_leg
-
     if active["outcome"] == "open_at_cutoff":
         rec["outcome"] = "open_at_cutoff"
         return rec
-
     idx = active["idx"]
     exit_time = a["close_t"][f + idx]
     rec["outcome"] = active["outcome"]
